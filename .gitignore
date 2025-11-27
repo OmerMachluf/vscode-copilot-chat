@@ -32,4 +32,10 @@ coverage/
 # Base cache database (GC mode)
 test/simulation/cache/_base.sqlite
 
+# VSIX packages
+*.vsix
+
+# Orchestrator state file
+.copilot-orchestrator-state.json
+
 test/aml/out
