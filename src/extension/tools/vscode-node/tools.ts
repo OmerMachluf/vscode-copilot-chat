@@ -10,9 +10,9 @@ import { Disposable } from '../../../util/vs/base/common/lifecycle';
 import { autorun } from '../../../util/vs/base/common/observableInternal';
 import { URI } from '../../../util/vs/base/common/uri';
 import { getContributedToolName } from '../common/toolNames';
+import { isVscodeLanguageModelTool } from '../common/toolsRegistry';
 import { IToolsService } from '../common/toolsService';
 import { IToolGroupingCache, IToolGroupingService } from '../common/virtualTools/virtualToolTypes';
-import { isVscodeLanguageModelTool } from '../common/toolsRegistry';
 import '../node/allTools';
 import './allTools';
 
@@ -24,6 +24,9 @@ export class ToolsContribution extends Disposable {
 		@IVSCodeExtensionContext private readonly extensionContext: IVSCodeExtensionContext,
 	) {
 		super();
+
+		const extensionVersion = vscode.extensions.getExtension('github.copilot-chat')?.packageJSON?.version;
+		console.log(`[CopilotTools] registering tools for github.copilot-chat@${extensionVersion ?? 'unknown'}`);
 
 		for (const [name, tool] of toolsService.copilotTools) {
 			if (isVscodeLanguageModelTool(tool)) {

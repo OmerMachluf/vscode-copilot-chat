@@ -18,6 +18,8 @@ import { URI } from '../../../util/vs/base/common/uri';
 import { IInstantiationService } from '../../../util/vs/platform/instantiation/common/instantiation';
 import { ChatRequest } from '../../../vscodeTypes';
 import { Intent, agentsToCommands } from '../../common/constants';
+import { WorkerDashboardProviderV2 } from '../../orchestrator/dashboard/WorkerDashboardV2';
+import { IOrchestratorService } from '../../orchestrator/orchestratorServiceV2';
 import { ChatParticipantRequestHandler } from '../../prompt/node/chatParticipantRequestHandler';
 import { IFeedbackReporter } from '../../prompt/node/feedbackReporter';
 import { ChatSummarizerProvider } from '../../prompt/node/summarizer';
@@ -66,12 +68,13 @@ class ChatAgents implements IDisposable {
 		@IChatQuotaService private readonly _chatQuotaService: IChatQuotaService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IExperimentationService private readonly experimentationService: IExperimentationService,
+		@IOrchestratorService private readonly orchestratorService: IOrchestratorService,
 	) { }
 
 	dispose() {
 		this._disposables.dispose();
 	}
-
+	// OMERM TODO2 : what the fuck is editor default agent mayube root of issues
 	register(): void {
 		this.additionalWelcomeMessage = this.instantiationService.invokeFunction(getAdditionalWelcomeMessage);
 		this._disposables.add(this.registerDefaultAgent());
@@ -188,6 +191,17 @@ class ChatAgents implements IDisposable {
 		editingAgent.additionalWelcomeMessage = this.additionalWelcomeMessage;
 		editingAgent.titleProvider = this.instantiationService.createInstance(ChatTitleProvider);
 		return editingAgent;
+	}
+
+	private registerOrchestratorAgent(): IDisposable {
+		const dashboardProvider = new WorkerDashboardProviderV2(this.orchestratorService);
+		const dashboardRegistration = vscode.window.registerWebviewViewProvider(WorkerDashboardProviderV2.viewType, dashboardProvider);
+
+		return {
+			dispose: () => {
+				dashboardRegistration.dispose();
+			}
+		};
 	}
 
 	private registerDefaultAgent(): IDisposable {

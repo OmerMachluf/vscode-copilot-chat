@@ -1,0 +1,896 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+import * as vscode from 'vscode';
+import { IOrchestratorService } from '../orchestratorServiceV2';
+
+/**
+ * Enhanced Worker Dashboard that provides full conversation view,
+ * approval workflow, and worker management with multi-plan support.
+ */
+export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
+	public static readonly viewType = 'copilot.orchestrator.dashboard';
+	private _view?: vscode.WebviewView;
+
+	constructor(private readonly _orchestrator: IOrchestratorService) { }
+
+	public resolveWebviewView(
+		webviewView: vscode.WebviewView,
+		context: vscode.WebviewViewResolveContext,
+		_token: vscode.CancellationToken,
+	) {
+		this._view = webviewView;
+
+		webviewView.webview.options = {
+			enableScripts: true,
+			localResourceRoots: []
+		};
+
+		webviewView.webview.html = this._getHtmlForWebview();
+
+		webviewView.webview.onDidReceiveMessage(async data => {
+			switch (data.type) {
+				case 'refresh':
+					this._update();
+					break;
+				case 'getModels':
+					await this._sendAvailableModels();
+					break;
+				case 'addTask':
+					this._orchestrator.addTask(data.description, {
+						name: data.name,
+						priority: data.priority,
+						baseBranch: data.baseBranch,
+						modelId: data.modelId,
+					});
+					break;
+				case 'removeTask':
+					this._orchestrator.removeTask(data.taskId);
+					break;
+				case 'clearPlan':
+					this._orchestrator.clearPlan();
+					break;
+				case 'deploy':
+					this._orchestrator.deploy(data.taskId);
+					break;
+				case 'deployAll':
+					this._orchestrator.deployAll();
+					break;
+				case 'sendMessage':
+					this._orchestrator.sendMessageToWorker(data.workerId, data.message);
+					break;
+				case 'approve':
+					this._orchestrator.handleApproval(data.workerId, data.approvalId, true, data.clarification);
+					break;
+				case 'reject':
+					this._orchestrator.handleApproval(data.workerId, data.approvalId, false, data.reason);
+					break;
+				case 'pause':
+					this._orchestrator.pauseWorker(data.workerId);
+					break;
+				case 'resume':
+					this._orchestrator.resumeWorker(data.workerId);
+					break;
+				case 'conclude':
+					this._orchestrator.concludeWorker(data.workerId);
+					break;
+				case 'complete':
+					this._orchestrator.completeWorker(data.workerId).catch(err => {
+						vscode.window.showErrorMessage(`Failed to complete worker: ${err.message}`);
+					});
+					break;
+				case 'createPlan':
+					this._orchestrator.createPlan(data.name, data.description, data.baseBranch);
+					break;
+				case 'deletePlan':
+					this._orchestrator.deletePlan(data.planId);
+					break;
+				case 'setActivePlan':
+					this._orchestrator.setActivePlan(data.planId);
+					break;
+			}
+		});
+
+		// Subscribe to updates
+		this._orchestrator.onDidChangeWorkers(() => this._update());
+
+		// Initial update
+		this._update();
+	}
+
+	private async _sendAvailableModels(): Promise<void> {
+		if (!this._view) {
+			return;
+		}
+
+		try {
+			const models = await vscode.lm.selectChatModels();
+			const modelList = models.map(m => ({
+				id: m.id,
+				name: m.name,
+				vendor: m.vendor,
+				family: m.family,
+			}));
+
+			this._view.webview.postMessage({
+				type: 'models',
+				models: modelList,
+			});
+		} catch (error) {
+			console.error('Failed to fetch available models:', error);
+		}
+	}
+
+	private _update() {
+		if (this._view) {
+			const workers = this._orchestrator.getWorkerStates();
+			const plan = this._orchestrator.getPlan();
+			const plans = this._orchestrator.getPlans();
+			const activePlanId = this._orchestrator.getActivePlanId();
+
+			// Count pending approvals for badge
+			let pendingApprovals = 0;
+			for (const worker of workers) {
+				pendingApprovals += worker.pendingApprovals?.length || 0;
+			}
+
+			// Set badge to show pending approvals
+			if (pendingApprovals > 0) {
+				this._view.badge = {
+					value: pendingApprovals,
+					tooltip: `${pendingApprovals} pending approval${pendingApprovals > 1 ? 's' : ''}`
+				};
+			} else {
+				this._view.badge = undefined;
+			}
+
+			this._view.webview.postMessage({
+				type: 'update',
+				workers,
+				plan,
+				plans,
+				activePlanId
+			});
+		}
+	}
+
+	private _getHtmlForWebview(): string {
+		return `<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Copilot Orchestrator</title>
+	<style>
+		* { box-sizing: border-box; }
+		body {
+			font-family: var(--vscode-font-family);
+			font-size: var(--vscode-font-size);
+			color: var(--vscode-foreground);
+			padding: 0;
+			margin: 0;
+		}
+		.container { padding: 10px; }
+
+		/* Tabs */
+		.tabs {
+			display: flex;
+			border-bottom: 1px solid var(--vscode-widget-border);
+			margin-bottom: 10px;
+		}
+		.tab {
+			padding: 8px 16px;
+			cursor: pointer;
+			border: none;
+			background: none;
+			color: var(--vscode-foreground);
+			opacity: 0.7;
+		}
+		.tab:hover { opacity: 1; }
+		.tab.active {
+			opacity: 1;
+			border-bottom: 2px solid var(--vscode-focusBorder);
+		}
+		.tab-content { display: none; }
+		.tab-content.active { display: block; }
+
+		/* Plan Selector */
+		.plan-selector {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			margin-bottom: 10px;
+			padding: 8px;
+			background: var(--vscode-sideBarSectionHeader-background);
+			border-radius: 4px;
+		}
+		.plan-selector select {
+			flex: 1;
+			padding: 6px;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 3px;
+		}
+
+		/* Create Plan Form */
+		.create-plan-form {
+			display: none;
+			flex-direction: column;
+			gap: 8px;
+			margin-bottom: 10px;
+			padding: 10px;
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-widget-border);
+			border-radius: 4px;
+		}
+		.create-plan-form.visible { display: flex; }
+		.create-plan-form input, .create-plan-form textarea {
+			padding: 6px;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 3px;
+		}
+		.create-plan-form textarea { resize: vertical; min-height: 60px; }
+		.form-row {
+			display: flex;
+			gap: 8px;
+		}
+		.form-row > * { flex: 1; }
+
+		/* Plan Section */
+		.plan-header {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			margin-bottom: 10px;
+		}
+		.task-item {
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-widget-border);
+			border-radius: 4px;
+			padding: 8px;
+			margin-bottom: 8px;
+		}
+		.task-header {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			margin-bottom: 4px;
+		}
+		.task-name {
+			font-weight: bold;
+			font-family: monospace;
+			color: var(--vscode-textLink-foreground);
+		}
+		.task-description {
+			color: var(--vscode-descriptionForeground);
+			font-size: 0.9em;
+			margin-bottom: 4px;
+		}
+		.task-meta {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+		}
+		.task-priority {
+			font-size: 0.8em;
+			padding: 2px 6px;
+			border-radius: 3px;
+		}
+		.task-priority.high { background: var(--vscode-errorForeground); color: white; }
+		.task-priority.normal { background: var(--vscode-notificationsInfoIcon-foreground); color: white; }
+		.task-priority.low { background: var(--vscode-descriptionForeground); color: white; }
+		.task-branch {
+			font-size: 0.8em;
+			font-family: monospace;
+			color: var(--vscode-descriptionForeground);
+		}
+
+		/* Add Task Form */
+		.add-task-form {
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+			margin-bottom: 10px;
+			padding: 10px;
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-widget-border);
+			border-radius: 4px;
+		}
+		.add-task-form input[type="text"], .add-task-form textarea {
+			padding: 6px;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 3px;
+		}
+		.add-task-form textarea {
+			resize: vertical;
+			min-height: 60px;
+		}
+		.add-task-form select {
+			padding: 6px;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 3px;
+		}
+
+		/* Workers Section */
+		.worker-card {
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-widget-border);
+			border-radius: 4px;
+			margin-bottom: 10px;
+			overflow: hidden;
+		}
+		.worker-header {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			padding: 10px;
+			background: var(--vscode-sideBarSectionHeader-background);
+			cursor: pointer;
+		}
+		.worker-header:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+		.worker-info { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+		.worker-name {
+			font-weight: bold;
+			font-family: monospace;
+			color: var(--vscode-textLink-foreground);
+		}
+		.worker-status {
+			font-size: 0.85em;
+			padding: 2px 8px;
+			border-radius: 10px;
+		}
+		.worker-status.running { background: var(--vscode-notificationsInfoIcon-foreground); color: white; }
+		.worker-status.idle { background: var(--vscode-descriptionForeground); color: white; }
+		.worker-status.waiting-approval { background: var(--vscode-notificationsWarningIcon-foreground); color: black; }
+		.worker-status.paused { background: var(--vscode-notificationsWarningIcon-foreground); color: black; }
+		.worker-status.completed { background: var(--vscode-testing-iconPassed); color: white; }
+		.worker-status.error { background: var(--vscode-errorForeground); color: white; }
+		.worker-branch {
+			font-size: 0.85em;
+			font-family: monospace;
+			color: var(--vscode-descriptionForeground);
+		}
+
+		.worker-actions { display: flex; gap: 5px; }
+
+		.worker-body {
+			display: none;
+			padding: 10px;
+			border-top: 1px solid var(--vscode-widget-border);
+		}
+		.worker-card.expanded .worker-body { display: block; }
+
+		/* Conversation */
+		.conversation {
+			max-height: 300px;
+			overflow-y: auto;
+			margin-bottom: 10px;
+			padding: 5px;
+			background: var(--vscode-input-background);
+			border-radius: 4px;
+		}
+		.message {
+			margin-bottom: 8px;
+			padding: 8px;
+			border-radius: 4px;
+		}
+		.message.user {
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+			margin-left: 20%;
+		}
+		.message.assistant {
+			background: var(--vscode-editor-inactiveSelectionBackground);
+			margin-right: 20%;
+		}
+		.message.system {
+			background: var(--vscode-textBlockQuote-background);
+			font-style: italic;
+			text-align: center;
+			color: var(--vscode-descriptionForeground);
+		}
+		.message.tool {
+			background: var(--vscode-debugConsole-sourceForeground);
+			font-family: monospace;
+			font-size: 0.9em;
+		}
+		.message-time {
+			font-size: 0.75em;
+			color: var(--vscode-descriptionForeground);
+			margin-bottom: 4px;
+		}
+		.message-content { white-space: pre-wrap; word-wrap: break-word; }
+
+		/* Pending Approvals */
+		.approval-card {
+			background: var(--vscode-inputValidation-warningBackground);
+			border: 1px solid var(--vscode-inputValidation-warningBorder);
+			border-radius: 4px;
+			padding: 10px;
+			margin-bottom: 10px;
+		}
+		.approval-header {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			margin-bottom: 8px;
+		}
+		.approval-tool { font-weight: bold; }
+		.approval-description { margin-bottom: 10px; }
+		.approval-params {
+			background: var(--vscode-input-background);
+			padding: 8px;
+			border-radius: 4px;
+			font-family: monospace;
+			font-size: 0.9em;
+			margin-bottom: 10px;
+			max-height: 150px;
+			overflow-y: auto;
+		}
+		.approval-actions {
+			display: flex;
+			gap: 8px;
+		}
+		.approval-input {
+			flex: 1;
+			padding: 6px;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 3px;
+		}
+
+		/* Message Input */
+		.message-input-container {
+			display: flex;
+			gap: 8px;
+		}
+		.message-input {
+			flex: 1;
+			padding: 6px;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 3px;
+		}
+
+		/* Buttons */
+		button {
+			padding: 4px 10px;
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
+			border: none;
+			border-radius: 3px;
+			cursor: pointer;
+		}
+		button:hover { background: var(--vscode-button-hoverBackground); }
+		button.secondary {
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+		}
+		button.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
+		button.success {
+			background: var(--vscode-testing-iconPassed);
+			color: white;
+		}
+		button.danger {
+			background: var(--vscode-errorForeground);
+			color: white;
+		}
+		button:disabled {
+			opacity: 0.5;
+			cursor: not-allowed;
+		}
+
+		.empty-state {
+			text-align: center;
+			padding: 20px;
+			color: var(--vscode-descriptionForeground);
+		}
+
+		h3 { margin: 0 0 10px 0; font-size: 1.1em; }
+		h4 { margin: 10px 0 5px 0; font-size: 1em; }
+		label { font-size: 0.9em; color: var(--vscode-descriptionForeground); }
+	</style>
+</head>
+<body>
+	<div class="container">
+		<div class="tabs">
+			<button class="tab active" data-tab="workers">Workers</button>
+			<button class="tab" data-tab="plan">Plan</button>
+		</div>
+
+		<div id="workers-tab" class="tab-content active">
+			<div id="workers-container"></div>
+		</div>
+
+		<div id="plan-tab" class="tab-content">
+			<!-- Plan Selector -->
+			<div class="plan-selector">
+				<label>Plan:</label>
+				<select id="plan-select" onchange="setActivePlan(this.value)">
+					<option value="">Ad-hoc Tasks</option>
+				</select>
+				<button onclick="showCreatePlanForm()" title="New Plan">+ New</button>
+				<button onclick="deletePlan()" class="danger" id="delete-plan-btn" title="Delete Plan" disabled>🗑</button>
+			</div>
+
+			<!-- Create Plan Form (hidden by default) -->
+			<div id="create-plan-form" class="create-plan-form">
+				<h4>Create New Plan</h4>
+				<input type="text" id="plan-name" placeholder="Plan name (e.g., refactor-auth)" />
+				<textarea id="plan-description" placeholder="Plan description..."></textarea>
+				<div class="form-row">
+					<div>
+						<label>Base Branch:</label>
+						<input type="text" id="plan-base-branch" placeholder="main" />
+					</div>
+				</div>
+				<div class="form-row">
+					<button onclick="createPlan()">Create Plan</button>
+					<button onclick="hideCreatePlanForm()" class="secondary">Cancel</button>
+				</div>
+			</div>
+
+			<div class="plan-header">
+				<h3>Tasks</h3>
+				<div>
+					<button onclick="deployAll()" id="deploy-all-btn">Deploy All</button>
+					<button onclick="clearPlan()" class="secondary">Clear</button>
+				</div>
+			</div>
+
+			<!-- Add Task Form -->
+			<div class="add-task-form">
+				<div class="form-row">
+					<div style="flex: 2">
+						<label>Name (branch):</label>
+						<input type="text" id="new-task-name" placeholder="feature-name (optional)" />
+					</div>
+					<div>
+						<label>Priority:</label>
+						<select id="task-priority">
+							<option value="normal">Normal</option>
+							<option value="high">High</option>
+							<option value="low">Low</option>
+						</select>
+					</div>
+				</div>
+				<div>
+					<label>Description:</label>
+					<textarea id="new-task-input" placeholder="What should this task accomplish?"></textarea>
+				</div>
+				<div class="form-row">
+					<div>
+						<label>Model:</label>
+						<select id="task-model">
+							<option value="">Default</option>
+						</select>
+					</div>
+					<div>
+						<label>Base Branch (override):</label>
+						<input type="text" id="task-base-branch" placeholder="Uses plan default if empty" />
+					</div>
+					<button onclick="addTask()" style="align-self: flex-end">Add Task</button>
+				</div>
+			</div>
+
+			<div id="plan-container"></div>
+		</div>
+	</div>
+
+	<script>
+		const vscode = acquireVsCodeApi();
+		let expandedWorkers = new Set();
+		let currentPlans = [];
+		let currentActivePlanId = null;
+
+		// Tab switching
+		document.querySelectorAll('.tab').forEach(tab => {
+			tab.addEventListener('click', () => {
+				document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+				document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+				tab.classList.add('active');
+				document.getElementById(tab.dataset.tab + '-tab').classList.add('active');
+			});
+		});
+
+		window.addEventListener('message', event => {
+			const message = event.data;
+			if (message.type === 'update') {
+				currentPlans = message.plans || [];
+				currentActivePlanId = message.activePlanId;
+				renderPlansDropdown(message.plans, message.activePlanId);
+				renderWorkers(message.workers);
+				renderPlan(message.plan);
+			} else if (message.type === 'models') {
+				renderModelsDropdown(message.models);
+			}
+		});
+
+		function renderModelsDropdown(models) {
+			const select = document.getElementById('task-model');
+			select.innerHTML = '<option value="">Default</option>';
+			(models || []).forEach(model => {
+				const option = document.createElement('option');
+				option.value = model.id;
+				option.textContent = model.name + ' (' + model.vendor + ')';
+				select.appendChild(option);
+			});
+		}
+
+		function renderPlansDropdown(plans, activePlanId) {
+			const select = document.getElementById('plan-select');
+			const deleteBtn = document.getElementById('delete-plan-btn');
+
+			select.innerHTML = '<option value="">Ad-hoc Tasks</option>';
+			(plans || []).forEach(plan => {
+				const option = document.createElement('option');
+				option.value = plan.id;
+				option.textContent = plan.name + (plan.baseBranch ? ' [' + plan.baseBranch + ']' : '');
+				if (plan.id === activePlanId) {
+					option.selected = true;
+				}
+				select.appendChild(option);
+			});
+
+			deleteBtn.disabled = !activePlanId;
+		}
+
+		function renderWorkers(workers) {
+			const container = document.getElementById('workers-container');
+
+			if (!workers || workers.length === 0) {
+				container.innerHTML = '<div class="empty-state"><p>No active workers.</p><p>Add tasks to the Plan and click Deploy.</p></div>';
+				return;
+			}
+
+			container.innerHTML = workers.map(worker => renderWorkerCard(worker)).join('');
+		}
+
+		function renderWorkerCard(worker) {
+			const isExpanded = expandedWorkers.has(worker.id);
+			const statusClass = worker.status.replace('-', '');
+			const canComplete = worker.status === 'idle' || worker.status === 'completed';
+
+			const messagesHtml = worker.messages.map(msg => {
+				const time = new Date(msg.timestamp).toLocaleTimeString();
+				return \`
+					<div class="message \${msg.role}">
+						<div class="message-time">\${time} - \${msg.role}</div>
+						<div class="message-content">\${escapeHtml(msg.content)}</div>
+					</div>
+				\`;
+			}).join('');
+
+			const approvalsHtml = worker.pendingApprovals.map(approval => \`
+				<div class="approval-card">
+					<div class="approval-header">
+						<span class="approval-tool">🔧 \${approval.toolName}</span>
+					</div>
+					<div class="approval-description">\${escapeHtml(approval.description)}</div>
+					<div class="approval-params">\${escapeHtml(JSON.stringify(approval.parameters, null, 2))}</div>
+					<div class="approval-actions">
+						<input type="text" class="approval-input" id="clarification-\${approval.id}" placeholder="Clarification (optional)..." />
+						<button onclick="approve('\${worker.id}', '\${approval.id}')">✓ Approve</button>
+						<button onclick="reject('\${worker.id}', '\${approval.id}')" class="danger">✗ Reject</button>
+					</div>
+				</div>
+			\`).join('');
+
+			const pauseResumeBtn = worker.status === 'paused'
+				? \`<button onclick="resumeWorker('\${worker.id}')">▶ Resume</button>\`
+				: \`<button onclick="pauseWorker('\${worker.id}')" class="secondary">⏸ Pause</button>\`;
+
+			const completeBtn = canComplete
+				? \`<button onclick="completeWorker('\${worker.id}')" class="success" title="Push to origin and clean up">✓ Complete</button>\`
+				: '';
+
+			return \`
+				<div class="worker-card \${isExpanded ? 'expanded' : ''}" data-worker-id="\${worker.id}">
+					<div class="worker-header" onclick="toggleWorker('\${worker.id}')">
+						<div class="worker-info">
+							<span class="worker-name">\${worker.name}</span>
+							<span class="worker-status \${statusClass}">\${worker.status}</span>
+							\${worker.baseBranch ? '<span class="worker-branch">from ' + worker.baseBranch + '</span>' : ''}
+						</div>
+						<div class="worker-actions" onclick="event.stopPropagation()">
+							\${completeBtn}
+							\${pauseResumeBtn}
+							<button onclick="concludeWorker('\${worker.id}')" class="danger" title="Discard">✕</button>
+						</div>
+					</div>
+					<div class="worker-body">
+						<div><strong>Task:</strong> \${escapeHtml(worker.task)}</div>
+						<div><strong>Worktree:</strong> <code>\${worker.worktreePath}</code></div>
+
+						\${approvalsHtml ? '<h4>Pending Approvals</h4>' + approvalsHtml : ''}
+
+						<h4>Conversation</h4>
+						<div class="conversation">\${messagesHtml}</div>
+
+						<div class="message-input-container">
+							<input type="text" class="message-input" id="msg-\${worker.id}"
+								placeholder="Send a message or clarification..."
+								onkeydown="if(event.key === 'Enter') sendMessage('\${worker.id}')" />
+							<button onclick="sendMessage('\${worker.id}')">Send</button>
+						</div>
+					</div>
+				</div>
+			\`;
+		}
+
+		function renderPlan(plan) {
+			const container = document.getElementById('plan-container');
+			const deployBtn = document.getElementById('deploy-all-btn');
+
+			if (!plan || plan.length === 0) {
+				container.innerHTML = '<div class="empty-state">No tasks in plan.</div>';
+				deployBtn.disabled = true;
+				return;
+			}
+
+			deployBtn.disabled = false;
+			container.innerHTML = plan.map(task => \`
+				<div class="task-item">
+					<div class="task-header">
+						<span class="task-name">\${escapeHtml(task.name)}</span>
+						<div>
+							<button onclick="deployTask('\${task.id}')" title="Deploy this task">▶</button>
+							<button onclick="removeTask('\${task.id}')" class="danger" title="Remove">✕</button>
+						</div>
+					</div>
+					<div class="task-description">\${escapeHtml(task.description)}</div>
+					<div class="task-meta">
+						<span class="task-priority \${task.priority}">\${task.priority}</span>
+						\${task.baseBranch ? '<span class="task-branch">from ' + task.baseBranch + '</span>' : ''}
+					</div>
+				</div>
+			\`).join('');
+		}
+
+		function toggleWorker(workerId) {
+			if (expandedWorkers.has(workerId)) {
+				expandedWorkers.delete(workerId);
+			} else {
+				expandedWorkers.add(workerId);
+			}
+			vscode.postMessage({ type: 'refresh' });
+		}
+
+		function showCreatePlanForm() {
+			document.getElementById('create-plan-form').classList.add('visible');
+		}
+
+		function hideCreatePlanForm() {
+			document.getElementById('create-plan-form').classList.remove('visible');
+			document.getElementById('plan-name').value = '';
+			document.getElementById('plan-description').value = '';
+			document.getElementById('plan-base-branch').value = '';
+		}
+
+		function createPlan() {
+			const name = document.getElementById('plan-name').value.trim();
+			const description = document.getElementById('plan-description').value.trim();
+			const baseBranch = document.getElementById('plan-base-branch').value.trim() || undefined;
+
+			if (!name) {
+				alert('Plan name is required');
+				return;
+			}
+
+			vscode.postMessage({ type: 'createPlan', name, description, baseBranch });
+			hideCreatePlanForm();
+		}
+
+		function deletePlan() {
+			if (currentActivePlanId && confirm('Delete this plan and all its pending tasks?')) {
+				vscode.postMessage({ type: 'deletePlan', planId: currentActivePlanId });
+			}
+		}
+
+		function setActivePlan(planId) {
+			vscode.postMessage({ type: 'setActivePlan', planId: planId || undefined });
+		}
+
+		function addTask() {
+			const nameInput = document.getElementById('new-task-name');
+			const descInput = document.getElementById('new-task-input');
+			const priority = document.getElementById('task-priority').value;
+			const baseBranch = document.getElementById('task-base-branch').value.trim() || undefined;
+			const modelId = document.getElementById('task-model').value || undefined;
+
+			const description = descInput.value.trim();
+			if (!description) {
+				alert('Task description is required');
+				return;
+			}
+
+			const name = nameInput.value.trim() || undefined;
+			vscode.postMessage({ type: 'addTask', name, description, priority, baseBranch, modelId });
+
+			nameInput.value = '';
+			descInput.value = '';
+			document.getElementById('task-base-branch').value = '';
+			document.getElementById('task-model').value = '';
+		}
+
+		function removeTask(taskId) {
+			vscode.postMessage({ type: 'removeTask', taskId });
+		}
+
+		function clearPlan() {
+			vscode.postMessage({ type: 'clearPlan' });
+		}
+
+		function deployTask(taskId) {
+			vscode.postMessage({ type: 'deploy', taskId });
+		}
+
+		function deployAll() {
+			vscode.postMessage({ type: 'deployAll' });
+		}
+
+		function sendMessage(workerId) {
+			const input = document.getElementById('msg-' + workerId);
+			if (input.value.trim()) {
+				vscode.postMessage({ type: 'sendMessage', workerId, message: input.value.trim() });
+				input.value = '';
+			}
+		}
+
+		function approve(workerId, approvalId) {
+			const clarification = document.getElementById('clarification-' + approvalId)?.value || '';
+			vscode.postMessage({ type: 'approve', workerId, approvalId, clarification });
+		}
+
+		function reject(workerId, approvalId) {
+			const reason = document.getElementById('clarification-' + approvalId)?.value || '';
+			vscode.postMessage({ type: 'reject', workerId, approvalId, reason });
+		}
+
+		function pauseWorker(workerId) {
+			vscode.postMessage({ type: 'pause', workerId });
+		}
+
+		function resumeWorker(workerId) {
+			vscode.postMessage({ type: 'resume', workerId });
+		}
+
+		function concludeWorker(workerId) {
+			if (confirm('Discard this worker? The worktree will need to be manually cleaned up.')) {
+				vscode.postMessage({ type: 'conclude', workerId });
+			}
+		}
+
+		function completeWorker(workerId) {
+			if (confirm('Complete this worker? This will commit, push to origin, and remove the worktree.')) {
+				vscode.postMessage({ type: 'complete', workerId });
+			}
+		}
+
+		function escapeHtml(text) {
+			const div = document.createElement('div');
+			div.textContent = text || '';
+			return div.innerHTML;
+		}
+
+		// Initial load
+		vscode.postMessage({ type: 'refresh' });
+		vscode.postMessage({ type: 'getModels' });
+	</script>
+</body>
+</html>`;
+	}
+}

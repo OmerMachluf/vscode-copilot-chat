@@ -79,6 +79,7 @@ export async function baseActivate(configuration: IExtensionActivationConfigurat
 	}
 
 	return {
+		instantiationService,
 		getAPI(version: number) {
 			if (version > CopilotExtensionApi.version) {
 				throw new Error('Invalid Copilot Chat extension API version. Please upgrade Copilot Chat.');

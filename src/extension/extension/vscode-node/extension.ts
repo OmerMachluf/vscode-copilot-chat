@@ -5,6 +5,7 @@
 
 import { ExtensionContext } from 'vscode';
 import { resolve } from '../../../util/vs/base/common/path';
+import { activateWorker } from '../../orchestrator/workerMain';
 import { baseActivate } from '../vscode/extension';
 import { vscodeNodeContributions } from './contributions';
 import { registerServices } from './services';
@@ -32,12 +33,21 @@ function configureDevPackages() {
 }
 //#endregion
 
-export function activate(context: ExtensionContext, forceActivation?: boolean) {
-	return baseActivate({
+export async function activate(context: ExtensionContext, forceActivation?: boolean) {
+	try { require('fs').writeFileSync(require('path').join(require('os').tmpdir(), 'copilot_worker_debug.log'), `Activation! WorkerMode: ${process.env.COPILOT_WORKER_MODE}\n`); } catch (e) { }
+	const activationResult = await baseActivate({
 		context,
 		registerServices,
 		contributions: vscodeNodeContributions,
 		configureDevPackages,
 		forceActivation
 	});
+
+	if (process.env.COPILOT_WORKER_MODE) {
+		// @ts-ignore
+		const instantiationService = activationResult.instantiationService;
+		await activateWorker(context, instantiationService);
+	}
+
+	return activationResult;
 }

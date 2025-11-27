@@ -20,7 +20,7 @@ function findBestSymbol(
 	let bestMatch: FoundSymbol | undefined;
 	for (const symbol of symbols) {
 		// TODO: vscode.executeDocumentSymbolProvider doesn't return a real instance of
-		// vscode.DocumentSymbol so use cast to check for children
+		// vscode.DocumentSymbol so use cast to check for childrenFv
 		if ((symbol as vscode.DocumentSymbol).children) {
 			let partMatch = symbol.name === symbolParts[0] ? { symbol, matchCount: 1 } : undefined;
 			if (partMatch) {

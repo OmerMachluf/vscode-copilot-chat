@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { defaultAgentName, editingSessionAgent2Name, editingSessionAgentName, editorAgentName, editsAgentName, getChatParticipantNameFromId, terminalAgentName, vscodeAgentName, workspaceAgentName } from '../../../platform/chat/common/chatAgents';
+import { defaultAgentName, editingSessionAgent2Name, editingSessionAgentName, editorAgentName, editsAgentName, getChatParticipantNameFromId, orchestratorAgentName, terminalAgentName, vscodeAgentName, workspaceAgentName } from '../../../platform/chat/common/chatAgents';
 
 /**
  * Create a mode name for gh telemetry
@@ -16,6 +16,7 @@ export function participantIdToModeName(participantId: string): string {
 		case workspaceAgentName:
 		case vscodeAgentName:
 		case 'terminalPanel':
+		case orchestratorAgentName:
 			return 'ask';
 		case editsAgentName:
 			return 'agent';
