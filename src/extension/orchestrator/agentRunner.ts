@@ -47,6 +47,9 @@ export interface IAgentRunOptions {
 
 	/** Maximum tool call iterations (defaults to 200 for agent mode) */
 	maxToolCallIterations?: number;
+
+	/** Worktree path for file operations (if different from main workspace) */
+	worktreePath?: string;
 }
 
 /**
@@ -104,11 +107,12 @@ export class AgentRunnerService extends Disposable implements IAgentRunner {
 			token,
 			onPaused = Event.None,
 			maxToolCallIterations = 200,
+			worktreePath,
 		} = options;
 
 		try {
 			// Create a synthetic ChatRequest with all tools enabled
-			const request = this._createRequest(prompt, model, suggestedFiles);
+			const request = this._createRequest(prompt, model, suggestedFiles, worktreePath);
 
 			// Get the agent intent at Agent location (for headless/orchestrator execution)
 			const intent = this._intentService.getIntent(Intent.Agent, ChatLocation.Agent);
@@ -191,14 +195,19 @@ export class AgentRunnerService extends Disposable implements IAgentRunner {
 	/**
 	 * Creates a synthetic ChatRequest for programmatic agent execution.
 	 * This populates all required fields and enables all available tools.
+	 * If worktreePath is provided, file operations will target that directory.
 	 */
 	private _createRequest(
 		prompt: string,
 		model: vscode.LanguageModelChat,
-		suggestedFiles?: string[]
+		suggestedFiles?: string[],
+		worktreePath?: string
 	): vscode.ChatRequest {
 		const sessionId = generateUuid();
-		const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri;
+		// Use worktreePath if provided, otherwise fall back to main workspace
+		const workspaceFolder = worktreePath
+			? vscode.Uri.file(worktreePath)
+			: vscode.workspace.workspaceFolders?.[0]?.uri;
 
 		// Build file references from suggested files
 		const references: vscode.ChatPromptReference[] = [];
@@ -215,6 +224,15 @@ export class AgentRunnerService extends Disposable implements IAgentRunner {
 					value: fileUri,
 				});
 			}
+		}
+
+		// If we have a worktree, add it as a reference so the agent knows the context
+		if (worktreePath) {
+			references.push({
+				id: 'vscode.folder',
+				name: 'Worktree',
+				value: vscode.Uri.file(worktreePath),
+			});
 		}
 
 		// Enable all available tools - this is critical for full agent capabilities

@@ -544,8 +544,10 @@ export class WorkerResponseStream implements vscode.ChatResponseStream {
 		this._session.addAssistantMessage(`❌ ${content}`);
 	}
 
-	confirmation(title: string, message: string, data: any, buttons?: string[]): void {
-		this._session.addAssistantMessage(`[Confirmation] ${title}: ${message}`);
+	confirmation(title: string, message: string | vscode.MarkdownString, data: any, buttons?: string[]): void {
+		const messageText = typeof message === 'string' ? message : message.value;
+		const buttonsText = buttons?.length ? ` [${buttons.join(' | ')}]` : '';
+		this._session.addAssistantMessage(`[Confirmation] ${title}: ${messageText}${buttonsText}`);
 	}
 
 	thinkingProgress(value: any): void { }

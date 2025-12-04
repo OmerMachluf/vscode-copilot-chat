@@ -886,7 +886,9 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			const worktreePath = await this._createWorktree(task.name, baseBranch);
 
 			// Load agent instructions
-			const agentId = task.agent || 'agent';
+			// Normalize agent ID: strip @ prefix and lowercase
+			const rawAgentId = task.agent || '@agent';
+			const agentId = rawAgentId.replace(/^@/, '').toLowerCase();
 			const composedInstructions = await this._agentInstructionService.loadInstructions(agentId);
 
 			// Create worker session with agent instructions
@@ -1432,6 +1434,9 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		}));
 
 		// Continuous conversation loop - keeps running until worker is completed
+		const MAX_RETRIES = 3;
+		let consecutiveFailures = 0;
+
 		while (worker.isActive) {
 			try {
 				// Check for model override before each iteration
@@ -1456,6 +1461,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 						token: tokenSource.token,
 						onPaused: pausedEmitter.event,
 						maxToolCallIterations: 200,
+						worktreePath: worker.worktreePath,
 					},
 					stream as unknown as vscode.ChatResponseStream
 				);
@@ -1463,9 +1469,27 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				stream.flush();
 
 				if (!result.success && result.error) {
+					consecutiveFailures++;
+
+					// Check if error is retryable (empty response, timeout, rate limit)
+					const isRetryable = result.error.includes('no response') ||
+						result.error.includes('timeout') ||
+						result.error.includes('rate limit') ||
+						result.error.includes('empty');
+
+					if (isRetryable && consecutiveFailures < MAX_RETRIES) {
+						worker.addAssistantMessage(`[System: Retrying due to error: ${result.error} (attempt ${consecutiveFailures}/${MAX_RETRIES})]`);
+						// Brief delay before retry
+						await new Promise(resolve => setTimeout(resolve, 2000 * consecutiveFailures));
+						continue;
+					}
+
 					worker.error(result.error);
 					break;
 				}
+
+				// Reset failure counter on success
+				consecutiveFailures = 0;
 
 				// Mark as idle and wait for next message
 				worker.idle();
@@ -1482,7 +1506,22 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				worker.start();
 
 			} catch (error) {
-				worker.error(String(error));
+				consecutiveFailures++;
+				const errorMessage = String(error);
+
+				// Check if error is retryable
+				const isRetryable = errorMessage.includes('ECONNRESET') ||
+					errorMessage.includes('ETIMEDOUT') ||
+					errorMessage.includes('network') ||
+					errorMessage.includes('abort');
+
+				if (isRetryable && consecutiveFailures < MAX_RETRIES) {
+					worker.addAssistantMessage(`[System: Retrying due to error: ${errorMessage} (attempt ${consecutiveFailures}/${MAX_RETRIES})]`);
+					await new Promise(resolve => setTimeout(resolve, 2000 * consecutiveFailures));
+					continue;
+				}
+
+				worker.error(errorMessage);
 				break;
 			}
 		}
