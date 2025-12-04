@@ -31,6 +31,14 @@ export const enum Intent {
 	SearchPanel = 'searchPanel',
 	SearchKeywords = 'searchKeywords',
 	AskAgent = 'askAgent',
+	ChatReplay = 'chatReplay',
+	// Multi-agent orchestration intents
+	Orchestrator = 'orchestrator',
+	Planner = 'planner',
+	WorkflowPlanner = 'workflowPlanner',
+	StepPlanner = 'stepplanner',
+	Architect = 'architect',
+	Reviewer = 'reviewer'
 }
 
 export const GITHUB_PLATFORM_AGENT = 'github.copilot-dynamic.platform';

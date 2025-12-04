@@ -1352,11 +1352,92 @@
 				]
 			},
 			{
+				"name": "copilot_orchestratorListAgents",
+				"toolReferenceName": "orchestrator_listAgents",
+				"displayName": "List Available Agents",
+				"modelDescription": "Lists all available agents (built-in and custom) that can be assigned to tasks in a workflow plan.",
+				"userDescription": "List available agents",
+				"icon": "$(organization)",
+				"tags": ["vscode_codesearch"],
+				"inputSchema": {
+					"type": "object",
+					"properties": {},
+					"required": []
+				}
+			},
+			{
+				"name": "copilot_orchestratorSavePlan",
+				"toolReferenceName": "orchestrator_savePlan",
+				"displayName": "Save Plan",
+				"modelDescription": "Saves a complete workflow plan with tasks and dependencies. Use this to create a plan that can then be deployed by the orchestrator. The plan should include a name, description, and an array of tasks with their dependencies and agent assignments.",
+				"userDescription": "Save a workflow plan",
+				"icon": "$(save)",
+				"tags": ["vscode_codesearch"],
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"name": {
+							"type": "string",
+							"description": "Name of the plan (used for identification and branch naming)."
+						},
+						"description": {
+							"type": "string",
+							"description": "Description of what the plan aims to accomplish."
+						},
+						"baseBranch": {
+							"type": "string",
+							"description": "Base branch to create worktrees from (defaults to main/master)."
+						},
+						"tasks": {
+							"type": "array",
+							"description": "Array of tasks to execute in this plan.",
+							"items": {
+								"type": "object",
+								"properties": {
+									"id": {
+										"type": "string",
+										"description": "Unique identifier for the task within the plan."
+									},
+									"name": {
+										"type": "string",
+										"description": "Human-readable name for display and branch naming."
+									},
+									"description": {
+										"type": "string",
+										"description": "Description of what this task should accomplish."
+									},
+									"agent": {
+										"type": "string",
+										"description": "Agent to assign (e.g., '@agent', '@architect', '@reviewer')."
+									},
+									"dependencies": {
+										"type": "array",
+										"items": { "type": "string" },
+										"description": "IDs of tasks that must complete before this one."
+									},
+									"targetFiles": {
+										"type": "array",
+										"items": { "type": "string" },
+										"description": "Target files this task will touch (helps with parallelization)."
+									}
+								},
+								"required": ["id", "description"]
+							}
+						},
+						"autoStart": {
+							"type": "boolean",
+							"description": "Whether to automatically start executing the plan after saving."
+						}
+					},
+					"required": ["name", "description", "tasks"]
+				}
+			},
+			{
 				"name": "copilot_orchestratorAddPlanTask",
 				"toolReferenceName": "orchestrator_addPlanTask",
 				"displayName": "Add Plan Task",
-				"modelDescription": "Adds a new task to the plan. The task will be executed by a worker agent.",
-				"userDescription": "Add a task to the plan",
+				"modelDescription": "Adds a new task to a specific plan. The task will be executed by a worker agent. If planId is not provided, uses the active plan.",
+				"userDescription": "Add a task to a plan",
 				"icon": "$(list-unordered)",
 				"tags": [
 					"vscode_codesearch"
@@ -1367,6 +1448,28 @@
 						"description": {
 							"type": "string",
 							"description": "The description of the task to be added."
+						},
+						"planId": {
+							"type": "string",
+							"description": "The ID of the plan to add the task to. If not provided, uses the active plan."
+						},
+						"name": {
+							"type": "string",
+							"description": "Human-readable name for the task (used for branch naming)."
+						},
+						"agent": {
+							"type": "string",
+							"description": "The agent to assign to this task (e.g., '@agent', '@architect', '@reviewer')."
+						},
+						"dependencies": {
+							"type": "array",
+							"items": { "type": "string" },
+							"description": "IDs of tasks that must complete before this one."
+						},
+						"targetFiles": {
+							"type": "array",
+							"items": { "type": "string" },
+							"description": "Files this task will modify (used for parallelization decisions)."
 						}
 					},
 					"required": [
@@ -1377,14 +1480,23 @@
 			{
 				"name": "copilot_orchestratorDeploy",
 				"toolReferenceName": "orchestrator_deploy",
-				"displayName": "Deploy",
-				"modelDescription": "Deploys the current workspace to a remote environment.",
-				"userDescription": "Deploy the workspace",
+				"displayName": "Deploy Plan",
+				"modelDescription": "Deploys tasks for execution. Use planId to deploy ALL ready tasks in a plan (tasks with no unsatisfied dependencies). Use taskId to deploy a specific task. One of planId or taskId must be provided.",
+				"userDescription": "Deploy tasks for execution",
 				"icon": "$(rocket)",
 				"tags": ["vscode_codesearch"],
 				"inputSchema": {
 					"type": "object",
-					"properties": {},
+					"properties": {
+						"planId": {
+							"type": "string",
+							"description": "The ID of the plan to deploy. When provided, deploys ALL ready tasks (tasks whose dependencies are satisfied) in the plan."
+						},
+						"taskId": {
+							"type": "string",
+							"description": "The ID of a specific task to deploy. Use this to deploy a single task regardless of plan."
+						}
+					},
 					"required": []
 				}
 			},
@@ -1425,6 +1537,41 @@
 					"required": [
 						"receiver",
 						"message"
+					]
+				}
+			},
+			{
+				"name": "copilot_orchestratorExpandImplementation",
+				"toolReferenceName": "orchestrator_expandImplementation",
+				"displayName": "Expand Implementation",
+				"modelDescription": "Creates implementation sub-tasks from Architect output. Takes the Architect's design output and creates concrete implementation tasks that can be assigned to workers. Use this after an Architect stage completes to break down the implementation into parallelizable tasks.",
+				"userDescription": "Create implementation tasks from Architect design",
+				"icon": "$(split-horizontal)",
+				"tags": ["vscode_codesearch"],
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"parentTaskId": {
+							"type": "string",
+							"description": "The ID of the parent 'implement' task to expand into sub-tasks."
+						},
+						"planId": {
+							"type": "string",
+							"description": "The plan ID containing the task."
+						},
+						"architectOutput": {
+							"type": "object",
+							"description": "The parsed YAML output from the Architect agent containing files_to_modify, parallelization groups, etc."
+						},
+						"strategy": {
+							"type": "string",
+							"enum": ["balanced", "max-parallel", "sequential"],
+							"description": "How to split the work: 'balanced' (smart grouping), 'max-parallel' (one task per parallel group), 'sequential' (all in one task)."
+						}
+					},
+					"required": [
+						"parentTaskId",
+						"architectOutput"
 					]
 				}
 			}
@@ -1480,6 +1627,9 @@
 					"codebase",
 					"searchResults",
 					"orchestrator_addPlanTask",
+					"orchestrator_expandImplementation",
+					"orchestrator_savePlan",
+					"orchestrator_listAgents",
 					"orchestrator_listWorkers",
 					"orchestrator_sendMessage",
 					"orchestrator_deploy"
@@ -1924,6 +2074,90 @@
 				"when": "debugType == 'vscode-chat-replay'",
 				"locations": [
 					"panel"
+				]
+			},
+			{
+				"id": "github.copilot.workflowPlanner",
+				"name": "workflowPlanner",
+				"fullName": "Workflow Planner",
+				"description": "Coordinate multi-agent workflows and parallel task execution",
+				"when": "!github.copilot.interactiveSession.disabled",
+				"sampleRequest": "deploy my-plan",
+				"locations": [
+					"panel"
+				],
+				"modes": [
+					"ask"
+				]
+			},
+			{
+				"id": "github.copilot.orchestrator",
+				"name": "orchestrator",
+				"fullName": "Orchestrator",
+				"description": "Coordinate multi-agent workflows and parallel task execution",
+				"when": "!github.copilot.interactiveSession.disabled",
+				"sampleRequest": "deploy my-plan",
+				"locations": [
+					"panel"
+				],
+				"modes": [
+					"ask"
+				]
+			},
+			{
+				"id": "github.copilot.stepplanner",
+				"name": "stepplanner",
+				"fullName": "Step Planner",
+				"description": "Create detailed step-by-step research plans for single tasks",
+				"when": "!github.copilot.interactiveSession.disabled",
+				"sampleRequest": "Research how to implement OAuth2",
+				"locations": [
+					"panel"
+				],
+				"modes": [
+					"ask"
+				]
+			},
+			{
+				"id": "github.copilot.planner",
+				"name": "planner",
+				"fullName": "Planner",
+				"description": "Create high-level workflow plans for complex tasks",
+				"when": "!github.copilot.interactiveSession.disabled",
+				"sampleRequest": "Fix bug #1234 - login fails for enterprise users",
+				"locations": [
+					"panel"
+				],
+				"modes": [
+					"ask"
+				]
+			},
+			{
+				"id": "github.copilot.architect",
+				"name": "architect",
+				"fullName": "Architect",
+				"description": "Design technical implementations with file-level specificity",
+				"when": "!github.copilot.interactiveSession.disabled",
+				"sampleRequest": "Design the implementation for user authentication",
+				"locations": [
+					"panel"
+				],
+				"modes": [
+					"ask"
+				]
+			},
+			{
+				"id": "github.copilot.reviewer",
+				"name": "reviewer",
+				"fullName": "Reviewer",
+				"description": "Review code changes for quality and correctness",
+				"when": "!github.copilot.interactiveSession.disabled",
+				"sampleRequest": "Review my recent changes",
+				"locations": [
+					"panel"
+				],
+				"modes": [
+					"ask"
 				]
 			}
 		],
@@ -5316,9 +5550,29 @@
 		],
 		"chatAgents": [
 			{
-				"name": "Plan",
-				"path": "./assets/agents/Plan.agent.md",
-				"description": "Researches a task to create multi-step plans"
+				"name": "Orchestrator",
+				"path": "./assets/agents/Orchestrator.agent.md",
+				"description": "Break down complex tasks into manageable sub-tasks and delegate to specialized agents"
+			},
+			{
+				"name": "WorkflowPlanner",
+				"path": "./assets/agents/WorkflowPlanner.agent.md",
+				"description": "Create high-level workflow plans for complex development tasks"
+			},
+			{
+				"name": "Planner",
+				"path": "./assets/agents/StepPlanner.agent.md",
+				"description": "Create high-level multi step plans for single workflow step"
+			},
+			{
+				"name": "Architect",
+				"path": "./assets/agents/Architect.agent.md",
+				"description": "Design technical implementations with file-level specificity"
+			},
+			{
+				"name": "Reviewer",
+				"path": "./assets/agents/Reviewer.agent.md",
+				"description": "Review code changes for quality, correctness, and best practices"
 			}
 		],
 		"chatPromptFiles": [

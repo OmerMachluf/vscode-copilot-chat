@@ -5,12 +5,9 @@
 
 import * as net from 'net';
 import * as vscode from 'vscode';
-import { ChatLocation } from '../../platform/chat/common/commonTypes';
-import { Emitter } from '../../util/vs/base/common/event';
+import { CancellationTokenSource } from '../../util/vs/base/common/cancellation';
 import { IInstantiationService } from '../../util/vs/platform/instantiation/common/instantiation';
-import { Intent } from '../common/constants';
-import { IIntentService } from '../intents/node/intentService';
-import { ChatTelemetryBuilder } from '../prompt/node/chatParticipantTelemetry';
+import { IAgentRunner } from './agentRunner';
 
 export async function activateWorker(context: vscode.ExtensionContext, instantiationService?: IInstantiationService) {
 	console.log('Copilot Worker Activated!');
@@ -19,7 +16,7 @@ export async function activateWorker(context: vscode.ExtensionContext, instantia
 	try {
 		const fs = require('fs');
 		const path = require('path');
-		const logPath = path.join(vscode.workspace.workspaceFolders?.[0].uri.fsPath || '', 'worker_debug.log');
+		const logPath = path.join(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '', 'worker_debug.log');
 		fs.writeFileSync(logPath, `Worker activated at ${new Date().toISOString()}\nEnv PORT: ${process.env.COPILOT_ORCHESTRATOR_PORT}\n`);
 	} catch (e) {
 		console.error('Failed to write debug log', e);
@@ -50,7 +47,9 @@ export async function activateWorker(context: vscode.ExtensionContext, instantia
 		} catch (e) {
 			console.error('Failed to parse message', e);
 		}
-	}); socket.on('error', (err) => {
+	});
+
+	socket.on('error', (err) => {
 		console.error('Socket error', err);
 	});
 
@@ -74,7 +73,9 @@ export async function activateWorker(context: vscode.ExtensionContext, instantia
 	// Watch for file changes
 	const watcher = vscode.workspace.createFileSystemWatcher('**/*');
 	const sendChange = (changeType: string, uri: vscode.Uri) => {
-		if (uri.fsPath.includes('.git') || uri.fsPath.includes('PLAN.md')) return;
+		if (uri.fsPath.includes('.git') || uri.fsPath.includes('PLAN.md')) {
+			return;
+		}
 		const relativePath = vscode.workspace.asRelativePath(uri);
 		socket.write(JSON.stringify({ type: 'change', changeType, path: relativePath }) + '\n');
 	};
@@ -148,57 +149,37 @@ async function handleMessage(msg: any, socket: net.Socket, instantiationService?
 		socket.write(JSON.stringify({ type: 'ack', message: `Received: ${msg.message}` }));
 	} else if (msg.type === 'task' && instantiationService) {
 		try {
-			const intentService = instantiationService.invokeFunction(accessor => accessor.get(IIntentService));
-			const intent = intentService.getIntent(Intent.Agent, ChatLocation.Panel);
+			// Use IAgentRunner for proper agent execution with all tools enabled
+			const agentRunner = instantiationService.invokeFunction(accessor => accessor.get(IAgentRunner));
 
-			if (intent) {
-				const stream = new SocketChatResponseStream(socket);
-				const tokenSource = new vscode.CancellationTokenSource();
+			// Get the default language model
+			const models = await vscode.lm.selectChatModels({ family: 'gpt-4o' });
+			const model = models[0];
 
-				// Mock Conversation and Request
-				// This is a best-effort mock. Real implementation requires more context.
-				const conversation: any = {
-					sessionId: 'worker-session',
-					turns: []
-				};
+			if (!model) {
+				socket.write(JSON.stringify({ type: 'error', error: 'No language model available' }) + '\n');
+				return;
+			}
 
-				const request: any = {
-					prompt: msg.task,
-					variables: {},
-					references: [],
-					toolReferences: [],
-					location: ChatLocation.Panel,
-					command: 'agent'
-				};
+			const stream = new SocketChatResponseStream(socket);
+			const tokenSource = new CancellationTokenSource();
 
-				const chatTelemetry = instantiationService.createInstance(ChatTelemetryBuilder,
-					Date.now(),
-					conversation.sessionId,
-					undefined, // documentContext
-					true, // firstTurn
-					request
-				);
+			// Run the agent with full tool capabilities
+			const result = await agentRunner.run({
+				prompt: msg.task,
+				model,
+				token: tokenSource.token,
+				suggestedFiles: msg.suggestedFiles,
+				additionalInstructions: msg.additionalInstructions,
+			}, stream);
 
-				// We need to call handleRequest.
-				// Note: This might fail if the intent expects specific properties on the conversation or request.
-				// But it's worth a try.
-
-				if (typeof intent.handleRequest === 'function') {
-					await intent.handleRequest(
-						conversation,
-						request,
-						stream,
-						tokenSource.token,
-						undefined, // documentContext
-						'agent',
-						ChatLocation.Panel,
-						chatTelemetry,
-						new Emitter<boolean>().event
-					);
-				}
+			if (result.success) {
+				socket.write(JSON.stringify({ type: 'complete', response: result.response }) + '\n');
+			} else {
+				socket.write(JSON.stringify({ type: 'error', error: result.error }) + '\n');
 			}
 		} catch (e) {
-			socket.write(JSON.stringify({ type: 'error', error: String(e) }));
+			socket.write(JSON.stringify({ type: 'error', error: String(e) }) + '\n');
 		}
 	}
 }

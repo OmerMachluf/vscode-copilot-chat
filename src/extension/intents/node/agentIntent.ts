@@ -129,6 +129,9 @@ export class AgentIntent extends EditCodeIntent {
 
 	override readonly id = AgentIntent.ID;
 
+	// Support Agent location for headless/orchestrator worker execution
+	override readonly locations = [ChatLocation.Editor, ChatLocation.Panel, ChatLocation.Agent];
+
 	constructor(
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IEndpointProvider endpointProvider: IEndpointProvider,

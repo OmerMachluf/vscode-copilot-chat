@@ -18,6 +18,7 @@ import { GenerateCodeIntent } from './generateCodeIntent';
 import { NewWorkspaceIntent } from './newIntent';
 import { NewNotebookIntent } from './newNotebookIntent.contribution';
 import { NotebookEditorIntent } from './notebookEditorIntent';
+import { ArchitectIntent, OrchestratorIntent, PlannerIntent, ReviewerIntent } from './orchestratorIntents';
 import { ReviewIntent } from './reviewIntent';
 import { SearchIntent } from './searchIntent';
 import { SearchKeywordsIntent } from './searchKeywordsIntent';
@@ -53,5 +54,10 @@ IntentRegistry.setIntents([
 	new SyncDescriptor(SearchKeywordsIntent),
 	new SyncDescriptor(AskAgentIntent),
 	new SyncDescriptor(NotebookEditorIntent),
-	new SyncDescriptor(InlineChatIntent)
+	new SyncDescriptor(InlineChatIntent),
+	// Multi-agent orchestration intents
+	new SyncDescriptor(OrchestratorIntent),
+	new SyncDescriptor(PlannerIntent),
+	new SyncDescriptor(ArchitectIntent),
+	new SyncDescriptor(ReviewerIntent)
 ]);

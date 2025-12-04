@@ -603,11 +603,17 @@ USER                    PLANNER              ORCHESTRATOR
 - `src/extension/orchestrator/workerSession.ts`
 
 **Deliverables:**
-- [ ] Dependencies field on tasks
-- [ ] Event emitter for task lifecycle
-- [ ] DAG-based task deployment
-- [ ] Multiple plan support
-- [ ] Dashboard shows dependencies
+- [x] Dependencies field on tasks
+- [x] Event emitter for task lifecycle
+- [x] DAG-based task deployment
+- [x] Multiple plan support
+- [x] Dashboard shows dependencies (SVG graph view with critical path)
+
+**Implementation Notes (Completed Nov 27, 2025):**
+- Added `TaskStatus`, `PlanStatus`, `OrchestratorEvent` types
+- Enhanced `WorkerTask` with `dependencies[]`, `agent`, `targetFiles[]`, `status`
+- Implemented `getReadyTasks()`, `_deployReadyTasks()`, `_onTaskCompleted()`
+- Added plan lifecycle: `startPlan()`, `pausePlan()`, `resumePlan()`
 
 ---
 
@@ -649,11 +655,17 @@ USER                    PLANNER              ORCHESTRATOR
 - `src/extension/orchestrator/orchestratorServiceV2.ts` (use instruction service)
 
 **Deliverables:**
-- [ ] AgentInstructionService
-- [ ] Global instructions loading
-- [ ] Agent-specific instructions loading
-- [ ] Instruction composition
-- [ ] Worker receives composed instructions
+- [x] AgentInstructionService
+- [x] Global instructions loading
+- [x] Agent-specific instructions loading
+- [x] Instruction composition
+- [x] Worker receives composed instructions
+
+**Implementation Notes (Completed Nov 27, 2025):**
+- Created `src/extension/orchestrator/agentInstructionService.ts`
+- Loads from: `.github/instructions/`, `.github/agents/{id}/`, `assets/agents/`
+- Parses YAML frontmatter from `.agent.md` files for agent definitions
+- Injected into OrchestratorServiceV2 via constructor
 
 ---
 
@@ -695,10 +707,16 @@ USER                    PLANNER              ORCHESTRATOR
 - `src/extension/tools/orchestrator/listAgentsTool.ts`
 
 **Deliverables:**
-- [ ] AgentDiscoveryService
-- [ ] Built-in agent discovery
-- [ ] Repo agent discovery
-- [ ] `list_available_agents` tool for Planner
+- [x] AgentDiscoveryService
+- [x] Built-in agent discovery
+- [x] Repo agent discovery
+- [x] `list_available_agents` tool for Planner
+
+**Implementation Notes (Completed Nov 27, 2025):**
+- Created `src/extension/orchestrator/agentDiscoveryService.ts`
+- Added `ListAgentsTool` in `src/extension/tools/node/orchestratorTools.ts`
+- Added `OrchestratorListAgents` to ToolName enum in `toolNames.ts`
+- Discovers from `assets/agents/*.agent.md` and `.github/agents/*/`
 
 ---
 
@@ -744,11 +762,17 @@ USER                    PLANNER              ORCHESTRATOR
 - `src/extension/orchestrator/orchestratorServiceV2.ts` (plan import)
 
 **Deliverables:**
-- [ ] Planner.agent.md with workflow templates
-- [ ] Structured plan output format
-- [ ] Plan validation
-- [ ] `save_plan` tool
-- [ ] Plan import into orchestrator
+- [x] Planner.agent.md with workflow templates (created in assets/agents/)
+- [x] Structured plan output format (YAML-based in Planner.agent.md)
+- [x] Plan validation (validatePlan() in orchestratorTools.ts)
+- [x] `save_plan` tool (SavePlanTool in orchestratorTools.ts)
+- [x] Plan import into orchestrator (via createPlan + addTask)
+
+**Implementation Notes (Completed Nov 27, 2025):**
+- Added `SavePlanTool` with full plan validation (circular deps, missing refs, etc.)
+- Tool accepts structured JSON with tasks, dependencies, agents, targetFiles
+- Validates and maps task IDs from plan definition to orchestrator task IDs
+- Supports auto-start option to begin execution immediately
 
 ---
 
@@ -793,10 +817,15 @@ USER                    PLANNER              ORCHESTRATOR
 - `assets/agents/Architect.agent.md`
 
 **Deliverables:**
-- [ ] Architect.agent.md
-- [ ] Implementation plan output format
-- [ ] Target files specification
-- [ ] Parallelization hints
+- [x] Architect.agent.md (created in assets/agents/)
+- [x] Implementation plan output format (YAML template in Architect.agent.md)
+- [x] Target files specification (files_to_modify, files_to_create)
+- [x] Parallelization hints (parallelization groups in YAML output)
+
+**Implementation Notes (Completed Nov 27, 2025):**
+- Architect.agent.md has structured YAML output for implementation plans
+- Includes file paths, changes, test strategy, and parallelization groups
+- Worker can parse YAML output and update task's targetFiles property
 
 ---
 
@@ -832,9 +861,15 @@ USER                    PLANNER              ORCHESTRATOR
 - `assets/agents/Reviewer.agent.md`
 
 **Deliverables:**
-- [ ] Reviewer.agent.md
-- [ ] Review output format
-- [ ] Integration with PR workflow
+- [x] Reviewer.agent.md (created in assets/agents/)
+- [x] Review output format (YAML with status, comments, suggestions)
+- [x] Integration with PR workflow (completeWorker + PR creation)
+
+**Implementation Notes (Completed Nov 27, 2025):**
+- Reviewer.agent.md has structured YAML output for code reviews
+- Includes status (approved/changes_requested/needs_discussion)
+- Has severity levels, blocking issues, and suggestions
+- **PR Integration (Nov 27):** Workflow can now create PRs via `completeWorker({ createPullRequest: true })`
 
 ---
 
@@ -869,11 +904,19 @@ USER                    PLANNER              ORCHESTRATOR
 - `src/extension/orchestrator/orchestratorServiceV2.ts`
 
 **Deliverables:**
-- [ ] File overlap detection
-- [ ] Parallel deployment logic
-- [ ] Branch-per-parallel-task
-- [ ] Merge strategy
-- [ ] Conflict notification
+- [x] File overlap detection (_canRunInParallel, _normalizeFilePath)
+- [x] Parallel deployment logic (_getParallelizableTasks, _deployReadyTasks)
+- [ ] Branch-per-parallel-task (deferred - requires git worktree integration)
+- [ ] Merge strategy (deferred - requires git integration)
+- [ ] Conflict notification (deferred - requires git integration)
+
+**Implementation Notes (Partial - Nov 27, 2025):**
+- Added `_canRunInParallel()` - checks targetFiles for overlap
+- Added `_normalizeFilePath()` - case-insensitive path comparison
+- Added `_getParallelizableTasks()` - filters ready tasks to those safe to parallelize
+- Updated `_deployReadyTasks()` to use smart parallelization
+- Falls back to sequential execution if tasks have no targetFiles
+- Git branch/merge features deferred to future iteration
 
 ---
 
@@ -904,10 +947,28 @@ USER                    PLANNER              ORCHESTRATOR
 - `src/extension/orchestrator/dashboard/WorkerDashboardV2.ts`
 
 **Deliverables:**
-- [ ] Plan list view
-- [ ] Task dependency visualization
-- [ ] Status indicators
-- [ ] Critical path highlighting
+- [x] Plan list view (already implemented in WorkerDashboardV2)
+- [x] Task dependency visualization (shows "Depends on: X, Y" with satisfied styling)
+- [x] Status indicators (colors for pending/queued/running/completed/failed/blocked)
+- [x] Critical path highlighting (calculateCriticalPath function + orange border)
+- [x] SVG dependency graph view (toggle between list and graph views)
+- [x] PR creation workflow (Complete + PR button using gh CLI)
+
+**Implementation Notes (Completed Nov 27, 2025):**
+- Added `calculateCriticalPath()` function to find longest dependency chain
+- Critical path tasks marked with orange left border and ⚡ badge
+- Traces back from leaf tasks to find the critical chain
+- Dashboard already had plan list, status colors, and dependency display
+- **Graph View (Nov 27):** Added SVG-based dependency graph with:
+  - Layered layout algorithm (tasks grouped by dependency depth)
+  - Curved edge paths with directional arrows
+  - Color-coded edges (satisfied=green, critical=orange)
+  - Interactive nodes showing task name, status, and agent
+- **PR Workflow (Nov 27):** Enhanced `completeWorker()` with:
+  - `CompleteWorkerOptions` interface (createPullRequest, prTitle, prDescription)
+  - `_createPullRequest()` helper using `gh pr create` CLI
+  - "Complete + PR" button in dashboard worker cards
+  - Auto-opens PR URL after creation
 
 ---
 
@@ -952,36 +1013,36 @@ USER                    PLANNER              ORCHESTRATOR
 ## Success Criteria
 
 ### Phase 1 Complete When:
-- [ ] Tasks can have dependencies
-- [ ] Orchestrator deploys based on DAG
-- [ ] Multiple plans can run concurrently
-- [ ] Events flow properly
+- [x] Tasks can have dependencies
+- [x] Orchestrator deploys based on DAG
+- [x] Multiple plans can run concurrently
+- [x] Events flow properly
 
 ### Phase 2 Complete When:
-- [ ] Instructions loaded from folders
-- [ ] Global + agent-specific composition works
-- [ ] Workers receive correct instructions
+- [x] Instructions loaded from folders
+- [x] Global + agent-specific composition works
+- [x] Workers receive correct instructions
 
 ### Phase 3 Complete When:
-- [ ] All agents discoverable
-- [ ] Planner can list agents
-- [ ] Agent capabilities exposed
+- [x] All agents discoverable
+- [x] Planner can list agents
+- [x] Agent capabilities exposed
 
 ### Phase 4 Complete When:
-- [ ] Planner creates valid plans
-- [ ] Plans importable to orchestrator
-- [ ] User can review/approve plans
+- [x] Planner creates valid plans
+- [x] Plans importable to orchestrator
+- [x] User can review/approve plans
 
 ### Phase 5 Complete When:
-- [ ] Architect outputs implementation plans
-- [ ] Parallelization hints provided
-- [ ] Test strategy included
+- [x] Architect outputs implementation plans
+- [x] Parallelization hints provided
+- [x] Test strategy included
 
 ### Full System Complete When:
-- [ ] End-to-end: User request → Plan → Execute → PR
-- [ ] Multiple plans concurrent
-- [ ] Parallel task execution working
-- [ ] Dashboard shows everything
+- [x] End-to-end: User request → Plan → Execute → PR
+- [x] Multiple plans concurrent
+- [x] Parallel task execution working
+- [x] Dashboard shows everything
 
 ---
 

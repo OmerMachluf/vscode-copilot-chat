@@ -10,12 +10,35 @@ import * as vscode from 'vscode';
 import { Emitter, Event } from '../../util/vs/base/common/event';
 import { Disposable } from '../../util/vs/base/common/lifecycle';
 import { generateUuid } from '../../util/vs/base/common/uuid';
-import { IInstantiationService, createDecorator } from '../../util/vs/platform/instantiation/common/instantiation';
-import { Intent } from '../common/constants';
-import { ChatParticipantRequestHandler } from '../prompt/node/chatParticipantRequestHandler';
+import { createDecorator } from '../../util/vs/platform/instantiation/common/instantiation';
+import { IAgentInstructionService } from './agentInstructionService';
+import { IAgentRunner } from './agentRunner';
 import { SerializedWorkerState, WorkerResponseStream, WorkerSession, WorkerSessionState } from './workerSession';
 
 export const IOrchestratorService = createDecorator<IOrchestratorService>('orchestratorService');
+
+// ============================================================================
+// Event Types
+// ============================================================================
+
+/**
+ * Events emitted by the orchestrator for task lifecycle
+ */
+export type OrchestratorEvent =
+	| { type: 'task.queued'; planId: string | undefined; taskId: string }
+	| { type: 'task.started'; planId: string | undefined; taskId: string; workerId: string }
+	| { type: 'task.completed'; planId: string | undefined; taskId: string; workerId: string }
+	| { type: 'task.failed'; planId: string | undefined; taskId: string; error: string }
+	| { type: 'task.blocked'; planId: string | undefined; taskId: string; reason: string }
+	| { type: 'worker.needs_approval'; workerId: string; approvalId: string }
+	| { type: 'worker.idle'; workerId: string }
+	| { type: 'plan.started'; planId: string }
+	| { type: 'plan.completed'; planId: string }
+	| { type: 'plan.failed'; planId: string; error: string };
+
+// ============================================================================
+// Data Models
+// ============================================================================
 
 /**
  * Task context - files and instructions to help the worker
@@ -28,6 +51,11 @@ export interface WorkerTaskContext {
 }
 
 /**
+ * Task status for tracking execution state
+ */
+export type TaskStatus = 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'blocked';
+
+/**
  * Task definition for a worker
  */
 export interface WorkerTask {
@@ -35,8 +63,11 @@ export interface WorkerTask {
 	/** Human-readable name used for branch naming */
 	readonly name: string;
 	readonly description: string;
-	readonly priority: 'high' | 'normal' | 'low';
-	readonly dependencies?: string[]; // IDs of tasks that must complete first
+	readonly priority: 'critical' | 'high' | 'normal' | 'low';
+	/** IDs of tasks that must complete first */
+	readonly dependencies: string[];
+	/** Tasks in same parallelGroup can potentially run together (if no file overlap) */
+	readonly parallelGroup?: string;
 	readonly context?: WorkerTaskContext;
 	/** Base branch to create the worktree from (defaults to main/master) */
 	readonly baseBranch?: string;
@@ -44,7 +75,24 @@ export interface WorkerTask {
 	readonly planId?: string;
 	/** Language model ID to use for this task (uses default if not specified) */
 	readonly modelId?: string;
+	/** Agent to use for this task (defaults to @agent) */
+	readonly agent?: string;
+	/** Target files this task will touch (for parallelization detection) */
+	readonly targetFiles?: string[];
+	/** Current execution status */
+	status: TaskStatus;
+	/** Worker ID if assigned */
+	workerId?: string;
+	/** Completion timestamp */
+	completedAt?: number;
+	/** Error message if failed */
+	error?: string;
 }
+
+/**
+ * Plan status
+ */
+export type PlanStatus = 'draft' | 'active' | 'paused' | 'completed' | 'failed';
 
 /**
  * Plan definition - a collection of related tasks
@@ -56,6 +104,13 @@ export interface OrchestratorPlan {
 	readonly createdAt: number;
 	/** Base branch for all tasks in this plan (can be overridden per task) */
 	readonly baseBranch?: string;
+	/** Plan execution status */
+	status: PlanStatus;
+	/** Metadata from planner */
+	metadata?: {
+		sourceRequest?: string;
+		methodology?: string;
+	};
 }
 
 /**
@@ -64,7 +119,7 @@ export interface OrchestratorPlan {
 export interface CreateTaskOptions {
 	/** Human-readable name (used for branch naming) */
 	name?: string;
-	priority?: 'high' | 'normal' | 'low';
+	priority?: 'critical' | 'high' | 'normal' | 'low';
 	context?: WorkerTaskContext;
 	/** Base branch to create worktree from */
 	baseBranch?: string;
@@ -72,6 +127,14 @@ export interface CreateTaskOptions {
 	planId?: string;
 	/** Language model ID to use for this task */
 	modelId?: string;
+	/** IDs of tasks that must complete before this one */
+	dependencies?: string[];
+	/** Tasks in same parallelGroup can potentially run together */
+	parallelGroup?: string;
+	/** Agent to assign (@agent, @architect, @reviewer, or custom) */
+	agent?: string;
+	/** Target files this task will touch */
+	targetFiles?: string[];
 }
 
 /**
@@ -96,10 +159,16 @@ export interface IOrchestratorService {
 	/** Event fired when state changes */
 	readonly onDidChangeWorkers: Event<void>;
 
+	/** Event fired for task/plan lifecycle events */
+	readonly onOrchestratorEvent: Event<OrchestratorEvent>;
+
 	// --- Plan Management ---
 
 	/** Get all plans */
 	getPlans(): readonly OrchestratorPlan[];
+
+	/** Get a plan by ID */
+	getPlanById(planId: string): OrchestratorPlan | undefined;
 
 	/** Get the active plan ID */
 	getActivePlanId(): string | undefined;
@@ -113,6 +182,15 @@ export interface IOrchestratorService {
 	/** Delete a plan and its pending tasks */
 	deletePlan(planId: string): void;
 
+	/** Start executing a plan (deploys tasks based on dependencies) */
+	startPlan(planId: string): Promise<void>;
+
+	/** Pause a plan (no new tasks will be deployed) */
+	pausePlan(planId: string): void;
+
+	/** Resume a paused plan */
+	resumePlan(planId: string): void;
+
 	// --- Task Management ---
 
 	/** Get all worker states */
@@ -123,6 +201,9 @@ export interface IOrchestratorService {
 
 	/** Get tasks for a specific plan (undefined = ad-hoc tasks) */
 	getTasks(planId?: string): readonly WorkerTask[];
+
+	/** Get a task by ID */
+	getTaskById(taskId: string): WorkerTask | undefined;
 
 	/** Get the current plan's tasks (backward compatible) */
 	getPlan(): readonly WorkerTask[];
@@ -138,6 +219,9 @@ export interface IOrchestratorService {
 
 	/** Remove a task */
 	removeTask(taskId: string): void;
+
+	/** Get tasks that are ready to run (dependencies satisfied) */
+	getReadyTasks(planId?: string): readonly WorkerTask[];
 
 	// --- Worker Management ---
 
@@ -163,10 +247,38 @@ export interface IOrchestratorService {
 	concludeWorker(workerId: string): void;
 
 	/** Complete a worker: push to origin and clean up worktree */
-	completeWorker(workerId: string): Promise<void>;
+	completeWorker(workerId: string, options?: CompleteWorkerOptions): Promise<CompleteWorkerResult>;
 
 	// Legacy compatibility
 	getWorkers(): Record<string, any>;
+}
+
+/**
+ * Options for completing a worker
+ */
+export interface CompleteWorkerOptions {
+	/** Create a pull request after pushing (default: false) */
+	createPullRequest?: boolean;
+	/** PR title (defaults to task name) */
+	prTitle?: string;
+	/** PR description (defaults to task description) */
+	prDescription?: string;
+	/** Base branch for the PR (defaults to task's baseBranch or main/master) */
+	prBaseBranch?: string;
+}
+
+/**
+ * Result of completing a worker
+ */
+export interface CompleteWorkerResult {
+	/** Branch name that was pushed */
+	branchName: string;
+	/** Whether a PR was created */
+	prCreated: boolean;
+	/** URL of the created PR (if any) */
+	prUrl?: string;
+	/** PR number (if created) */
+	prNumber?: number;
 }
 
 /**
@@ -176,7 +288,7 @@ export interface IOrchestratorService {
 export class OrchestratorService extends Disposable implements IOrchestratorService {
 	declare readonly _serviceBrand: undefined;
 
-	private static readonly STATE_VERSION = 2;
+	private static readonly STATE_VERSION = 3; // Bumped for new fields
 	private static readonly STATE_FILE_NAME = '.copilot-orchestrator-state.json';
 
 	private readonly _plans: OrchestratorPlan[] = [];
@@ -191,8 +303,12 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 	private readonly _onDidChangeWorkers = this._register(new Emitter<void>());
 	public readonly onDidChangeWorkers: Event<void> = this._onDidChangeWorkers.event;
 
+	private readonly _onOrchestratorEvent = this._register(new Emitter<OrchestratorEvent>());
+	public readonly onOrchestratorEvent: Event<OrchestratorEvent> = this._onOrchestratorEvent.event;
+
 	constructor(
-		@IInstantiationService private readonly _instantiationService: IInstantiationService,
+		@IAgentInstructionService private readonly _agentInstructionService: IAgentInstructionService,
+		@IAgentRunner private readonly _agentRunner: IAgentRunner,
 	) {
 		super();
 		// Restore state on initialization
@@ -355,6 +471,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			description,
 			createdAt: Date.now(),
 			baseBranch,
+			status: 'draft',
 		};
 		this._plans.push(plan);
 		this._activePlanId = plan.id;
@@ -381,6 +498,56 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		}
 	}
 
+	public getPlanById(planId: string): OrchestratorPlan | undefined {
+		return this._plans.find(p => p.id === planId);
+	}
+
+	/**
+	 * Start executing a plan - deploys tasks whose dependencies are satisfied
+	 */
+	public async startPlan(planId: string): Promise<void> {
+		const plan = this._plans.find(p => p.id === planId);
+		if (!plan) {
+			throw new Error(`Plan ${planId} not found`);
+		}
+
+		plan.status = 'active';
+		this._onOrchestratorEvent.fire({ type: 'plan.started', planId });
+		this._onDidChangeWorkers.fire();
+		this._saveState();
+
+		// Deploy all tasks with satisfied dependencies
+		await this._deployReadyTasks(planId);
+	}
+
+	/**
+	 * Pause a plan - no new tasks will be auto-deployed
+	 */
+	public pausePlan(planId: string): void {
+		const plan = this._plans.find(p => p.id === planId);
+		if (plan && plan.status === 'active') {
+			plan.status = 'paused';
+			this._onDidChangeWorkers.fire();
+			this._saveState();
+		}
+	}
+
+	/**
+	 * Resume a paused plan
+	 */
+	public resumePlan(planId: string): void {
+		const plan = this._plans.find(p => p.id === planId);
+		if (plan && plan.status === 'paused') {
+			plan.status = 'active';
+			this._onDidChangeWorkers.fire();
+			this._saveState();
+			// Deploy any ready tasks
+			this._deployReadyTasks(planId).catch((err: Error) => {
+				console.error('Failed to deploy ready tasks after resume:', err);
+			});
+		}
+	}
+
 	// --- Task/Worker State ---
 
 	public getWorkerStates(): WorkerSessionState[] {
@@ -395,8 +562,36 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		return this._tasks.filter(t => t.planId === planId);
 	}
 
+	public getTaskById(taskId: string): WorkerTask | undefined {
+		return this._tasks.find(t => t.id === taskId);
+	}
+
 	public getPlan(): readonly WorkerTask[] {
 		return this.getTasks(this._activePlanId);
+	}
+
+	/**
+	 * Get tasks that are ready to run (pending/queued with all dependencies completed)
+	 */
+	public getReadyTasks(planId?: string): readonly WorkerTask[] {
+		const targetPlanId = planId ?? this._activePlanId;
+		const planTasks = this._tasks.filter(t => t.planId === targetPlanId);
+
+		return planTasks.filter(task => {
+			// Must be pending, or queued without an active worker (stuck from failed deployment)
+			if (task.status !== 'pending') {
+				if (task.status === 'queued' && !task.workerId) {
+					// Queued but no worker - was stuck from a failed deployment attempt
+				} else {
+					return false;
+				}
+			}
+			// All dependencies must be completed
+			return task.dependencies.every(depId => {
+				const depTask = this._tasks.find(t => t.id === depId);
+				return depTask?.status === 'completed';
+			});
+		});
 	}
 
 	public addTask(description: string, options: CreateTaskOptions = {}): WorkerTask {
@@ -407,6 +602,10 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			baseBranch,
 			planId = this._activePlanId,
 			modelId,
+			dependencies = [],
+			parallelGroup,
+			agent = '@agent',
+			targetFiles,
 		} = options;
 
 		const task: WorkerTask = {
@@ -414,10 +613,15 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			name: this._sanitizeBranchName(name),
 			description,
 			priority,
+			dependencies,
+			parallelGroup,
 			context,
 			baseBranch,
 			planId,
 			modelId,
+			agent,
+			targetFiles,
+			status: 'pending',
 		};
 		this._tasks.push(task);
 		this._onDidChangeWorkers.fire();
@@ -450,65 +654,303 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 	// --- Worker Deployment ---
 
+	// ============================================================================
+	// Smart Parallelization (Phase 7)
+	// ============================================================================
+
+	/**
+	 * Check if two tasks can run in parallel safely (no file overlap)
+	 */
+	private _canRunInParallel(taskA: WorkerTask, taskB: WorkerTask): boolean {
+		// If either task has no target files, we can't guarantee safety
+		if (!taskA.targetFiles?.length || !taskB.targetFiles?.length) {
+			return false;
+		}
+
+		// Check for file overlap
+		const filesA = new Set(taskA.targetFiles.map(f => this._normalizeFilePath(f)));
+		for (const file of taskB.targetFiles) {
+			if (filesA.has(this._normalizeFilePath(file))) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * Normalize file path for comparison
+	 */
+	private _normalizeFilePath(filePath: string): string {
+		return filePath.toLowerCase().replace(/\\/g, '/');
+	}
+
+	/**
+	 * Get tasks from ready list that can safely run in parallel with already-running tasks
+	 */
+	private _getParallelizableTasks(readyTasks: readonly WorkerTask[], planId: string): WorkerTask[] {
+		// Get currently running tasks for this plan
+		const runningTasks = this._tasks.filter(
+			t => t.planId === planId && t.status === 'running'
+		);
+
+		if (runningTasks.length === 0) {
+			// No running tasks, can start any ready task
+			return [...readyTasks];
+		}
+
+		// Filter ready tasks to only those that can run in parallel with all running tasks
+		const parallelizable: WorkerTask[] = [];
+
+		for (const ready of readyTasks) {
+			// Check if this task can run with all currently running tasks
+			const canRunWithAll = runningTasks.every(running =>
+				this._canRunInParallel(ready, running)
+			);
+
+			// Also check against other parallelizable tasks we've already selected
+			const canRunWithSelected = parallelizable.every(selected =>
+				this._canRunInParallel(ready, selected)
+			);
+
+			if (canRunWithAll && canRunWithSelected) {
+				parallelizable.push(ready);
+			}
+		}
+
+		return parallelizable;
+	}
+
+	/**
+	 * Deploy ready tasks for a plan (internal - called when dependencies satisfied)
+	 * Uses smart parallelization to only deploy tasks that won't conflict.
+	 */
+	private async _deployReadyTasks(planId: string): Promise<void> {
+		const plan = this._plans.find(p => p.id === planId);
+		if (!plan || plan.status !== 'active') {
+			return;
+		}
+
+		const readyTasks = this.getReadyTasks(planId);
+
+		// Use smart parallelization to filter to safe tasks
+		const parallelizableTasks = this._getParallelizableTasks(readyTasks, planId);
+
+		// If no tasks can be parallelized but some are ready, deploy at least one
+		// This handles the case where tasks have no targetFiles specified
+		const tasksToDeploy = parallelizableTasks.length > 0
+			? parallelizableTasks
+			: readyTasks.slice(0, 1); // Deploy just the first one to be safe
+
+		for (const task of tasksToDeploy) {
+			try {
+				await this.deploy(task.id);
+			} catch (error) {
+				console.error(`Failed to deploy task ${task.id}:`, error);
+			}
+		}
+
+		// Check if plan is complete (no pending/running tasks)
+		this._checkPlanCompletion(planId);
+	}
+
+	/**
+	 * Check if a plan has completed (all tasks done)
+	 */
+	private _checkPlanCompletion(planId: string): void {
+		const plan = this._plans.find(p => p.id === planId);
+		if (!plan || plan.status !== 'active') {
+			return;
+		}
+
+		const planTasks = this._tasks.filter(t => t.planId === planId);
+		const allCompleted = planTasks.every(t => t.status === 'completed');
+		const anyFailed = planTasks.some(t => t.status === 'failed');
+
+		if (anyFailed) {
+			plan.status = 'failed';
+			this._onOrchestratorEvent.fire({ type: 'plan.failed', planId, error: 'One or more tasks failed' });
+			this._onDidChangeWorkers.fire();
+			this._saveState();
+		} else if (allCompleted && planTasks.length > 0) {
+			plan.status = 'completed';
+			this._onOrchestratorEvent.fire({ type: 'plan.completed', planId });
+			this._onDidChangeWorkers.fire();
+			this._saveState();
+		}
+	}
+
+	/**
+	 * Mark a task as blocked (dependencies cannot be satisfied)
+	 */
+	private _checkBlockedTasks(planId: string): void {
+		const planTasks = this._tasks.filter(t => t.planId === planId);
+
+		for (const task of planTasks) {
+			if (task.status !== 'pending') {
+				continue;
+			}
+
+			// Check if any dependency has failed
+			const hasFailedDep = task.dependencies.some(depId => {
+				const depTask = this._tasks.find(t => t.id === depId);
+				return depTask?.status === 'failed';
+			});
+
+			if (hasFailedDep) {
+				task.status = 'blocked';
+				task.error = 'Blocked due to failed dependency';
+				this._onOrchestratorEvent.fire({
+					type: 'task.blocked',
+					planId: task.planId,
+					taskId: task.id,
+					reason: 'Blocked due to failed dependency',
+				});
+			}
+		}
+	}
+
 	public async deploy(taskId?: string): Promise<WorkerSession> {
-		const task = taskId
-			? this._tasks.find(t => t.id === taskId)
-			: this._tasks.find(t => t.planId === this._activePlanId) || this._tasks[0];
+		// Find task - either by ID or first ready task
+		let task: WorkerTask | undefined;
+		if (taskId) {
+			task = this._tasks.find(t => t.id === taskId);
+			// When deploying specific task, also allow 'queued' tasks that may have failed previously
+			if (task && task.status !== 'pending' && task.status !== 'queued') {
+				throw new Error(`Task ${taskId} is not available for deployment (status: ${task.status})`);
+			}
+		} else {
+			// Find first ready task in active plan or any ad-hoc task
+			const readyTasks = this.getReadyTasks(this._activePlanId);
+			task = readyTasks[0] || this._tasks.find(t => !t.planId && t.status === 'pending');
+		}
 
 		if (!task) {
 			throw new Error('No tasks available');
 		}
 
-		// Remove the task from pending
-		const taskIndex = this._tasks.indexOf(task);
-		if (taskIndex >= 0) {
-			this._tasks.splice(taskIndex, 1);
-		}
-
-		// Get the plan for base branch resolution
-		const plan = task.planId ? this._plans.find(p => p.id === task.planId) : undefined;
-		const baseBranch = this._getBaseBranch(task, plan);
-
-		// Create worktree
-		const worktreePath = await this._createWorktree(task.name, baseBranch);
-
-		// Create worker session
-		const worker = new WorkerSession(
-			task.name,
-			task.description,
-			worktreePath,
-			task.planId,
-			baseBranch,
-		);
-
-		this._workers.set(worker.id, worker);
-
-		this._register(worker.onDidChange(() => {
-			this._onDidChangeWorkers.fire();
-			this._saveState();
-		}));
-
-		this._register(worker.onDidComplete(() => {
-			this._saveState();
-		}));
-
-		this._onDidChangeWorkers.fire();
-		this._saveState();
-
-		// Start the worker task asynchronously
-		this._runWorkerTask(worker, task).catch(error => {
-			worker.error(String(error));
+		// Validate dependencies are satisfied
+		const unsatisfiedDeps = task.dependencies.filter(depId => {
+			const depTask = this._tasks.find(t => t.id === depId);
+			return depTask?.status !== 'completed';
 		});
 
-		return worker;
+		if (unsatisfiedDeps.length > 0) {
+			throw new Error(`Task ${task.id} has unsatisfied dependencies: ${unsatisfiedDeps.join(', ')}`);
+		}
+
+		// Update task status
+		const previousStatus = task.status;
+		task.status = 'queued';
+		this._onOrchestratorEvent.fire({ type: 'task.queued', planId: task.planId, taskId: task.id });
+
+		try {
+			// Get the plan for base branch resolution
+			const plan = task.planId ? this._plans.find(p => p.id === task.planId) : undefined;
+			const baseBranch = this._getBaseBranch(task, plan);
+
+			// Create worktree
+			const worktreePath = await this._createWorktree(task.name, baseBranch);
+
+			// Load agent instructions
+			const agentId = task.agent || 'agent';
+			const composedInstructions = await this._agentInstructionService.loadInstructions(agentId);
+
+			// Create worker session with agent instructions
+			const worker = new WorkerSession(
+				task.name,
+				task.description,
+				worktreePath,
+				task.planId,
+				baseBranch,
+				agentId,
+				composedInstructions.instructions,
+			);
+
+			// Link task to worker
+			task.status = 'running';
+			task.workerId = worker.id;
+			this._workers.set(worker.id, worker);
+
+			this._onOrchestratorEvent.fire({
+				type: 'task.started',
+				planId: task.planId,
+				taskId: task.id,
+				workerId: worker.id,
+			});
+
+			this._register(worker.onDidChange(() => {
+				this._onDidChangeWorkers.fire();
+				this._saveState();
+
+				// Check for idle state
+				if (worker.status === 'idle') {
+					this._onOrchestratorEvent.fire({ type: 'worker.idle', workerId: worker.id });
+				}
+			}));
+
+			this._register(worker.onDidComplete(() => {
+				// Update task status when worker completes
+				const linkedTask = this._tasks.find(t => t.workerId === worker.id);
+				if (linkedTask) {
+					linkedTask.status = 'completed';
+					linkedTask.completedAt = Date.now();
+					this._onOrchestratorEvent.fire({
+						type: 'task.completed',
+						planId: linkedTask.planId,
+						taskId: linkedTask.id,
+						workerId: worker.id,
+					});
+
+					// Trigger deployment of dependent tasks
+					if (linkedTask.planId) {
+						this._deployReadyTasks(linkedTask.planId).catch((err: Error) => {
+							console.error('Failed to deploy ready tasks:', err);
+						});
+					}
+				}
+				this._saveState();
+			}));
+
+			this._onDidChangeWorkers.fire();
+			this._saveState();
+
+			// Start the worker task asynchronously
+			this._runWorkerTask(worker, task).catch(error => {
+				// Update task status on error
+				task.status = 'failed';
+				task.error = String(error);
+				this._onOrchestratorEvent.fire({
+					type: 'task.failed',
+					planId: task.planId,
+					taskId: task.id,
+					error: String(error),
+				});
+
+				// Check for blocked tasks and plan failure
+				if (task.planId) {
+					this._checkBlockedTasks(task.planId);
+					this._checkPlanCompletion(task.planId);
+				}
+
+				worker.error(String(error));
+			});
+
+			return worker;
+		} catch (error) {
+			// Reset task status on deployment failure so it can be retried
+			task.status = previousStatus;
+			this._saveState();
+			throw error;
+		}
 	}
 
 	public async deployAll(planId?: string): Promise<WorkerSession[]> {
 		const targetPlanId = planId ?? this._activePlanId;
 		const workers: WorkerSession[] = [];
-		const tasksCopy = this._tasks.filter(t => t.planId === targetPlanId);
+		const readyTasks = this.getReadyTasks(targetPlanId);
 
-		await Promise.all(tasksCopy.map(async (task) => {
+		await Promise.all(readyTasks.map(async (task) => {
 			try {
 				const worker = await this.deploy(task.id);
 				workers.push(worker);
@@ -560,7 +1002,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		}
 	}
 
-	public async completeWorker(workerId: string): Promise<void> {
+	public async completeWorker(workerId: string, options: CompleteWorkerOptions = {}): Promise<CompleteWorkerResult> {
 		const worker = this._workers.get(workerId);
 		if (!worker) {
 			throw new Error(`Worker ${workerId} not found`);
@@ -572,6 +1014,11 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		// Mark worker as completed first - this will break the conversation loop
 		worker.complete();
 
+		const result: CompleteWorkerResult = {
+			branchName,
+			prCreated: false,
+		};
+
 		try {
 			// Commit any uncommitted changes
 			await this._execGit(['add', '-A'], worktreePath);
@@ -579,6 +1026,23 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 			// Push to origin
 			await this._execGit(['push', '-u', 'origin', branchName], worktreePath);
+
+			// Create PR if requested
+			if (options.createPullRequest) {
+				const prResult = await this._createPullRequest(
+					branchName,
+					options.prBaseBranch || worker.baseBranch || this._defaultBaseBranch || 'main',
+					options.prTitle || `[Orchestrator] ${worker.task}`,
+					options.prDescription || `Task completed by Copilot Orchestrator.\n\n**Task:** ${worker.task}`,
+					worktreePath
+				);
+
+				if (prResult) {
+					result.prCreated = true;
+					result.prUrl = prResult.url;
+					result.prNumber = prResult.number;
+				}
+			}
 
 			// Remove the worktree
 			const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -592,10 +1056,79 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			this._onDidChangeWorkers.fire();
 			this._saveState();
 
-			vscode.window.showInformationMessage(`Task "${branchName}" completed and pushed to origin/${branchName}`);
+			// Show appropriate message
+			if (result.prCreated && result.prUrl) {
+				const openPR = await vscode.window.showInformationMessage(
+					`Task "${branchName}" completed. PR #${result.prNumber} created.`,
+					'Open PR'
+				);
+				if (openPR === 'Open PR') {
+					vscode.env.openExternal(vscode.Uri.parse(result.prUrl));
+				}
+			} else {
+				vscode.window.showInformationMessage(`Task "${branchName}" completed and pushed to origin/${branchName}`);
+			}
+
+			return result;
 		} catch (error) {
 			throw new Error(`Failed to complete worker: ${error}`);
 		}
+	}
+
+	/**
+	 * Create a pull request using GitHub CLI
+	 */
+	private async _createPullRequest(
+		headBranch: string,
+		baseBranch: string,
+		title: string,
+		body: string,
+		cwd: string
+	): Promise<{ url: string; number: number } | undefined> {
+		try {
+			// Use GitHub CLI to create PR
+			const result = await this._execCommand(
+				'gh',
+				['pr', 'create', '--base', baseBranch, '--head', headBranch, '--title', title, '--body', body, '--json', 'url,number'],
+				cwd
+			);
+
+			if (result) {
+				const prInfo = JSON.parse(result);
+				return { url: prInfo.url, number: prInfo.number };
+			}
+		} catch (error) {
+			console.error('Failed to create PR via gh CLI:', error);
+			// Fall back to showing manual instructions
+			vscode.window.showWarningMessage(
+				`Could not auto-create PR. Please create manually: gh pr create --base ${baseBranch} --head ${headBranch}`
+			);
+		}
+		return undefined;
+	}
+
+	/**
+	 * Execute a command and return stdout
+	 */
+	private _execCommand(command: string, args: string[], cwd: string): Promise<string> {
+		return new Promise((resolve, reject) => {
+			const proc = cp.spawn(command, args, { cwd, shell: true });
+			let stdout = '';
+			let stderr = '';
+
+			proc.stdout.on('data', (data) => { stdout += data.toString(); });
+			proc.stderr.on('data', (data) => { stderr += data.toString(); });
+
+			proc.on('close', (code) => {
+				if (code === 0) {
+					resolve(stdout.trim());
+				} else {
+					reject(new Error(`Command failed (${code}): ${stderr}`));
+				}
+			});
+
+			proc.on('error', reject);
+		});
 	}
 
 	// Legacy compatibility
@@ -717,6 +1250,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		}
 
 		const tokenSource = new vscode.CancellationTokenSource();
+		const sessionId = generateUuid();
 
 		const pausedEmitter = new Emitter<boolean>();
 		this._register(worker.onDidChange(() => {
@@ -732,25 +1266,27 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			try {
 				const stream = new WorkerResponseStream(worker);
 
-				// Create mock request with current prompt
-				const mockRequest = this._createMockRequest(currentPrompt, model, task.context?.suggestedFiles);
-
-				const requestHandler = this._instantiationService.createInstance(
-					ChatParticipantRequestHandler,
-					[],
-					mockRequest,
-					stream as unknown as vscode.ChatResponseStream,
-					tokenSource.token,
+				// Run the agent using the proper IAgentRunner service
+				const result = await this._agentRunner.run(
 					{
-						agentName: 'copilot',
-						agentId: 'github.copilot.default',
-						intentId: Intent.Agent,
+						prompt: currentPrompt,
+						sessionId,
+						model,
+						suggestedFiles: task.context?.suggestedFiles,
+						additionalInstructions: task.context?.additionalInstructions,
+						token: tokenSource.token,
+						onPaused: pausedEmitter.event,
+						maxToolCallIterations: 200,
 					},
-					pausedEmitter.event
+					stream as unknown as vscode.ChatResponseStream
 				);
 
-				await requestHandler.getResult();
 				stream.flush();
+
+				if (!result.success && result.error) {
+					worker.error(result.error);
+					break;
+				}
 
 				// Mark as idle and wait for next message
 				worker.idle();
@@ -793,43 +1329,5 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		// Last resort: any model
 		const allModels = await vscode.lm.selectChatModels();
 		return allModels[0];
-	}
-
-	private _createMockRequest(prompt: string, model: vscode.LanguageModelChat, suggestedFiles?: string[]): vscode.ChatRequest {
-		const sessionId = generateUuid();
-		const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri;
-
-		const references: vscode.ChatPromptReference[] = [];
-		if (suggestedFiles && workspaceFolder) {
-			for (const filePath of suggestedFiles) {
-				const fileUri = path.isAbsolute(filePath)
-					? vscode.Uri.file(filePath)
-					: vscode.Uri.joinPath(workspaceFolder, filePath);
-
-				references.push({
-					id: 'vscode.file',
-					name: path.basename(filePath),
-					value: fileUri,
-				});
-			}
-		}
-
-		return {
-			prompt,
-			command: undefined,
-			references,
-			toolReferences: [],
-			variables: {},
-			id: generateUuid(),
-			sessionId,
-			model,
-			tools: new Map(), // Empty map means all tools enabled (default behavior)
-			location: vscode.ChatLocation.Panel, // ChatParticipantRequestHandler overrides location based on intent
-			attempt: 0,
-			enableCommandDetection: false,
-			justification: undefined,
-			acceptedConfirmationData: undefined,
-			editedFileEvents: undefined,
-		} as unknown as vscode.ChatRequest;
 	}
 }

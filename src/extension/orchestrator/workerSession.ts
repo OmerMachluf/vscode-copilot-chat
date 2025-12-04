@@ -102,6 +102,8 @@ export class WorkerSession extends Disposable {
 	private _pauseResolve?: () => void;
 	private _clarificationResolve?: (message: string) => void;
 	private _pendingClarification?: string;
+	private readonly _agentId?: string;
+	private readonly _agentInstructions?: string[];
 
 	private readonly _onDidChange = this._register(new Emitter<void>());
 	public readonly onDidChange: Event<void> = this._onDidChange.event;
@@ -118,6 +120,8 @@ export class WorkerSession extends Disposable {
 		worktreePath: string,
 		planId?: string,
 		baseBranch?: string,
+		agentId?: string,
+		agentInstructions?: string[],
 	) {
 		super();
 		this._id = `worker-${generateUuid().substring(0, 8)}`;
@@ -126,13 +130,15 @@ export class WorkerSession extends Disposable {
 		this._worktreePath = worktreePath;
 		this._planId = planId;
 		this._baseBranch = baseBranch;
+		this._agentId = agentId;
+		this._agentInstructions = agentInstructions;
 		this._createdAt = Date.now();
 		this._lastActivityAt = this._createdAt;
 
 		// Add initial system message
 		this._addMessage({
 			role: 'system',
-			content: `Worker initialized for task: ${task}\nWorktree: ${worktreePath}`,
+			content: `Worker initialized for task: ${task}\nWorktree: ${worktreePath}${agentId ? `\nAgent: ${agentId}` : ''}`,
 		});
 	}
 
@@ -158,6 +164,14 @@ export class WorkerSession extends Disposable {
 
 	public get baseBranch(): string | undefined {
 		return this._baseBranch;
+	}
+
+	public get agentId(): string | undefined {
+		return this._agentId;
+	}
+
+	public get agentInstructions(): readonly string[] | undefined {
+		return this._agentInstructions;
 	}
 
 	public get status(): WorkerStatus {

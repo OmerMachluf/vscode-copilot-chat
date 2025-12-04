@@ -44,6 +44,8 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 						priority: data.priority,
 						baseBranch: data.baseBranch,
 						modelId: data.modelId,
+						dependencies: data.dependencies,
+						agent: data.agent,
 					});
 					break;
 				case 'removeTask':
@@ -77,7 +79,16 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 					this._orchestrator.concludeWorker(data.workerId);
 					break;
 				case 'complete':
-					this._orchestrator.completeWorker(data.workerId).catch(err => {
+					this._orchestrator.completeWorker(data.workerId, {
+						createPullRequest: data.createPR ?? false,
+					}).catch(err => {
+						vscode.window.showErrorMessage(`Failed to complete worker: ${err.message}`);
+					});
+					break;
+				case 'completeWithPR':
+					this._orchestrator.completeWorker(data.workerId, {
+						createPullRequest: true,
+					}).catch(err => {
 						vscode.window.showErrorMessage(`Failed to complete worker: ${err.message}`);
 					});
 					break;
@@ -89,6 +100,15 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 					break;
 				case 'setActivePlan':
 					this._orchestrator.setActivePlan(data.planId);
+					break;
+				case 'startPlan':
+					this._orchestrator.startPlan(data.planId);
+					break;
+				case 'pausePlan':
+					this._orchestrator.pausePlan(data.planId);
+					break;
+				case 'resumePlan':
+					this._orchestrator.resumePlan(data.planId);
 					break;
 			}
 		});
@@ -129,6 +149,8 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			const plan = this._orchestrator.getPlan();
 			const plans = this._orchestrator.getPlans();
 			const activePlanId = this._orchestrator.getActivePlanId();
+			const readyTasks = this._orchestrator.getReadyTasks();
+			const allTasks = this._orchestrator.getTasks(activePlanId);
 
 			// Count pending approvals for badge
 			let pendingApprovals = 0;
@@ -151,7 +173,9 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 				workers,
 				plan,
 				plans,
-				activePlanId
+				activePlanId,
+				readyTasks,
+				allTasks,
 			});
 		}
 	}
@@ -214,6 +238,16 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			border: 1px solid var(--vscode-input-border);
 			border-radius: 3px;
 		}
+		.plan-status {
+			font-size: 0.85em;
+			padding: 2px 8px;
+			border-radius: 10px;
+		}
+		.plan-status.draft { background: var(--vscode-descriptionForeground); color: white; }
+		.plan-status.active { background: var(--vscode-notificationsInfoIcon-foreground); color: white; }
+		.plan-status.paused { background: var(--vscode-notificationsWarningIcon-foreground); color: black; }
+		.plan-status.completed { background: var(--vscode-testing-iconPassed); color: white; }
+		.plan-status.failed { background: var(--vscode-errorForeground); color: white; }
 
 		/* Create Plan Form */
 		.create-plan-form {
@@ -241,6 +275,39 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 		}
 		.form-row > * { flex: 1; }
 
+		/* Task status badges */
+		.task-status {
+			font-size: 0.75em;
+			padding: 2px 6px;
+			border-radius: 3px;
+			margin-left: 8px;
+		}
+		.task-status.pending { background: var(--vscode-descriptionForeground); color: white; }
+		.task-status.queued { background: var(--vscode-notificationsInfoIcon-foreground); color: white; }
+		.task-status.running { background: var(--vscode-charts-blue); color: white; }
+		.task-status.completed { background: var(--vscode-testing-iconPassed); color: white; }
+		.task-status.failed { background: var(--vscode-errorForeground); color: white; }
+		.task-status.blocked { background: var(--vscode-notificationsWarningIcon-foreground); color: black; }
+
+		/* Task dependencies */
+		.task-deps {
+			font-size: 0.8em;
+			color: var(--vscode-descriptionForeground);
+			margin-top: 4px;
+		}
+		.task-deps .dep {
+			display: inline-block;
+			background: var(--vscode-badge-background);
+			color: var(--vscode-badge-foreground);
+			padding: 1px 5px;
+			border-radius: 3px;
+			margin-right: 4px;
+		}
+		.task-deps .dep.satisfied {
+			background: var(--vscode-testing-iconPassed);
+			color: white;
+		}
+
 		/* Plan Section */
 		.plan-header {
 			display: flex;
@@ -254,6 +321,22 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			border-radius: 4px;
 			padding: 8px;
 			margin-bottom: 8px;
+		}
+		.task-item.blocked {
+			opacity: 0.7;
+			border-color: var(--vscode-notificationsWarningIcon-foreground);
+		}
+		.task-item.completed {
+			opacity: 0.7;
+			border-color: var(--vscode-testing-iconPassed);
+		}
+		.task-item.critical-path {
+			border-left: 3px solid var(--vscode-charts-orange, #e5a00d);
+		}
+		.critical-badge {
+			font-size: 0.9em;
+			margin-left: 4px;
+			color: var(--vscode-charts-orange, #e5a00d);
 		}
 		.task-header {
 			display: flex;
@@ -275,19 +358,75 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			display: flex;
 			gap: 8px;
 			align-items: center;
+			flex-wrap: wrap;
 		}
 		.task-priority {
 			font-size: 0.8em;
 			padding: 2px 6px;
 			border-radius: 3px;
 		}
-		.task-priority.high { background: var(--vscode-errorForeground); color: white; }
+		.task-priority.critical { background: var(--vscode-errorForeground); color: white; }
+		.task-priority.high { background: var(--vscode-notificationsWarningIcon-foreground); color: black; }
 		.task-priority.normal { background: var(--vscode-notificationsInfoIcon-foreground); color: white; }
 		.task-priority.low { background: var(--vscode-descriptionForeground); color: white; }
 		.task-branch {
 			font-size: 0.8em;
 			font-family: monospace;
 			color: var(--vscode-descriptionForeground);
+		}
+		.task-agent {
+			font-size: 0.8em;
+			color: var(--vscode-textLink-foreground);
+		}
+
+		/* Dependency Graph View */
+		.dependency-graph {
+			width: 100%;
+			min-height: 200px;
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-widget-border);
+			border-radius: 4px;
+			margin-top: 10px;
+		}
+		.dependency-graph .node {
+			cursor: pointer;
+		}
+		.dependency-graph .node rect {
+			fill: var(--vscode-editor-background);
+			stroke: var(--vscode-widget-border);
+			stroke-width: 2;
+			rx: 4;
+		}
+		.dependency-graph .node.pending rect { stroke: var(--vscode-descriptionForeground); }
+		.dependency-graph .node.running rect { stroke: var(--vscode-charts-blue); stroke-width: 3; }
+		.dependency-graph .node.completed rect { stroke: var(--vscode-testing-iconPassed); }
+		.dependency-graph .node.failed rect { stroke: var(--vscode-errorForeground); }
+		.dependency-graph .node.critical rect { stroke: var(--vscode-charts-orange, #e5a00d); stroke-width: 3; }
+		.dependency-graph .node text {
+			fill: var(--vscode-foreground);
+			font-size: 11px;
+			font-family: var(--vscode-font-family);
+		}
+		.dependency-graph .edge {
+			stroke: var(--vscode-widget-border);
+			stroke-width: 2;
+			fill: none;
+			marker-end: url(#arrowhead);
+		}
+		.dependency-graph .edge.satisfied { stroke: var(--vscode-testing-iconPassed); }
+		.dependency-graph .edge.critical { stroke: var(--vscode-charts-orange, #e5a00d); stroke-width: 3; }
+		.view-toggle {
+			display: flex;
+			gap: 8px;
+			margin-bottom: 10px;
+		}
+		.view-toggle button {
+			padding: 4px 12px;
+			font-size: 0.85em;
+		}
+		.view-toggle button.active {
+			background: var(--vscode-button-background);
+			color: var(--vscode-button-foreground);
 		}
 
 		/* Add Task Form */
@@ -522,8 +661,16 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 				<select id="plan-select" onchange="setActivePlan(this.value)">
 					<option value="">Ad-hoc Tasks</option>
 				</select>
+				<span id="plan-status-badge" class="plan-status" style="display:none"></span>
 				<button onclick="showCreatePlanForm()" title="New Plan">+ New</button>
 				<button onclick="deletePlan()" class="danger" id="delete-plan-btn" title="Delete Plan" disabled>🗑</button>
+			</div>
+
+			<!-- Plan Control Buttons -->
+			<div id="plan-controls" style="display:none; margin-bottom: 10px;">
+				<button id="start-plan-btn" onclick="startPlan()" class="success">▶ Start Plan</button>
+				<button id="pause-plan-btn" onclick="pausePlan()" class="secondary" style="display:none">⏸ Pause</button>
+				<button id="resume-plan-btn" onclick="resumePlan()" style="display:none">▶ Resume</button>
 			</div>
 
 			<!-- Create Plan Form (hidden by default) -->
@@ -546,9 +693,15 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			<div class="plan-header">
 				<h3>Tasks</h3>
 				<div>
-					<button onclick="deployAll()" id="deploy-all-btn">Deploy All</button>
+					<button onclick="deployAll()" id="deploy-all-btn">Deploy Ready</button>
 					<button onclick="clearPlan()" class="secondary">Clear</button>
 				</div>
+			</div>
+
+			<!-- View Toggle -->
+			<div class="view-toggle">
+				<button id="list-view-btn" class="active" onclick="setView('list')">📋 List</button>
+				<button id="graph-view-btn" onclick="setView('graph')">🔗 Graph</button>
 			</div>
 
 			<!-- Add Task Form -->
@@ -562,6 +715,7 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 						<label>Priority:</label>
 						<select id="task-priority">
 							<option value="normal">Normal</option>
+							<option value="critical">Critical</option>
 							<option value="high">High</option>
 							<option value="low">Low</option>
 						</select>
@@ -570,6 +724,20 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 				<div>
 					<label>Description:</label>
 					<textarea id="new-task-input" placeholder="What should this task accomplish?"></textarea>
+				</div>
+				<div class="form-row">
+					<div>
+						<label>Agent:</label>
+						<select id="task-agent">
+							<option value="@agent">@agent (default)</option>
+							<option value="@architect">@architect</option>
+							<option value="@reviewer">@reviewer</option>
+						</select>
+					</div>
+					<div>
+						<label>Dependencies (task IDs, comma-separated):</label>
+						<input type="text" id="task-deps" placeholder="e.g., task-1, task-2" />
+					</div>
 				</div>
 				<div class="form-row">
 					<div>
@@ -587,6 +755,7 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			</div>
 
 			<div id="plan-container"></div>
+			<svg id="dependency-graph" class="dependency-graph" style="display: none;"></svg>
 		</div>
 	</div>
 
@@ -595,6 +764,8 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 		let expandedWorkers = new Set();
 		let currentPlans = [];
 		let currentActivePlanId = null;
+		let currentPlan = null;
+		let allTasks = [];
 
 		// Tab switching
 		document.querySelectorAll('.tab').forEach(tab => {
@@ -611,9 +782,12 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			if (message.type === 'update') {
 				currentPlans = message.plans || [];
 				currentActivePlanId = message.activePlanId;
+				currentPlan = currentPlans.find(p => p.id === currentActivePlanId);
+				allTasks = message.allTasks || [];
 				renderPlansDropdown(message.plans, message.activePlanId);
+				renderPlanControls(currentPlan);
 				renderWorkers(message.workers);
-				renderPlan(message.plan);
+				renderPlan(message.allTasks || message.plan, message.readyTasks);
 			} else if (message.type === 'models') {
 				renderModelsDropdown(message.models);
 			}
@@ -633,6 +807,7 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 		function renderPlansDropdown(plans, activePlanId) {
 			const select = document.getElementById('plan-select');
 			const deleteBtn = document.getElementById('delete-plan-btn');
+			const statusBadge = document.getElementById('plan-status-badge');
 
 			select.innerHTML = '<option value="">Ad-hoc Tasks</option>';
 			(plans || []).forEach(plan => {
@@ -646,6 +821,33 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			});
 
 			deleteBtn.disabled = !activePlanId;
+
+			// Show plan status
+			const activePlan = plans.find(p => p.id === activePlanId);
+			if (activePlan && activePlan.status) {
+				statusBadge.textContent = activePlan.status;
+				statusBadge.className = 'plan-status ' + activePlan.status;
+				statusBadge.style.display = 'inline-block';
+			} else {
+				statusBadge.style.display = 'none';
+			}
+		}
+
+		function renderPlanControls(plan) {
+			const controls = document.getElementById('plan-controls');
+			const startBtn = document.getElementById('start-plan-btn');
+			const pauseBtn = document.getElementById('pause-plan-btn');
+			const resumeBtn = document.getElementById('resume-plan-btn');
+
+			if (!plan) {
+				controls.style.display = 'none';
+				return;
+			}
+
+			controls.style.display = 'block';
+			startBtn.style.display = plan.status === 'draft' ? 'inline-block' : 'none';
+			pauseBtn.style.display = plan.status === 'active' ? 'inline-block' : 'none';
+			resumeBtn.style.display = plan.status === 'paused' ? 'inline-block' : 'none';
 		}
 
 		function renderWorkers(workers) {
@@ -697,6 +899,10 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 				? \`<button onclick="completeWorker('\${worker.id}')" class="success" title="Push to origin and clean up">✓ Complete</button>\`
 				: '';
 
+			const completeWithPRBtn = canComplete
+				? \`<button onclick="completeWorkerWithPR('\${worker.id}')" class="success" title="Push and create PR">✓ Complete + PR</button>\`
+				: '';
+
 			return \`
 				<div class="worker-card \${isExpanded ? 'expanded' : ''}" data-worker-id="\${worker.id}">
 					<div class="worker-header" onclick="toggleWorker('\${worker.id}')">
@@ -706,6 +912,7 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 							\${worker.baseBranch ? '<span class="worker-branch">from ' + worker.baseBranch + '</span>' : ''}
 						</div>
 						<div class="worker-actions" onclick="event.stopPropagation()">
+							\${completeWithPRBtn}
 							\${completeBtn}
 							\${pauseResumeBtn}
 							<button onclick="concludeWorker('\${worker.id}')" class="danger" title="Discard">✕</button>
@@ -731,33 +938,268 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			\`;
 		}
 
-		function renderPlan(plan) {
+		function renderPlan(tasks, readyTasks) {
 			const container = document.getElementById('plan-container');
 			const deployBtn = document.getElementById('deploy-all-btn');
+			const readyIds = new Set((readyTasks || []).map(t => t.id));
 
-			if (!plan || plan.length === 0) {
+			if (!tasks || tasks.length === 0) {
 				container.innerHTML = '<div class="empty-state">No tasks in plan.</div>';
 				deployBtn.disabled = true;
 				return;
 			}
 
-			deployBtn.disabled = false;
-			container.innerHTML = plan.map(task => \`
-				<div class="task-item">
-					<div class="task-header">
-						<span class="task-name">\${escapeHtml(task.name)}</span>
-						<div>
-							<button onclick="deployTask('\${task.id}')" title="Deploy this task">▶</button>
-							<button onclick="removeTask('\${task.id}')" class="danger" title="Remove">✕</button>
+			// Calculate critical path (longest chain of dependencies)
+			const criticalPathIds = calculateCriticalPath(tasks);
+
+			deployBtn.disabled = readyIds.size === 0;
+			container.innerHTML = tasks.map(task => {
+				const isReady = readyIds.has(task.id);
+				const isOnCriticalPath = criticalPathIds.has(task.id);
+				const depsHtml = (task.dependencies || []).map(depId => {
+					const depTask = tasks.find(t => t.id === depId);
+					const isSatisfied = depTask?.status === 'completed';
+					return \`<span class="dep \${isSatisfied ? 'satisfied' : ''}">\${depId}</span>\`;
+				}).join('');
+
+				return \`
+					<div class="task-item \${task.status}\${isOnCriticalPath ? ' critical-path' : ''}">
+						<div class="task-header">
+							<div>
+								<span class="task-name">\${escapeHtml(task.name)}</span>
+								<span class="task-status \${task.status}">\${task.status}</span>
+								\${isOnCriticalPath ? '<span class="critical-badge" title="This task is on the critical path">⚡</span>' : ''}
+							</div>
+							<div>
+								\${isReady ? \`<button onclick="deployTask('\${task.id}')" title="Deploy this task">▶</button>\` : ''}
+								\${task.status === 'pending' ? \`<button onclick="removeTask('\${task.id}')" class="danger" title="Remove">✕</button>\` : ''}
+							</div>
 						</div>
+						<div class="task-description">\${escapeHtml(task.description)}</div>
+						<div class="task-meta">
+							<span class="task-priority \${task.priority}">\${task.priority}</span>
+							\${task.agent ? '<span class="task-agent">' + task.agent + '</span>' : ''}
+							\${task.baseBranch ? '<span class="task-branch">from ' + task.baseBranch + '</span>' : ''}
+						</div>
+						\${depsHtml ? '<div class="task-deps">Depends on: ' + depsHtml + '</div>' : ''}
 					</div>
-					<div class="task-description">\${escapeHtml(task.description)}</div>
-					<div class="task-meta">
-						<span class="task-priority \${task.priority}">\${task.priority}</span>
-						\${task.baseBranch ? '<span class="task-branch">from ' + task.baseBranch + '</span>' : ''}
-					</div>
-				</div>
-			\`).join('');
+				\`;
+			}).join('');
+		}
+
+		// Calculate the critical path (longest chain of dependencies)
+		function calculateCriticalPath(tasks) {
+			const taskMap = new Map(tasks.map(t => [t.id, t]));
+			const depths = new Map();
+
+			// Calculate depth for each task (longest path to reach it)
+			function getDepth(taskId) {
+				if (depths.has(taskId)) return depths.get(taskId);
+
+				const task = taskMap.get(taskId);
+				if (!task || !task.dependencies || task.dependencies.length === 0) {
+					depths.set(taskId, 0);
+					return 0;
+				}
+
+				const maxDepDep = Math.max(...task.dependencies.map(depId => getDepth(depId)));
+				const depth = maxDepDep + 1;
+				depths.set(taskId, depth);
+				return depth;
+			}
+
+			// Calculate depth for all tasks
+			tasks.forEach(t => getDepth(t.id));
+
+			if (depths.size === 0) return new Set();
+
+			// Find the maximum depth
+			const maxDepth = Math.max(...depths.values());
+
+			// Find all tasks at max depth (could be multiple critical paths)
+			const endTasks = tasks.filter(t => depths.get(t.id) === maxDepth);
+
+			// Trace back the critical path(s)
+			const criticalPathIds = new Set();
+
+			function traceBack(taskId) {
+				criticalPathIds.add(taskId);
+				const task = taskMap.get(taskId);
+				if (!task || !task.dependencies || task.dependencies.length === 0) return;
+
+				// Find the dependency with the highest depth (on critical path)
+				let maxDepDep = -1;
+				let criticalDep = null;
+				for (const depId of task.dependencies) {
+					const depDepth = depths.get(depId) || 0;
+					if (depDepth > maxDepDep) {
+						maxDepDep = depDepth;
+						criticalDep = depId;
+					}
+				}
+				if (criticalDep) {
+					traceBack(criticalDep);
+				}
+			}
+
+			endTasks.forEach(t => traceBack(t.id));
+
+			return criticalPathIds;
+		}
+
+		// View switching
+		let currentView = 'list';
+
+		function setView(view) {
+			currentView = view;
+			document.getElementById('list-view-btn').classList.toggle('active', view === 'list');
+			document.getElementById('graph-view-btn').classList.toggle('active', view === 'graph');
+			document.getElementById('plan-container').style.display = view === 'list' ? 'block' : 'none';
+			document.getElementById('dependency-graph').style.display = view === 'graph' ? 'block' : 'none';
+
+			if (view === 'graph' && allTasks.length > 0) {
+				renderDependencyGraph(allTasks);
+			}
+		}
+
+		// Render dependency graph as SVG
+		function renderDependencyGraph(tasks) {
+			const svg = document.getElementById('dependency-graph');
+			if (!tasks || tasks.length === 0) {
+				svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="var(--vscode-descriptionForeground)">No tasks to visualize</text>';
+				return;
+			}
+
+			const criticalPathIds = calculateCriticalPath(tasks);
+
+			// Calculate positions using a simple layered layout
+			const taskMap = new Map(tasks.map(t => [t.id, t]));
+			const depths = new Map();
+
+			// Calculate depth (layer) for each task
+			function getDepth(taskId) {
+				if (depths.has(taskId)) return depths.get(taskId);
+				const task = taskMap.get(taskId);
+				if (!task || !task.dependencies || task.dependencies.length === 0) {
+					depths.set(taskId, 0);
+					return 0;
+				}
+				const maxDepDep = Math.max(...task.dependencies.map(depId => getDepth(depId)));
+				depths.set(taskId, maxDepDep + 1);
+				return maxDepDep + 1;
+			}
+
+			tasks.forEach(t => getDepth(t.id));
+
+			// Group tasks by depth
+			const layers = new Map();
+			tasks.forEach(task => {
+				const depth = depths.get(task.id) || 0;
+				if (!layers.has(depth)) layers.set(depth, []);
+				layers.get(depth).push(task);
+			});
+
+			// Layout parameters
+			const nodeWidth = 140;
+			const nodeHeight = 50;
+			const layerGap = 100;
+			const nodeGap = 20;
+			const padding = 30;
+
+			// Calculate positions
+			const positions = new Map();
+			const maxLayer = Math.max(...layers.keys());
+			let maxWidth = 0;
+
+			for (let layer = 0; layer <= maxLayer; layer++) {
+				const nodesInLayer = layers.get(layer) || [];
+				const layerWidth = nodesInLayer.length * nodeWidth + (nodesInLayer.length - 1) * nodeGap;
+				maxWidth = Math.max(maxWidth, layerWidth);
+
+				nodesInLayer.forEach((task, idx) => {
+					const x = padding + idx * (nodeWidth + nodeGap) + nodeWidth / 2;
+					const y = padding + layer * (nodeHeight + layerGap) + nodeHeight / 2;
+					positions.set(task.id, { x, y });
+				});
+			}
+
+			// Center layers horizontally
+			for (let layer = 0; layer <= maxLayer; layer++) {
+				const nodesInLayer = layers.get(layer) || [];
+				const layerWidth = nodesInLayer.length * nodeWidth + (nodesInLayer.length - 1) * nodeGap;
+				const offset = (maxWidth - layerWidth) / 2;
+
+				nodesInLayer.forEach(task => {
+					const pos = positions.get(task.id);
+					pos.x += offset;
+				});
+			}
+
+			const svgWidth = maxWidth + 2 * padding;
+			const svgHeight = (maxLayer + 1) * (nodeHeight + layerGap) + padding;
+
+			// Build SVG
+			let svgContent = \`
+				<defs>
+					<marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+						<polygon points="0 0, 10 3.5, 0 7" fill="var(--vscode-widget-border)" />
+					</marker>
+					<marker id="arrowhead-satisfied" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+						<polygon points="0 0, 10 3.5, 0 7" fill="var(--vscode-testing-iconPassed)" />
+					</marker>
+					<marker id="arrowhead-critical" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+						<polygon points="0 0, 10 3.5, 0 7" fill="var(--vscode-charts-orange, #e5a00d)" />
+					</marker>
+				</defs>
+			\`;
+
+			// Draw edges (dependencies)
+			tasks.forEach(task => {
+				if (!task.dependencies) return;
+				const toPos = positions.get(task.id);
+				if (!toPos) return;
+
+				task.dependencies.forEach(depId => {
+					const fromPos = positions.get(depId);
+					if (!fromPos) return;
+
+					const depTask = taskMap.get(depId);
+					const isSatisfied = depTask?.status === 'completed';
+					const isCritical = criticalPathIds.has(task.id) && criticalPathIds.has(depId);
+
+					const edgeClass = isCritical ? 'edge critical' : (isSatisfied ? 'edge satisfied' : 'edge');
+					const markerEnd = isCritical ? 'url(#arrowhead-critical)' : (isSatisfied ? 'url(#arrowhead-satisfied)' : 'url(#arrowhead)');
+
+					// Draw curved line from dependency to task
+					const midY = (fromPos.y + nodeHeight/2 + toPos.y - nodeHeight/2) / 2;
+					svgContent += \`<path class="\${edgeClass}"
+						d="M \${fromPos.x} \${fromPos.y + nodeHeight/2}
+						   Q \${fromPos.x} \${midY}, \${(fromPos.x + toPos.x)/2} \${midY}
+						   T \${toPos.x} \${toPos.y - nodeHeight/2}"
+						marker-end="\${markerEnd}" />\`;
+				});
+			});
+
+			// Draw nodes
+			tasks.forEach(task => {
+				const pos = positions.get(task.id);
+				if (!pos) return;
+
+				const isCritical = criticalPathIds.has(task.id);
+				const nodeClass = \`node \${task.status}\${isCritical ? ' critical' : ''}\`;
+
+				svgContent += \`
+					<g class="\${nodeClass}" onclick="deployTask('\${task.id}')" data-task-id="\${task.id}">
+						<rect x="\${pos.x - nodeWidth/2}" y="\${pos.y - nodeHeight/2}" width="\${nodeWidth}" height="\${nodeHeight}" />
+						<text x="\${pos.x}" y="\${pos.y - 5}" text-anchor="middle" font-weight="bold">\${escapeHtml(task.name.substring(0, 18))}</text>
+						<text x="\${pos.x}" y="\${pos.y + 12}" text-anchor="middle" font-size="10px" fill="var(--vscode-descriptionForeground)">\${task.status}\${task.agent ? ' · ' + task.agent : ''}</text>
+					</g>
+				\`;
+			});
+
+			svg.setAttribute('width', svgWidth);
+			svg.setAttribute('height', svgHeight);
+			svg.innerHTML = svgContent;
 		}
 
 		function toggleWorker(workerId) {
@@ -804,12 +1246,33 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			vscode.postMessage({ type: 'setActivePlan', planId: planId || undefined });
 		}
 
+		function startPlan() {
+			if (currentActivePlanId) {
+				vscode.postMessage({ type: 'startPlan', planId: currentActivePlanId });
+			}
+		}
+
+		function pausePlan() {
+			if (currentActivePlanId) {
+				vscode.postMessage({ type: 'pausePlan', planId: currentActivePlanId });
+			}
+		}
+
+		function resumePlan() {
+			if (currentActivePlanId) {
+				vscode.postMessage({ type: 'resumePlan', planId: currentActivePlanId });
+			}
+		}
+
 		function addTask() {
 			const nameInput = document.getElementById('new-task-name');
 			const descInput = document.getElementById('new-task-input');
 			const priority = document.getElementById('task-priority').value;
 			const baseBranch = document.getElementById('task-base-branch').value.trim() || undefined;
 			const modelId = document.getElementById('task-model').value || undefined;
+			const agent = document.getElementById('task-agent').value || undefined;
+			const depsInput = document.getElementById('task-deps').value.trim();
+			const dependencies = depsInput ? depsInput.split(',').map(s => s.trim()).filter(Boolean) : [];
 
 			const description = descInput.value.trim();
 			if (!description) {
@@ -818,12 +1281,13 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			}
 
 			const name = nameInput.value.trim() || undefined;
-			vscode.postMessage({ type: 'addTask', name, description, priority, baseBranch, modelId });
+			vscode.postMessage({ type: 'addTask', name, description, priority, baseBranch, modelId, agent, dependencies });
 
 			nameInput.value = '';
 			descInput.value = '';
 			document.getElementById('task-base-branch').value = '';
 			document.getElementById('task-model').value = '';
+			document.getElementById('task-deps').value = '';
 		}
 
 		function removeTask(taskId) {
@@ -877,6 +1341,12 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 		function completeWorker(workerId) {
 			if (confirm('Complete this worker? This will commit, push to origin, and remove the worktree.')) {
 				vscode.postMessage({ type: 'complete', workerId });
+			}
+		}
+
+		function completeWorkerWithPR(workerId) {
+			if (confirm('Complete this worker and create a Pull Request? This will commit, push to origin, create a PR, and remove the worktree.')) {
+				vscode.postMessage({ type: 'completeWithPR', workerId });
 			}
 		}
 

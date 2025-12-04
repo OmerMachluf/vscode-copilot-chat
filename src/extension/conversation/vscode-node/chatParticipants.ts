@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 import * as vscode from 'vscode';
 import { IAuthenticationService } from '../../../platform/authentication/common/authentication';
-import { IChatAgentService, defaultAgentName, editingSessionAgent2Name, editingSessionAgentEditorName, editingSessionAgentName, editsAgentName, getChatParticipantIdFromName, notebookEditorAgentName, terminalAgentName, vscodeAgentName, workspaceAgentName } from '../../../platform/chat/common/chatAgents';
+import { IChatAgentService, architectAgentName, defaultAgentName, editingSessionAgent2Name, editingSessionAgentEditorName, editingSessionAgentName, editsAgentName, getChatParticipantIdFromName, notebookEditorAgentName, orchestratorAgentName, plannerAgentName, reviewerAgentName, stepPlannerAgentName, terminalAgentName, vscodeAgentName, workflowPlannerAgentName, workspaceAgentName } from '../../../platform/chat/common/chatAgents';
 import { IChatQuotaService } from '../../../platform/chat/common/chatQuotaService';
 import { IInteractionService } from '../../../platform/chat/common/interactionService';
 import { ConfigKey, IConfigurationService } from '../../../platform/configuration/common/configurationService';
@@ -82,6 +82,13 @@ class ChatAgents implements IDisposable {
 		this._disposables.add(this.registerEditingAgent2());
 		this._disposables.add(this.registerEditingAgentEditor());
 		this._disposables.add(this.registerEditsAgent());
+		this._disposables.add(this.registerOrchestratorAgent());
+		this._disposables.add(this.registerPlannerAgent());
+		this._disposables.add(this.registerWorkflowPlannerAgent());
+		this._disposables.add(this.registerStepPlannerAgent());
+		this._disposables.add(this.registerArchitectAgent());
+		this._disposables.add(this.registerReviewerAgent());
+		this._disposables.add(this.registerEditorDefaultAgent());
 		this._disposables.add(this.registerNotebookEditorDefaultAgent());
 		this._disposables.add(this.registerNotebookDefaultAgent());
 		this._disposables.add(this.registerWorkspaceAgent());
@@ -194,14 +201,49 @@ class ChatAgents implements IDisposable {
 	}
 
 	private registerOrchestratorAgent(): IDisposable {
+		const orchestratorAgent = this.createAgent(orchestratorAgentName, Intent.Orchestrator);
+		orchestratorAgent.iconPath = new vscode.ThemeIcon('organization');
+
+		// Also register the dashboard webview provider
 		const dashboardProvider = new WorkerDashboardProviderV2(this.orchestratorService);
 		const dashboardRegistration = vscode.window.registerWebviewViewProvider(WorkerDashboardProviderV2.viewType, dashboardProvider);
 
 		return {
 			dispose: () => {
+				orchestratorAgent.dispose();
 				dashboardRegistration.dispose();
 			}
 		};
+	}
+
+	private registerPlannerAgent(): IDisposable {
+		const plannerAgent = this.createAgent(plannerAgentName, Intent.Planner);
+		plannerAgent.iconPath = new vscode.ThemeIcon('checklist');
+		return plannerAgent;
+	}
+
+	private registerWorkflowPlannerAgent(): IDisposable {
+		const workflowPlannerAgent = this.createAgent(workflowPlannerAgentName, Intent.WorkflowPlanner);
+		workflowPlannerAgent.iconPath = new vscode.ThemeIcon('checklist');
+		return workflowPlannerAgent;
+	}
+
+	private registerStepPlannerAgent(): IDisposable {
+		const stepPlannerAgent = this.createAgent(stepPlannerAgentName, Intent.StepPlanner);
+		stepPlannerAgent.iconPath = new vscode.ThemeIcon('checklist');
+		return stepPlannerAgent;
+	}
+
+	private registerArchitectAgent(): IDisposable {
+		const architectAgent = this.createAgent(architectAgentName, Intent.Architect);
+		architectAgent.iconPath = new vscode.ThemeIcon('symbol-structure');
+		return architectAgent;
+	}
+
+	private registerReviewerAgent(): IDisposable {
+		const reviewerAgent = this.createAgent(reviewerAgentName, Intent.Reviewer);
+		reviewerAgent.iconPath = new vscode.ThemeIcon('eye');
+		return reviewerAgent;
 	}
 
 	private registerDefaultAgent(): IDisposable {
