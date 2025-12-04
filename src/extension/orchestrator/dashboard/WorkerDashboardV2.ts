@@ -31,6 +31,7 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 		webviewView.webview.html = this._getHtmlForWebview();
 
 		webviewView.webview.onDidReceiveMessage(async data => {
+			console.log('[Orchestrator Dashboard] Received message:', data.type, data);
 			switch (data.type) {
 				case 'refresh':
 					this._update();
@@ -38,6 +39,45 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 				case 'getModels':
 					await this._sendAvailableModels();
 					break;
+				case 'confirmAction': {
+					// Show VS Code native confirmation dialog
+					const result = await vscode.window.showWarningMessage(
+						data.message,
+						{ modal: true },
+						'Yes'
+					);
+					if (result === 'Yes') {
+						// Re-dispatch the confirmed action
+						switch (data.action) {
+							case 'complete':
+								this._orchestrator.completeWorker(data.workerId, { createPullRequest: false }).catch(err => {
+									vscode.window.showErrorMessage(`Failed to complete worker: ${err.message}`);
+								});
+								break;
+							case 'completeWithPR':
+								this._orchestrator.completeWorker(data.workerId, { createPullRequest: true }).catch(err => {
+									vscode.window.showErrorMessage(`Failed to complete worker: ${err.message}`);
+								});
+								break;
+							case 'killWorker':
+								this._orchestrator.killWorker(data.workerId, { removeWorktree: true, resetTask: true }).catch(err => {
+									vscode.window.showErrorMessage(`Failed to kill worker: ${err.message}`);
+								});
+								break;
+							case 'cancelTask':
+								this._orchestrator.cancelTask(data.taskId, false).catch(err => {
+									vscode.window.showErrorMessage(`Failed to cancel task: ${err.message}`);
+								});
+								break;
+							case 'retryTask':
+								this._orchestrator.retryTask(data.taskId).catch(err => {
+									vscode.window.showErrorMessage(`Failed to retry task: ${err.message}`);
+								});
+								break;
+						}
+					}
+					break;
+				}
 				case 'addTask':
 					this._orchestrator.addTask(data.description, {
 						name: data.name,
@@ -92,6 +132,31 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 						vscode.window.showErrorMessage(`Failed to complete worker: ${err.message}`);
 					});
 					break;
+				case 'killWorker':
+					this._orchestrator.killWorker(data.workerId, {
+						removeWorktree: data.removeWorktree ?? true,
+						resetTask: data.resetTask ?? true,
+					}).catch(err => {
+						vscode.window.showErrorMessage(`Failed to kill worker: ${err.message}`);
+					});
+					break;
+				case 'cancelTask':
+					this._orchestrator.cancelTask(data.taskId, data.remove ?? false).catch(err => {
+						vscode.window.showErrorMessage(`Failed to cancel task: ${err.message}`);
+					});
+					break;
+				case 'retryTask':
+					this._orchestrator.retryTask(data.taskId).catch(err => {
+						vscode.window.showErrorMessage(`Failed to retry task: ${err.message}`);
+					});
+					break;
+				case 'setWorkerModel':
+					try {
+						this._orchestrator.setWorkerModel(data.workerId, data.modelId);
+					} catch (err: any) {
+						vscode.window.showErrorMessage(`Failed to set model: ${err.message}`);
+					}
+					break;
 				case 'createPlan':
 					this._orchestrator.createPlan(data.name, data.description, data.baseBranch);
 					break;
@@ -109,6 +174,44 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 					break;
 				case 'resumePlan':
 					this._orchestrator.resumePlan(data.planId);
+					break;
+				case 'confirmAction':
+					// Show VS Code native confirmation dialog
+					const confirmed = await vscode.window.showWarningMessage(
+						data.message,
+						{ modal: true },
+						'Yes'
+					);
+					if (confirmed === 'Yes') {
+						// Execute the confirmed action
+						switch (data.action) {
+							case 'complete':
+								this._orchestrator.completeWorker(data.workerId, { createPullRequest: false }).catch(err => {
+									vscode.window.showErrorMessage(`Failed to complete worker: ${err.message}`);
+								});
+								break;
+							case 'completeWithPR':
+								this._orchestrator.completeWorker(data.workerId, { createPullRequest: true }).catch(err => {
+									vscode.window.showErrorMessage(`Failed to complete worker: ${err.message}`);
+								});
+								break;
+							case 'killWorker':
+								this._orchestrator.killWorker(data.workerId, { removeWorktree: true, resetTask: true }).catch(err => {
+									vscode.window.showErrorMessage(`Failed to kill worker: ${err.message}`);
+								});
+								break;
+							case 'cancelTask':
+								this._orchestrator.cancelTask(data.taskId, false).catch(err => {
+									vscode.window.showErrorMessage(`Failed to cancel task: ${err.message}`);
+								});
+								break;
+							case 'retryTask':
+								this._orchestrator.retryTask(data.taskId).catch(err => {
+									vscode.window.showErrorMessage(`Failed to retry task: ${err.message}`);
+								});
+								break;
+						}
+					}
 					break;
 			}
 		});
@@ -306,6 +409,14 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 		.task-deps .dep.satisfied {
 			background: var(--vscode-testing-iconPassed);
 			color: white;
+		}
+		.task-error {
+			color: var(--vscode-errorForeground);
+			font-size: 0.85em;
+			margin-top: 4px;
+			padding: 4px 8px;
+			background: var(--vscode-inputValidation-errorBackground);
+			border-radius: 3px;
 		}
 
 		/* Plan Section */
@@ -658,19 +769,19 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			<!-- Plan Selector -->
 			<div class="plan-selector">
 				<label>Plan:</label>
-				<select id="plan-select" onchange="setActivePlan(this.value)">
+				<select id="plan-select">
 					<option value="">Ad-hoc Tasks</option>
 				</select>
 				<span id="plan-status-badge" class="plan-status" style="display:none"></span>
-				<button onclick="showCreatePlanForm()" title="New Plan">+ New</button>
-				<button onclick="deletePlan()" class="danger" id="delete-plan-btn" title="Delete Plan" disabled>🗑</button>
+				<button data-action="show-create-plan-form" title="New Plan">+ New</button>
+				<button data-action="delete-plan" class="danger" id="delete-plan-btn" title="Delete Plan" disabled>🗑</button>
 			</div>
 
 			<!-- Plan Control Buttons -->
 			<div id="plan-controls" style="display:none; margin-bottom: 10px;">
-				<button id="start-plan-btn" onclick="startPlan()" class="success">▶ Start Plan</button>
-				<button id="pause-plan-btn" onclick="pausePlan()" class="secondary" style="display:none">⏸ Pause</button>
-				<button id="resume-plan-btn" onclick="resumePlan()" style="display:none">▶ Resume</button>
+				<button id="start-plan-btn" data-action="start-plan" class="success">▶ Start Plan</button>
+				<button id="pause-plan-btn" data-action="pause-plan" class="secondary" style="display:none">⏸ Pause</button>
+				<button id="resume-plan-btn" data-action="resume-plan" style="display:none">▶ Resume</button>
 			</div>
 
 			<!-- Create Plan Form (hidden by default) -->
@@ -685,23 +796,23 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 					</div>
 				</div>
 				<div class="form-row">
-					<button onclick="createPlan()">Create Plan</button>
-					<button onclick="hideCreatePlanForm()" class="secondary">Cancel</button>
+					<button data-action="create-plan">Create Plan</button>
+					<button data-action="hide-create-plan-form" class="secondary">Cancel</button>
 				</div>
 			</div>
 
 			<div class="plan-header">
 				<h3>Tasks</h3>
 				<div>
-					<button onclick="deployAll()" id="deploy-all-btn">Deploy Ready</button>
-					<button onclick="clearPlan()" class="secondary">Clear</button>
+					<button data-action="deploy-all" id="deploy-all-btn">Deploy Ready</button>
+					<button data-action="clear-plan" class="secondary">Clear</button>
 				</div>
 			</div>
 
 			<!-- View Toggle -->
 			<div class="view-toggle">
-				<button id="list-view-btn" class="active" onclick="setView('list')">📋 List</button>
-				<button id="graph-view-btn" onclick="setView('graph')">🔗 Graph</button>
+				<button id="list-view-btn" class="active" data-action="set-view-list">📋 List</button>
+				<button id="graph-view-btn" data-action="set-view-graph">🔗 Graph</button>
 			</div>
 
 			<!-- Add Task Form -->
@@ -750,7 +861,7 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 						<label>Base Branch (override):</label>
 						<input type="text" id="task-base-branch" placeholder="Uses plan default if empty" />
 					</div>
-					<button onclick="addTask()" style="align-self: flex-end">Add Task</button>
+					<button data-action="add-task" style="align-self: flex-end">Add Task</button>
 				</div>
 			</div>
 
@@ -777,6 +888,127 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			});
 		});
 
+		// Global click handler using event delegation (CSP-safe)
+		document.addEventListener('click', function(event) {
+			const target = event.target.closest('[data-action]');
+			if (!target) return;
+
+			const action = target.dataset.action;
+			const workerId = target.dataset.workerId;
+			const taskId = target.dataset.taskId;
+			const approvalId = target.dataset.approvalId;
+
+			console.log('[Orchestrator] Action clicked:', action, { workerId, taskId, approvalId });
+
+			switch (action) {
+				case 'toggle-worker':
+					toggleWorker(workerId);
+					break;
+				case 'pause-worker':
+					vscode.postMessage({ type: 'pause', workerId });
+					break;
+				case 'resume-worker':
+					vscode.postMessage({ type: 'resume', workerId });
+					break;
+				case 'complete-worker':
+					// Send to extension for VS Code confirmation dialog
+					vscode.postMessage({ type: 'confirmAction', action: 'complete', workerId, message: 'Complete this worker? This will commit, push to origin, and remove the worktree.' });
+					break;
+				case 'complete-worker-pr':
+					vscode.postMessage({ type: 'confirmAction', action: 'completeWithPR', workerId, message: 'Complete this worker and create a Pull Request?' });
+					break;
+				case 'kill-worker':
+					vscode.postMessage({ type: 'confirmAction', action: 'killWorker', workerId, message: 'Kill this worker? This will stop the process, remove the worktree, and reset the task to pending.' });
+					break;
+				case 'send-message':
+					sendMessage(workerId);
+					break;
+				case 'approve':
+					const clarification = document.getElementById('clarification-' + approvalId)?.value || '';
+					vscode.postMessage({ type: 'approve', workerId, approvalId, clarification });
+					break;
+				case 'reject':
+					const reason = document.getElementById('clarification-' + approvalId)?.value || '';
+					vscode.postMessage({ type: 'reject', workerId, approvalId, reason });
+					break;
+				case 'deploy-task':
+					vscode.postMessage({ type: 'deploy', taskId });
+					break;
+				case 'deploy-all':
+					vscode.postMessage({ type: 'deployAll' });
+					break;
+				case 'remove-task':
+					vscode.postMessage({ type: 'removeTask', taskId });
+					break;
+				case 'cancel-task':
+					vscode.postMessage({ type: 'confirmAction', action: 'cancelTask', taskId, message: 'Cancel this task? The worker will be stopped and the task reset to pending.' });
+					break;
+				case 'retry-task':
+					vscode.postMessage({ type: 'confirmAction', action: 'retryTask', taskId, message: 'Retry this task? A new worker will be deployed.' });
+					break;
+				case 'add-task':
+					addTask();
+					break;
+				case 'clear-plan':
+					clearPlan();
+					break;
+				case 'create-plan':
+					createPlan();
+					break;
+				case 'delete-plan':
+					deletePlan();
+					break;
+				case 'start-plan':
+					startPlan();
+					break;
+				case 'pause-plan':
+					pausePlan();
+					break;
+				case 'resume-plan':
+					resumePlan();
+					break;
+				case 'show-create-plan-form':
+					showCreatePlanForm();
+					break;
+				case 'hide-create-plan-form':
+					hideCreatePlanForm();
+					break;
+				case 'set-view-list':
+					setView('list');
+					break;
+				case 'set-view-graph':
+					setView('graph');
+					break;
+			}
+		});
+
+		// Handle keydown for input fields
+		document.addEventListener('keydown', function(event) {
+			if (event.key === 'Enter') {
+				const target = event.target;
+				if (target.classList.contains('message-input')) {
+					const workerId = target.dataset.workerId;
+					if (workerId) {
+						sendMessage(workerId);
+					}
+				}
+			}
+		});
+
+		// Handle change events for selects
+		document.addEventListener('change', function(event) {
+			const target = event.target;
+			if (target.dataset.action === 'set-worker-model') {
+				const workerId = target.dataset.workerId;
+				const modelId = target.value;
+				if (modelId) {
+					vscode.postMessage({ type: 'setWorkerModel', workerId, modelId });
+				}
+			} else if (target.id === 'plan-select') {
+				setActivePlan(target.value);
+			}
+		});
+
 		window.addEventListener('message', event => {
 			const message = event.data;
 			if (message.type === 'update') {
@@ -788,10 +1020,19 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 				renderPlanControls(currentPlan);
 				renderWorkers(message.workers);
 				renderPlan(message.allTasks || message.plan, message.readyTasks);
+				// Re-populate worker model selectors with current models
+				if (currentModels.length > 0) {
+					populateWorkerModelSelectors(currentModels);
+				}
 			} else if (message.type === 'models') {
-				renderModelsDropdown(message.models);
+				currentModels = message.models || [];
+				renderModelsDropdown(currentModels);
+				populateWorkerModelSelectors(currentModels);
 			}
 		});
+
+		// Store models globally for worker card rendering
+		let currentModels = [];
 
 		function renderModelsDropdown(models) {
 			const select = document.getElementById('task-model');
@@ -865,6 +1106,7 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			const isExpanded = expandedWorkers.has(worker.id);
 			const statusClass = worker.status.replace('-', '');
 			const canComplete = worker.status === 'idle' || worker.status === 'completed';
+			const isRunning = worker.status === 'running' || worker.status === 'waiting-approval';
 
 			const messagesHtml = worker.messages.map(msg => {
 				const time = new Date(msg.timestamp).toLocaleTimeString();
@@ -885,42 +1127,53 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 					<div class="approval-params">\${escapeHtml(JSON.stringify(approval.parameters, null, 2))}</div>
 					<div class="approval-actions">
 						<input type="text" class="approval-input" id="clarification-\${approval.id}" placeholder="Clarification (optional)..." />
-						<button onclick="approve('\${worker.id}', '\${approval.id}')">✓ Approve</button>
-						<button onclick="reject('\${worker.id}', '\${approval.id}')" class="danger">✗ Reject</button>
+						<button data-action="approve" data-worker-id="\${worker.id}" data-approval-id="\${approval.id}">✓ Approve</button>
+						<button data-action="reject" data-worker-id="\${worker.id}" data-approval-id="\${approval.id}" class="danger">✗ Reject</button>
 					</div>
 				</div>
 			\`).join('');
 
 			const pauseResumeBtn = worker.status === 'paused'
-				? \`<button onclick="resumeWorker('\${worker.id}')">▶ Resume</button>\`
-				: \`<button onclick="pauseWorker('\${worker.id}')" class="secondary">⏸ Pause</button>\`;
+				? \`<button data-action="resume-worker" data-worker-id="\${worker.id}">▶ Resume</button>\`
+				: \`<button data-action="pause-worker" data-worker-id="\${worker.id}" class="secondary">⏸ Pause</button>\`;
 
 			const completeBtn = canComplete
-				? \`<button onclick="completeWorker('\${worker.id}')" class="success" title="Push to origin and clean up">✓ Complete</button>\`
+				? \`<button data-action="complete-worker" data-worker-id="\${worker.id}" class="success" title="Push to origin and clean up">✓ Complete</button>\`
 				: '';
 
 			const completeWithPRBtn = canComplete
-				? \`<button onclick="completeWorkerWithPR('\${worker.id}')" class="success" title="Push and create PR">✓ Complete + PR</button>\`
+				? \`<button data-action="complete-worker-pr" data-worker-id="\${worker.id}" class="success" title="Push and create PR">✓ Complete + PR</button>\`
 				: '';
+
+			// Model selector for changing model mid-session
+			const modelSelectorHtml = \`
+				<div class="worker-model-selector" style="margin-top: 8px;">
+					<label style="font-size: 0.85em;">Model:</label>
+					<select id="model-\${worker.id}" data-action="set-worker-model" data-worker-id="\${worker.id}" style="padding: 4px; font-size: 0.85em;">
+						<option value="">Default</option>
+					</select>
+				</div>
+			\`;
 
 			return \`
 				<div class="worker-card \${isExpanded ? 'expanded' : ''}" data-worker-id="\${worker.id}">
-					<div class="worker-header" onclick="toggleWorker('\${worker.id}')">
+					<div class="worker-header" data-action="toggle-worker" data-worker-id="\${worker.id}">
 						<div class="worker-info">
 							<span class="worker-name">\${worker.name}</span>
 							<span class="worker-status \${statusClass}">\${worker.status}</span>
 							\${worker.baseBranch ? '<span class="worker-branch">from ' + worker.baseBranch + '</span>' : ''}
 						</div>
-						<div class="worker-actions" onclick="event.stopPropagation()">
+						<div class="worker-actions">
 							\${completeWithPRBtn}
 							\${completeBtn}
 							\${pauseResumeBtn}
-							<button onclick="concludeWorker('\${worker.id}')" class="danger" title="Discard">✕</button>
+							<button data-action="kill-worker" data-worker-id="\${worker.id}" class="danger" title="Kill worker, remove worktree, reset task">✕ Kill</button>
 						</div>
 					</div>
 					<div class="worker-body">
 						<div><strong>Task:</strong> \${escapeHtml(worker.task)}</div>
 						<div><strong>Worktree:</strong> <code>\${worker.worktreePath}</code></div>
+						\${modelSelectorHtml}
 
 						\${approvalsHtml ? '<h4>Pending Approvals</h4>' + approvalsHtml : ''}
 
@@ -928,10 +1181,9 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 						<div class="conversation">\${messagesHtml}</div>
 
 						<div class="message-input-container">
-							<input type="text" class="message-input" id="msg-\${worker.id}"
-								placeholder="Send a message or clarification..."
-								onkeydown="if(event.key === 'Enter') sendMessage('\${worker.id}')" />
-							<button onclick="sendMessage('\${worker.id}')">Send</button>
+							<input type="text" class="message-input" id="msg-\${worker.id}" data-worker-id="\${worker.id}"
+								placeholder="Send a message or clarification..." />
+							<button data-action="send-message" data-worker-id="\${worker.id}">Send</button>
 						</div>
 					</div>
 				</div>
@@ -956,11 +1208,31 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			container.innerHTML = tasks.map(task => {
 				const isReady = readyIds.has(task.id);
 				const isOnCriticalPath = criticalPathIds.has(task.id);
+				const isFailed = task.status === 'failed';
+				const isRunning = task.status === 'running' || task.status === 'queued';
+				const isPending = task.status === 'pending';
+				const isBlocked = task.status === 'blocked';
+
 				const depsHtml = (task.dependencies || []).map(depId => {
 					const depTask = tasks.find(t => t.id === depId);
 					const isSatisfied = depTask?.status === 'completed';
 					return \`<span class="dep \${isSatisfied ? 'satisfied' : ''}">\${depId}</span>\`;
 				}).join('');
+
+				// Build action buttons based on task status
+				let actionButtons = '';
+				if (isReady) {
+					actionButtons += \`<button data-action="deploy-task" data-task-id="\${task.id}" title="Deploy this task">▶</button>\`;
+				}
+				if (isPending || isBlocked) {
+					actionButtons += \`<button data-action="remove-task" data-task-id="\${task.id}" class="danger" title="Remove task">✕</button>\`;
+				}
+				if (isRunning) {
+					actionButtons += \`<button data-action="cancel-task" data-task-id="\${task.id}" class="danger" title="Cancel running task">⏹</button>\`;
+				}
+				if (isFailed || isBlocked) {
+					actionButtons += \`<button data-action="retry-task" data-task-id="\${task.id}" title="Retry failed task">🔄</button>\`;
+				}
 
 				return \`
 					<div class="task-item \${task.status}\${isOnCriticalPath ? ' critical-path' : ''}">
@@ -970,12 +1242,10 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 								<span class="task-status \${task.status}">\${task.status}</span>
 								\${isOnCriticalPath ? '<span class="critical-badge" title="This task is on the critical path">⚡</span>' : ''}
 							</div>
-							<div>
-								\${isReady ? \`<button onclick="deployTask('\${task.id}')" title="Deploy this task">▶</button>\` : ''}
-								\${task.status === 'pending' ? \`<button onclick="removeTask('\${task.id}')" class="danger" title="Remove">✕</button>\` : ''}
-							</div>
+							<div>\${actionButtons}</div>
 						</div>
 						<div class="task-description">\${escapeHtml(task.description)}</div>
+						\${task.error ? '<div class="task-error">Error: ' + escapeHtml(task.error) + '</div>' : ''}
 						<div class="task-meta">
 							<span class="task-priority \${task.priority}">\${task.priority}</span>
 							\${task.agent ? '<span class="task-agent">' + task.agent + '</span>' : ''}
@@ -1298,56 +1568,30 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			vscode.postMessage({ type: 'clearPlan' });
 		}
 
-		function deployTask(taskId) {
-			vscode.postMessage({ type: 'deploy', taskId });
-		}
-
-		function deployAll() {
-			vscode.postMessage({ type: 'deployAll' });
-		}
-
 		function sendMessage(workerId) {
 			const input = document.getElementById('msg-' + workerId);
-			if (input.value.trim()) {
+			if (input && input.value.trim()) {
 				vscode.postMessage({ type: 'sendMessage', workerId, message: input.value.trim() });
 				input.value = '';
 			}
 		}
 
-		function approve(workerId, approvalId) {
-			const clarification = document.getElementById('clarification-' + approvalId)?.value || '';
-			vscode.postMessage({ type: 'approve', workerId, approvalId, clarification });
-		}
-
-		function reject(workerId, approvalId) {
-			const reason = document.getElementById('clarification-' + approvalId)?.value || '';
-			vscode.postMessage({ type: 'reject', workerId, approvalId, reason });
-		}
-
-		function pauseWorker(workerId) {
-			vscode.postMessage({ type: 'pause', workerId });
-		}
-
-		function resumeWorker(workerId) {
-			vscode.postMessage({ type: 'resume', workerId });
-		}
-
-		function concludeWorker(workerId) {
-			if (confirm('Discard this worker? The worktree will need to be manually cleaned up.')) {
-				vscode.postMessage({ type: 'conclude', workerId });
-			}
-		}
-
-		function completeWorker(workerId) {
-			if (confirm('Complete this worker? This will commit, push to origin, and remove the worktree.')) {
-				vscode.postMessage({ type: 'complete', workerId });
-			}
-		}
-
-		function completeWorkerWithPR(workerId) {
-			if (confirm('Complete this worker and create a Pull Request? This will commit, push to origin, create a PR, and remove the worktree.')) {
-				vscode.postMessage({ type: 'completeWithPR', workerId });
-			}
+		// Populate model selectors after workers render
+		function populateWorkerModelSelectors(models) {
+			document.querySelectorAll('[id^="model-"]').forEach(select => {
+				if (!select.dataset.action) return; // Skip if not a model selector
+				const currentValue = select.value;
+				select.innerHTML = '<option value="">Default</option>';
+				(models || []).forEach(model => {
+					const option = document.createElement('option');
+					option.value = model.id;
+					option.textContent = model.name + ' (' + model.vendor + ')';
+					select.appendChild(option);
+				});
+				if (currentValue) {
+					select.value = currentValue;
+				}
+			});
 		}
 
 		function escapeHtml(text) {

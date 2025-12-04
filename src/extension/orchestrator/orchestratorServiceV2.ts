@@ -249,6 +249,21 @@ export interface IOrchestratorService {
 	/** Complete a worker: push to origin and clean up worktree */
 	completeWorker(workerId: string, options?: CompleteWorkerOptions): Promise<CompleteWorkerResult>;
 
+	/** Kill a worker: stop process, optionally remove worktree and reset task */
+	killWorker(workerId: string, options?: KillWorkerOptions): Promise<void>;
+
+	/** Cancel a task: stop if running, reset to pending or remove */
+	cancelTask(taskId: string, remove?: boolean): Promise<void>;
+
+	/** Retry a failed task: reset status and re-deploy */
+	retryTask(taskId: string): Promise<WorkerSession>;
+
+	/** Set the model for a worker (takes effect on next message) */
+	setWorkerModel(workerId: string, modelId: string): void;
+
+	/** Get model ID for a worker */
+	getWorkerModel(workerId: string): string | undefined;
+
 	// Legacy compatibility
 	getWorkers(): Record<string, any>;
 }
@@ -265,6 +280,16 @@ export interface CompleteWorkerOptions {
 	prDescription?: string;
 	/** Base branch for the PR (defaults to task's baseBranch or main/master) */
 	prBaseBranch?: string;
+}
+
+/**
+ * Options for killing a worker
+ */
+export interface KillWorkerOptions {
+	/** Whether to remove the worktree (default: true) */
+	removeWorktree?: boolean;
+	/** Whether to reset the task status to pending (default: true) */
+	resetTask?: boolean;
 }
 
 /**
@@ -1076,6 +1101,137 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 	}
 
 	/**
+	 * Kill a worker: stop process, optionally remove worktree and reset task
+	 */
+	public async killWorker(workerId: string, options: KillWorkerOptions = {}): Promise<void> {
+		const { removeWorktree = true, resetTask = true } = options;
+
+		const worker = this._workers.get(workerId);
+		if (!worker) {
+			throw new Error(`Worker ${workerId} not found`);
+		}
+
+		const worktreePath = worker.worktreePath;
+		const linkedTask = this._tasks.find(t => t.workerId === workerId);
+
+		// Dispose the worker first (stops the conversation loop)
+		worker.dispose();
+		this._workers.delete(workerId);
+
+		// Reset task if requested
+		if (resetTask && linkedTask) {
+			linkedTask.status = 'pending';
+			linkedTask.workerId = undefined;
+			linkedTask.error = undefined;
+		}
+
+		// Remove worktree if requested
+		if (removeWorktree) {
+			try {
+				const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+				if (workspaceFolder) {
+					await this._execGit(['worktree', 'remove', worktreePath, '--force'], workspaceFolder);
+					// Also delete the branch
+					const branchName = worker.name;
+					await this._execGit(['branch', '-D', branchName], workspaceFolder).catch(() => {
+						// Branch might not exist, ignore error
+					});
+				}
+			} catch (error) {
+				console.error('Failed to remove worktree:', error);
+				// Continue anyway - worktree removal failure shouldn't block kill
+			}
+		}
+
+		this._onDidChangeWorkers.fire();
+		this._saveState();
+		vscode.window.showInformationMessage(`Worker "${worker.name}" killed.`);
+	}
+
+	/**
+	 * Cancel a task: stop if running, reset to pending or remove
+	 */
+	public async cancelTask(taskId: string, remove: boolean = false): Promise<void> {
+		const task = this._tasks.find(t => t.id === taskId);
+		if (!task) {
+			throw new Error(`Task ${taskId} not found`);
+		}
+
+		// If task has a worker, kill it
+		if (task.workerId) {
+			const worker = this._workers.get(task.workerId);
+			if (worker) {
+				await this.killWorker(task.workerId, { removeWorktree: true, resetTask: false });
+			}
+		}
+
+		if (remove) {
+			// Remove the task entirely
+			this.removeTask(taskId);
+		} else {
+			// Reset to pending
+			task.status = 'pending';
+			task.workerId = undefined;
+			task.error = undefined;
+			this._onDidChangeWorkers.fire();
+			this._saveState();
+		}
+	}
+
+	/**
+	 * Retry a failed task: reset status and re-deploy
+	 */
+	public async retryTask(taskId: string): Promise<WorkerSession> {
+		const task = this._tasks.find(t => t.id === taskId);
+		if (!task) {
+			throw new Error(`Task ${taskId} not found`);
+		}
+
+		// If task has a worker, kill it first
+		if (task.workerId) {
+			const worker = this._workers.get(task.workerId);
+			if (worker) {
+				await this.killWorker(task.workerId, { removeWorktree: true, resetTask: false });
+			}
+		}
+
+		// Reset task status
+		task.status = 'pending';
+		task.workerId = undefined;
+		task.error = undefined;
+		this._saveState();
+
+		// Re-deploy
+		return this.deploy(taskId);
+	}
+
+	/**
+	 * Model override storage per worker
+	 */
+	private readonly _workerModelOverrides = new Map<string, string>();
+
+	/**
+	 * Set the model for a worker (takes effect on next message)
+	 */
+	public setWorkerModel(workerId: string, modelId: string): void {
+		const worker = this._workers.get(workerId);
+		if (!worker) {
+			throw new Error(`Worker ${workerId} not found`);
+		}
+
+		this._workerModelOverrides.set(workerId, modelId);
+		worker.addUserMessage(`[System: Model changed to ${modelId}. Takes effect on next message.]`);
+		this._onDidChangeWorkers.fire();
+	}
+
+	/**
+	 * Get model ID for a worker
+	 */
+	public getWorkerModel(workerId: string): string | undefined {
+		return this._workerModelOverrides.get(workerId);
+	}
+
+	/**
 	 * Create a pull request using GitHub CLI
 	 */
 	private async _createPullRequest(
@@ -1242,8 +1398,8 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 		worker.addUserMessage(currentPrompt);
 
-		// Get a real language model (once for the entire session)
-		const model = await this._selectModel(task.modelId);
+		// Get initial model (will check for overrides each iteration)
+		let model = await this._selectModel(task.modelId);
 		if (!model) {
 			worker.error('No language model available');
 			return;
@@ -1264,6 +1420,15 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		// Continuous conversation loop - keeps running until worker is completed
 		while (worker.isActive) {
 			try {
+				// Check for model override before each iteration
+				const modelOverride = this._workerModelOverrides.get(worker.id);
+				if (modelOverride) {
+					const newModel = await this._selectModel(modelOverride);
+					if (newModel) {
+						model = newModel;
+					}
+				}
+
 				const stream = new WorkerResponseStream(worker);
 
 				// Run the agent using the proper IAgentRunner service

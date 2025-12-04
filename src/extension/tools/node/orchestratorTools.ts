@@ -808,3 +808,130 @@ ToolRegistry.registerTool(SendMessageTool);
 ToolRegistry.registerTool(ListAgentsTool);
 ToolRegistry.registerTool(SavePlanTool);
 ToolRegistry.registerTool(ExpandImplementationTool);
+
+// ============================================================================
+// Kill Worker Tool
+// ============================================================================
+
+interface IKillWorkerParams {
+	workerId: string;
+	removeWorktree?: boolean;
+	resetTask?: boolean;
+}
+
+class KillWorkerTool implements ICopilotTool<IKillWorkerParams> {
+	public static readonly toolName = ToolName.OrchestratorKillWorker;
+
+	constructor(
+		@IOrchestratorService private readonly _orchestratorService: IOrchestratorService
+	) { }
+
+	prepareInvocation(options: LanguageModelToolInvocationPrepareOptions<IKillWorkerParams>, _token: CancellationToken): ProviderResult<any> {
+		return {
+			confirmationMessages: {
+				title: 'Kill Worker',
+				message: `Kill worker "${options.input.workerId}"? This will stop the process and clean up the worktree.`
+			}
+		};
+	}
+
+	async invoke(options: LanguageModelToolInvocationOptions<IKillWorkerParams>, _token: CancellationToken): Promise<LanguageModelToolResult> {
+		const { workerId, removeWorktree = true, resetTask = true } = options.input;
+
+		try {
+			await this._orchestratorService.killWorker(workerId, { removeWorktree, resetTask });
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`✅ Worker "${workerId}" killed successfully.${resetTask ? ' Task reset to pending.' : ''}${removeWorktree ? ' Worktree removed.' : ''}`)
+			]);
+		} catch (e: any) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`❌ Failed to kill worker: ${e.message}`)
+			]);
+		}
+	}
+}
+
+// ============================================================================
+// Cancel Task Tool
+// ============================================================================
+
+interface ICancelTaskParams {
+	taskId: string;
+	remove?: boolean;
+}
+
+class CancelTaskTool implements ICopilotTool<ICancelTaskParams> {
+	public static readonly toolName = ToolName.OrchestratorCancelTask;
+
+	constructor(
+		@IOrchestratorService private readonly _orchestratorService: IOrchestratorService
+	) { }
+
+	prepareInvocation(options: LanguageModelToolInvocationPrepareOptions<ICancelTaskParams>, _token: CancellationToken): ProviderResult<any> {
+		return {
+			confirmationMessages: {
+				title: 'Cancel Task',
+				message: `Cancel task "${options.input.taskId}"?${options.input.remove ? ' The task will be removed.' : ' The task will be reset to pending.'}`
+			}
+		};
+	}
+
+	async invoke(options: LanguageModelToolInvocationOptions<ICancelTaskParams>, _token: CancellationToken): Promise<LanguageModelToolResult> {
+		const { taskId, remove = false } = options.input;
+
+		try {
+			await this._orchestratorService.cancelTask(taskId, remove);
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`✅ Task "${taskId}" ${remove ? 'removed' : 'cancelled and reset to pending'}.`)
+			]);
+		} catch (e: any) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`❌ Failed to cancel task: ${e.message}`)
+			]);
+		}
+	}
+}
+
+// ============================================================================
+// Retry Task Tool
+// ============================================================================
+
+interface IRetryTaskParams {
+	taskId: string;
+}
+
+class RetryTaskTool implements ICopilotTool<IRetryTaskParams> {
+	public static readonly toolName = ToolName.OrchestratorRetryTask;
+
+	constructor(
+		@IOrchestratorService private readonly _orchestratorService: IOrchestratorService
+	) { }
+
+	prepareInvocation(options: LanguageModelToolInvocationPrepareOptions<IRetryTaskParams>, _token: CancellationToken): ProviderResult<any> {
+		return {
+			confirmationMessages: {
+				title: 'Retry Task',
+				message: `Retry task "${options.input.taskId}"? A new worker will be deployed.`
+			}
+		};
+	}
+
+	async invoke(options: LanguageModelToolInvocationOptions<IRetryTaskParams>, _token: CancellationToken): Promise<LanguageModelToolResult> {
+		const { taskId } = options.input;
+
+		try {
+			const worker = await this._orchestratorService.retryTask(taskId);
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`✅ Task "${taskId}" retried. New worker: ${worker.id}`)
+			]);
+		} catch (e: any) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`❌ Failed to retry task: ${e.message}`)
+			]);
+		}
+	}
+}
+
+ToolRegistry.registerTool(KillWorkerTool);
+ToolRegistry.registerTool(CancelTaskTool);
+ToolRegistry.registerTool(RetryTaskTool);
