@@ -9,6 +9,7 @@ import { IChatQuotaService } from '../../../platform/chat/common/chatQuotaServic
 import { IInteractionService } from '../../../platform/chat/common/interactionService';
 import { ConfigKey, IConfigurationService } from '../../../platform/configuration/common/configurationService';
 import { IEndpointProvider } from '../../../platform/endpoint/common/endpointProvider';
+import { IVSCodeExtensionContext } from '../../../platform/extContext/common/extensionContext';
 import { IOctoKitService } from '../../../platform/github/common/githubService';
 import { IExperimentationService } from '../../../platform/telemetry/common/nullExperimentationService';
 import { Event, Relay } from '../../../util/vs/base/common/event';
@@ -69,6 +70,7 @@ class ChatAgents implements IDisposable {
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IExperimentationService private readonly experimentationService: IExperimentationService,
 		@IOrchestratorService private readonly orchestratorService: IOrchestratorService,
+		@IVSCodeExtensionContext private readonly extensionContext: IVSCodeExtensionContext,
 	) { }
 
 	dispose() {
@@ -205,7 +207,7 @@ class ChatAgents implements IDisposable {
 		orchestratorAgent.iconPath = new vscode.ThemeIcon('organization');
 
 		// Also register the dashboard webview provider
-		const dashboardProvider = new WorkerDashboardProviderV2(this.orchestratorService);
+		const dashboardProvider = new WorkerDashboardProviderV2(this.orchestratorService, this.extensionContext.extensionUri);
 		const dashboardRegistration = vscode.window.registerWebviewViewProvider(WorkerDashboardProviderV2.viewType, dashboardProvider);
 
 		return {

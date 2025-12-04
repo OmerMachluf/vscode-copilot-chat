@@ -1481,7 +1481,7 @@
 				"name": "copilot_orchestratorDeploy",
 				"toolReferenceName": "orchestrator_deploy",
 				"displayName": "Deploy Plan",
-				"modelDescription": "Deploys tasks for execution. Use planId to deploy ALL ready tasks in a plan (tasks with no unsatisfied dependencies). Use taskId to deploy a specific task. One of planId or taskId must be provided.",
+				"modelDescription": "Deploys tasks for execution. Use planId to deploy ALL ready tasks in a plan (tasks with no unsatisfied dependencies). Use taskId to deploy a specific task. One of planId or taskId must be provided. Optionally specify modelId to override the language model for deployed workers.",
 				"userDescription": "Deploy tasks for execution",
 				"icon": "$(rocket)",
 				"tags": ["vscode_codesearch"],
@@ -1495,6 +1495,10 @@
 						"taskId": {
 							"type": "string",
 							"description": "The ID of a specific task to deploy. Use this to deploy a single task regardless of plan."
+						},
+						"modelId": {
+							"type": "string",
+							"description": "The language model ID to use for the deployed worker(s). Overrides the task's default model. Examples: 'gpt-4o', 'claude-sonnet-4-20250514', 'gemini-2.5-pro'."
 						}
 					},
 					"required": []
@@ -1629,7 +1633,7 @@
 				"name": "copilot_orchestratorRetryTask",
 				"toolReferenceName": "orchestrator_retryTask",
 				"displayName": "Retry Task",
-				"modelDescription": "Retries a failed or blocked task: kills any existing worker, resets the task, and deploys a new worker.",
+				"modelDescription": "Retries a failed or blocked task: kills any existing worker, resets the task, and deploys a new worker. Optionally specify a different model for the retry.",
 				"userDescription": "Retry a failed task",
 				"icon": "$(refresh)",
 				"tags": ["vscode_codesearch"],
@@ -1639,6 +1643,10 @@
 						"taskId": {
 							"type": "string",
 							"description": "The ID of the task to retry."
+						},
+						"modelId": {
+							"type": "string",
+							"description": "The language model ID to use for the retried worker. Overrides the task's default model."
 						}
 					},
 					"required": ["taskId"]

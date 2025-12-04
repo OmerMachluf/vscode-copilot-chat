@@ -50,6 +50,7 @@ class AddPlanTaskTool implements ICopilotTool<IAddPlanTaskParams> {
 interface IDeployParams {
 	planId?: string;
 	taskId?: string;
+	modelId?: string;
 }
 
 class DeployTool implements ICopilotTool<IDeployParams> {
@@ -64,14 +65,16 @@ class DeployTool implements ICopilotTool<IDeployParams> {
 	}
 
 	async invoke(options: LanguageModelToolInvocationOptions<IDeployParams>, _token: CancellationToken): Promise<LanguageModelToolResult> {
-		const { planId, taskId } = options.input;
+		const { planId, taskId, modelId } = options.input;
+		const deployOptions = modelId ? { modelId } : undefined;
 
 		try {
 			// Option 1: Deploy a specific task by taskId
 			if (taskId) {
-				const worker = await this._orchestratorService.deploy(taskId);
+				const worker = await this._orchestratorService.deploy(taskId, deployOptions);
+				const modelInfo = modelId ? ` (model: ${modelId})` : '';
 				return new LanguageModelToolResult([
-					new LanguageModelTextPart(`✅ Deployed worker ${worker.id} for task: ${taskId}\nTask: ${worker.task}`)
+					new LanguageModelTextPart(`✅ Deployed worker ${worker.id} for task: ${taskId}${modelInfo}\nTask: ${worker.task}`)
 				]);
 			}
 
@@ -90,7 +93,7 @@ class DeployTool implements ICopilotTool<IDeployParams> {
 				}
 
 				// Deploy ALL ready tasks in the plan
-				const workers = await this._orchestratorService.deployAll(planId);
+				const workers = await this._orchestratorService.deployAll(planId, deployOptions);
 
 				if (workers.length === 0) {
 					const readyTasks = this._orchestratorService.getReadyTasks(planId);
@@ -104,9 +107,10 @@ class DeployTool implements ICopilotTool<IDeployParams> {
 					]);
 				}
 
+				const modelInfo = modelId ? ` using model ${modelId}` : '';
 				const workerInfo = workers.map(w => `  - ${w.id}: ${w.task}`).join('\n');
 				return new LanguageModelToolResult([
-					new LanguageModelTextPart(`✅ Plan "${plan.name}" (${planId}) - deployed ${workers.length} worker(s):\n${workerInfo}`)
+					new LanguageModelTextPart(`✅ Plan "${plan.name}" (${planId}) - deployed ${workers.length} worker(s)${modelInfo}:\n${workerInfo}`)
 				]);
 			}
 
@@ -898,6 +902,7 @@ class CancelTaskTool implements ICopilotTool<ICancelTaskParams> {
 
 interface IRetryTaskParams {
 	taskId: string;
+	modelId?: string;
 }
 
 class RetryTaskTool implements ICopilotTool<IRetryTaskParams> {
@@ -917,12 +922,14 @@ class RetryTaskTool implements ICopilotTool<IRetryTaskParams> {
 	}
 
 	async invoke(options: LanguageModelToolInvocationOptions<IRetryTaskParams>, _token: CancellationToken): Promise<LanguageModelToolResult> {
-		const { taskId } = options.input;
+		const { taskId, modelId } = options.input;
+		const deployOptions = modelId ? { modelId } : undefined;
 
 		try {
-			const worker = await this._orchestratorService.retryTask(taskId);
+			const worker = await this._orchestratorService.retryTask(taskId, deployOptions);
+			const modelInfo = modelId ? ` (model: ${modelId})` : '';
 			return new LanguageModelToolResult([
-				new LanguageModelTextPart(`✅ Task "${taskId}" retried. New worker: ${worker.id}`)
+				new LanguageModelTextPart(`✅ Task "${taskId}" retried${modelInfo}. New worker: ${worker.id}`)
 			]);
 		} catch (e: any) {
 			return new LanguageModelToolResult([

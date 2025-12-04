@@ -226,10 +226,10 @@ export interface IOrchestratorService {
 	// --- Worker Management ---
 
 	/** Deploy a worker for a specific task or the first pending task */
-	deploy(taskId?: string): Promise<WorkerSession>;
+	deploy(taskId?: string, options?: DeployOptions): Promise<WorkerSession>;
 
 	/** Deploy workers for all pending tasks in a plan */
-	deployAll(planId?: string): Promise<WorkerSession[]>;
+	deployAll(planId?: string, options?: DeployOptions): Promise<WorkerSession[]>;
 
 	/** Send a message to a worker */
 	sendMessageToWorker(workerId: string, message: string): void;
@@ -256,7 +256,7 @@ export interface IOrchestratorService {
 	cancelTask(taskId: string, remove?: boolean): Promise<void>;
 
 	/** Retry a failed task: reset status and re-deploy */
-	retryTask(taskId: string): Promise<WorkerSession>;
+	retryTask(taskId: string, options?: DeployOptions): Promise<WorkerSession>;
 
 	/** Set the model for a worker (takes effect on next message) */
 	setWorkerModel(workerId: string, modelId: string): void;
@@ -280,6 +280,14 @@ export interface CompleteWorkerOptions {
 	prDescription?: string;
 	/** Base branch for the PR (defaults to task's baseBranch or main/master) */
 	prBaseBranch?: string;
+}
+
+/**
+ * Options for deploying a task
+ */
+export interface DeployOptions {
+	/** Language model ID to use for this worker (overrides task's modelId) */
+	modelId?: string;
 }
 
 /**
@@ -835,7 +843,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		}
 	}
 
-	public async deploy(taskId?: string): Promise<WorkerSession> {
+	public async deploy(taskId?: string, options?: DeployOptions): Promise<WorkerSession> {
 		// Find task - either by ID or first ready task
 		let task: WorkerTask | undefined;
 		if (taskId) {
@@ -891,6 +899,11 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				agentId,
 				composedInstructions.instructions,
 			);
+
+			// Apply model override from deploy options if provided
+			if (options?.modelId) {
+				this._workerModelOverrides.set(worker.id, options.modelId);
+			}
 
 			// Link task to worker
 			task.status = 'running';
@@ -970,14 +983,14 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		}
 	}
 
-	public async deployAll(planId?: string): Promise<WorkerSession[]> {
+	public async deployAll(planId?: string, options?: DeployOptions): Promise<WorkerSession[]> {
 		const targetPlanId = planId ?? this._activePlanId;
 		const workers: WorkerSession[] = [];
 		const readyTasks = this.getReadyTasks(targetPlanId);
 
 		await Promise.all(readyTasks.map(async (task) => {
 			try {
-				const worker = await this.deploy(task.id);
+				const worker = await this.deploy(task.id, options);
 				workers.push(worker);
 			} catch (error) {
 				console.error(`Failed to deploy worker for task ${task.id}:`, error);
@@ -1181,7 +1194,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 	/**
 	 * Retry a failed task: reset status and re-deploy
 	 */
-	public async retryTask(taskId: string): Promise<WorkerSession> {
+	public async retryTask(taskId: string, options?: DeployOptions): Promise<WorkerSession> {
 		const task = this._tasks.find(t => t.id === taskId);
 		if (!task) {
 			throw new Error(`Task ${taskId} not found`);
@@ -1201,8 +1214,8 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		task.error = undefined;
 		this._saveState();
 
-		// Re-deploy
-		return this.deploy(taskId);
+		// Re-deploy with optional model override
+		return this.deploy(taskId, options);
 	}
 
 	/**
@@ -1398,8 +1411,9 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 		worker.addUserMessage(currentPrompt);
 
-		// Get initial model (will check for overrides each iteration)
-		let model = await this._selectModel(task.modelId);
+		// Get initial model - check for deploy-time override first, then task's model, then default
+		const modelOverride = this._workerModelOverrides.get(worker.id);
+		let model = await this._selectModel(modelOverride ?? task.modelId);
 		if (!model) {
 			worker.error('No language model available');
 			return;

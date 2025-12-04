@@ -5,6 +5,7 @@
 
 import * as vscode from 'vscode';
 import { IOrchestratorService } from '../orchestratorServiceV2';
+import { WorkerChatPanel } from './WorkerChatPanel';
 
 /**
  * Enhanced Worker Dashboard that provides full conversation view,
@@ -14,7 +15,10 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 	public static readonly viewType = 'copilot.orchestrator.dashboard';
 	private _view?: vscode.WebviewView;
 
-	constructor(private readonly _orchestrator: IOrchestratorService) { }
+	constructor(
+		private readonly _orchestrator: IOrchestratorService,
+		private readonly _extensionUri: vscode.Uri,
+	) { }
 
 	public resolveWebviewView(
 		webviewView: vscode.WebviewView,
@@ -70,7 +74,7 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 								});
 								break;
 							case 'retryTask':
-								this._orchestrator.retryTask(data.taskId).catch(err => {
+								this._orchestrator.retryTask(data.taskId, data.modelId ? { modelId: data.modelId } : undefined).catch(err => {
 									vscode.window.showErrorMessage(`Failed to retry task: ${err.message}`);
 								});
 								break;
@@ -95,10 +99,10 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 					this._orchestrator.clearPlan();
 					break;
 				case 'deploy':
-					this._orchestrator.deploy(data.taskId);
+					this._orchestrator.deploy(data.taskId, data.modelId ? { modelId: data.modelId } : undefined);
 					break;
 				case 'deployAll':
-					this._orchestrator.deployAll();
+					this._orchestrator.deployAll(undefined, data.modelId ? { modelId: data.modelId } : undefined);
 					break;
 				case 'sendMessage':
 					this._orchestrator.sendMessageToWorker(data.workerId, data.message);
@@ -157,6 +161,9 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 						vscode.window.showErrorMessage(`Failed to set model: ${err.message}`);
 					}
 					break;
+				case 'openChat':
+					WorkerChatPanel.createOrShow(this._orchestrator, data.workerId, this._extensionUri);
+					break;
 				case 'createPlan':
 					this._orchestrator.createPlan(data.name, data.description, data.baseBranch);
 					break;
@@ -174,44 +181,6 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 					break;
 				case 'resumePlan':
 					this._orchestrator.resumePlan(data.planId);
-					break;
-				case 'confirmAction':
-					// Show VS Code native confirmation dialog
-					const confirmed = await vscode.window.showWarningMessage(
-						data.message,
-						{ modal: true },
-						'Yes'
-					);
-					if (confirmed === 'Yes') {
-						// Execute the confirmed action
-						switch (data.action) {
-							case 'complete':
-								this._orchestrator.completeWorker(data.workerId, { createPullRequest: false }).catch(err => {
-									vscode.window.showErrorMessage(`Failed to complete worker: ${err.message}`);
-								});
-								break;
-							case 'completeWithPR':
-								this._orchestrator.completeWorker(data.workerId, { createPullRequest: true }).catch(err => {
-									vscode.window.showErrorMessage(`Failed to complete worker: ${err.message}`);
-								});
-								break;
-							case 'killWorker':
-								this._orchestrator.killWorker(data.workerId, { removeWorktree: true, resetTask: true }).catch(err => {
-									vscode.window.showErrorMessage(`Failed to kill worker: ${err.message}`);
-								});
-								break;
-							case 'cancelTask':
-								this._orchestrator.cancelTask(data.taskId, false).catch(err => {
-									vscode.window.showErrorMessage(`Failed to cancel task: ${err.message}`);
-								});
-								break;
-							case 'retryTask':
-								this._orchestrator.retryTask(data.taskId).catch(err => {
-									vscode.window.showErrorMessage(`Failed to retry task: ${err.message}`);
-								});
-								break;
-						}
-					}
 					break;
 			}
 		});
@@ -425,6 +394,20 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			justify-content: space-between;
 			align-items: center;
 			margin-bottom: 10px;
+		}
+		.deploy-controls {
+			display: flex;
+			gap: 6px;
+			align-items: center;
+		}
+		.deploy-controls select {
+			padding: 4px 8px;
+			border-radius: 4px;
+			border: 1px solid var(--vscode-widget-border);
+			background: var(--vscode-dropdown-background);
+			color: var(--vscode-dropdown-foreground);
+			font-size: 12px;
+			max-width: 180px;
 		}
 		.task-item {
 			background: var(--vscode-editor-background);
@@ -803,7 +786,10 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 
 			<div class="plan-header">
 				<h3>Tasks</h3>
-				<div>
+				<div class="deploy-controls">
+					<select id="deploy-model-select" title="Select model for deployment">
+						<option value="">Default Model</option>
+					</select>
 					<button data-action="deploy-all" id="deploy-all-btn">Deploy Ready</button>
 					<button data-action="clear-plan" class="secondary">Clear</button>
 				</div>
@@ -904,6 +890,9 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 				case 'toggle-worker':
 					toggleWorker(workerId);
 					break;
+				case 'open-chat':
+					vscode.postMessage({ type: 'openChat', workerId });
+					break;
 				case 'pause-worker':
 					vscode.postMessage({ type: 'pause', workerId });
 					break;
@@ -931,21 +920,30 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 					const reason = document.getElementById('clarification-' + approvalId)?.value || '';
 					vscode.postMessage({ type: 'reject', workerId, approvalId, reason });
 					break;
-				case 'deploy-task':
-					vscode.postMessage({ type: 'deploy', taskId });
+				case 'deploy-task': {
+					const deployModelSelect = document.getElementById('deploy-model-select');
+					const deployModelId = deployModelSelect?.value || undefined;
+					vscode.postMessage({ type: 'deploy', taskId, modelId: deployModelId });
 					break;
-				case 'deploy-all':
-					vscode.postMessage({ type: 'deployAll' });
+				}
+				case 'deploy-all': {
+					const deployModelSelect = document.getElementById('deploy-model-select');
+					const deployModelId = deployModelSelect?.value || undefined;
+					vscode.postMessage({ type: 'deployAll', modelId: deployModelId });
 					break;
+				}
 				case 'remove-task':
 					vscode.postMessage({ type: 'removeTask', taskId });
 					break;
 				case 'cancel-task':
 					vscode.postMessage({ type: 'confirmAction', action: 'cancelTask', taskId, message: 'Cancel this task? The worker will be stopped and the task reset to pending.' });
 					break;
-				case 'retry-task':
-					vscode.postMessage({ type: 'confirmAction', action: 'retryTask', taskId, message: 'Retry this task? A new worker will be deployed.' });
+				case 'retry-task': {
+					const deployModelSelect = document.getElementById('deploy-model-select');
+					const deployModelId = deployModelSelect?.value || undefined;
+					vscode.postMessage({ type: 'confirmAction', action: 'retryTask', taskId, modelId: deployModelId, message: 'Retry this task? A new worker will be deployed.' });
 					break;
+				}
 				case 'add-task':
 					addTask();
 					break;
@@ -1035,13 +1033,24 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 		let currentModels = [];
 
 		function renderModelsDropdown(models) {
-			const select = document.getElementById('task-model');
-			select.innerHTML = '<option value="">Default</option>';
+			// Populate task model selector
+			const taskModelSelect = document.getElementById('task-model');
+			taskModelSelect.innerHTML = '<option value="">Default</option>';
 			(models || []).forEach(model => {
 				const option = document.createElement('option');
 				option.value = model.id;
 				option.textContent = model.name + ' (' + model.vendor + ')';
-				select.appendChild(option);
+				taskModelSelect.appendChild(option);
+			});
+
+			// Populate deploy model selector
+			const deployModelSelect = document.getElementById('deploy-model-select');
+			deployModelSelect.innerHTML = '<option value="">Default Model</option>';
+			(models || []).forEach(model => {
+				const option = document.createElement('option');
+				option.value = model.id;
+				option.textContent = model.name + ' (' + model.vendor + ')';
+				deployModelSelect.appendChild(option);
 			});
 		}
 
@@ -1164,6 +1173,7 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 							\${worker.baseBranch ? '<span class="worker-branch">from ' + worker.baseBranch + '</span>' : ''}
 						</div>
 						<div class="worker-actions">
+							<button data-action="open-chat" data-worker-id="\${worker.id}" class="secondary" title="Open full chat panel">💬</button>
 							\${completeWithPRBtn}
 							\${completeBtn}
 							\${pauseResumeBtn}
