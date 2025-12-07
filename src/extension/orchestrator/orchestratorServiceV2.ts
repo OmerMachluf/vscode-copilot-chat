@@ -1507,6 +1507,23 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				stream.flush();
 
 				if (!result.success && result.error) {
+					// Check if this was a cancellation from interrupt
+					const isCancellation = result.error.includes('Canceled') ||
+						result.error.includes('cancelled') ||
+						result.error.includes('aborted') ||
+						worker.status === 'idle'; // interrupt() sets status to idle
+
+					if (isCancellation) {
+						// Don't treat cancellation as an error - wait for user input
+						const nextMessage = await worker.waitForClarification();
+						if (!nextMessage) {
+							break;
+						}
+						currentPrompt = nextMessage;
+						worker.start();
+						continue;
+					}
+
 					consecutiveFailures++;
 
 					// Check if error is retryable (empty response, timeout, rate limit)
