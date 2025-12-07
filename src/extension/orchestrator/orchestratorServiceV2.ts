@@ -1545,7 +1545,14 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 			} catch (error) {
 				// Check if this was an interrupt (user clicked interrupt button)
-				if (worker.cancellationToken.isCancellationRequested) {
+				// We check worker status because interrupt() sets it to 'idle' and creates a fresh token
+				const errorMessage = String(error);
+				const isCancellation = errorMessage.includes('Canceled') ||
+					errorMessage.includes('cancelled') ||
+					errorMessage.includes('aborted') ||
+					worker.status === 'idle'; // interrupt() sets status to idle
+
+				if (isCancellation) {
 					// Worker.interrupt() already set status to idle
 					// Wait for user to send a new message before continuing
 					const nextMessage = await worker.waitForClarification();
@@ -1560,7 +1567,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				}
 
 				consecutiveFailures++;
-				const errorMessage = String(error);
+				// errorMessage already set above
 
 				// Check if error is retryable
 				const isRetryable = errorMessage.includes('ECONNRESET') ||
