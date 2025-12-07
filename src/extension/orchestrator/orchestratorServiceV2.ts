@@ -1482,15 +1482,20 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 				const stream = new WorkerResponseStream(worker);
 
+				// Build combined instructions from agent file + task context
+				const agentInstructions = worker.agentInstructions?.join('\n\n') || '';
+				const taskInstructions = task.context?.additionalInstructions || '';
+				const combinedInstructions = [agentInstructions, taskInstructions].filter(Boolean).join('\n\n');
+
 				// Run the agent using the proper IAgentRunner service
-				// Use the worker's cancellation token so stop() can interrupt it
+				// Use the worker's cancellation token so interrupt() can stop it
 				const result = await this._agentRunner.run(
 					{
 						prompt: currentPrompt,
 						sessionId,
 						model,
 						suggestedFiles: task.context?.suggestedFiles,
-						additionalInstructions: task.context?.additionalInstructions,
+						additionalInstructions: combinedInstructions || undefined,
 						token: worker.cancellationToken,
 						onPaused: pausedEmitter.event,
 						maxToolCallIterations: 200,
@@ -1539,10 +1544,19 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				worker.start();
 
 			} catch (error) {
-				// Check if this was a cancellation (user clicked stop)
+				// Check if this was an interrupt (user clicked interrupt button)
 				if (worker.cancellationToken.isCancellationRequested) {
-					// Don't treat as error - worker.stop() already handled the state
-					break;
+					// Worker.interrupt() already set status to idle
+					// Wait for user to send a new message before continuing
+					const nextMessage = await worker.waitForClarification();
+					if (!nextMessage) {
+						// Worker was completed or disposed
+						break;
+					}
+					// User sent a message - continue the loop with their input
+					currentPrompt = nextMessage;
+					worker.start();
+					continue;
 				}
 
 				consecutiveFailures++;

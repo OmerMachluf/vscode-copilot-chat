@@ -62,6 +62,8 @@ export interface SerializedWorkerState {
 	readonly errorMessage?: string;
 	readonly planId?: string;
 	readonly baseBranch?: string;
+	readonly agentId?: string;
+	readonly agentInstructions?: string[];
 }
 
 /**
@@ -259,6 +261,8 @@ export class WorkerSession extends Disposable {
 			errorMessage: this._errorMessage,
 			planId: this._planId,
 			baseBranch: this._baseBranch,
+			agentId: this._agentId,
+			agentInstructions: this._agentInstructions ? [...this._agentInstructions] : undefined,
 		};
 	}
 
@@ -266,7 +270,15 @@ export class WorkerSession extends Disposable {
 	 * Create a WorkerSession from serialized state
 	 */
 	public static fromSerialized(state: SerializedWorkerState): WorkerSession {
-		const session = new WorkerSession(state.name, state.task, state.worktreePath, state.planId, state.baseBranch);
+		const session = new WorkerSession(
+			state.name,
+			state.task,
+			state.worktreePath,
+			state.planId,
+			state.baseBranch,
+			state.agentId,
+			state.agentInstructions,
+		);
 		// Override the auto-generated id and timestamps
 		(session as any)._id = state.id;
 		(session as any)._status = state.status;

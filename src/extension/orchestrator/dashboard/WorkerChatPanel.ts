@@ -749,13 +749,10 @@ export class WorkerChatPanel extends Disposable {
 
 			// Update action buttons
 			const actionsHtml = [];
-			if (worker.status === 'running') {
+			if (worker.status === 'running' || worker.status === 'waiting-approval') {
 				actionsHtml.push('<button data-action="interrupt" class="warning interrupt-btn" title="Interrupt agent to provide feedback">⏹️ Interrupt</button>');
-				actionsHtml.push('<button data-action="pause" class="secondary">⏸️ Pause</button>');
-			} else if (worker.status === 'paused') {
-				actionsHtml.push('<button data-action="resume">▶️ Resume</button>');
 			}
-			if (worker.status === 'idle' || worker.status === 'paused') {
+			if (worker.status === 'idle') {
 				actionsHtml.push('<button data-action="complete" class="success">✅ Complete</button>');
 				actionsHtml.push('<button data-action="complete-pr" class="success">🔀 Complete + PR</button>');
 			}

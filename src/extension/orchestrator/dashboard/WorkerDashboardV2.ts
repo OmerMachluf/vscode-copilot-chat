@@ -1150,11 +1150,7 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 				</div>
 			\`).join('');
 
-			const pauseResumeBtn = worker.status === 'paused'
-				? \`<button data-action="resume-worker" data-worker-id="\${worker.id}">▶ Resume</button>\`
-				: \`<button data-action="pause-worker" data-worker-id="\${worker.id}" class="secondary">⏸ Pause</button>\`;
-
-			const stopBtn = isRunning
+			const interruptBtn = isRunning
 				? \`<button data-action="interrupt-worker" data-worker-id="\${worker.id}" class="warning interrupt-btn" title="Interrupt to provide feedback">⏹️</button>\`
 				: '';
 
@@ -1186,10 +1182,9 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 						</div>
 						<div class="worker-actions">
 							<button data-action="open-chat" data-worker-id="\${worker.id}" class="secondary" title="Open full chat panel">💬</button>
-							\${stopBtn}
+							\${interruptBtn}
 							\${completeWithPRBtn}
 							\${completeBtn}
-							\${pauseResumeBtn}
 							<button data-action="kill-worker" data-worker-id="\${worker.id}" class="danger" title="Kill worker, remove worktree, reset task">✕ Kill</button>
 						</div>
 					</div>
