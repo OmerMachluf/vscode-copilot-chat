@@ -243,6 +243,12 @@ export interface IOrchestratorService {
 	/** Resume a worker */
 	resumeWorker(workerId: string): void;
 
+	/** Interrupt the worker's current agent iteration to provide feedback */
+	interruptWorker(workerId: string): void;
+
+	/** @deprecated Use interruptWorker() instead */
+	stopWorker(workerId: string): void;
+
 	/** Stop and remove a worker (does not push changes) */
 	concludeWorker(workerId: string): void;
 
@@ -1032,6 +1038,26 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		}
 	}
 
+	/**
+	 * Interrupt the worker's current agent iteration.
+	 * This stops the current LLM/tool loop but keeps the worker active
+	 * so the user can send feedback or redirect.
+	 */
+	public interruptWorker(workerId: string): void {
+		const worker = this._workers.get(workerId);
+		if (worker) {
+			worker.interrupt();
+			this._onDidChangeWorkers.fire();
+		}
+	}
+
+	/**
+	 * @deprecated Use interruptWorker() instead
+	 */
+	public stopWorker(workerId: string): void {
+		this.interruptWorker(workerId);
+	}
+
 	public concludeWorker(workerId: string): void {
 		const worker = this._workers.get(workerId);
 		if (worker) {
@@ -1376,9 +1402,16 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		const worktreePath = path.join(worktreesDir, taskName);
 		const branchName = taskName;
 
-		// Check if worktree already exists
+		// Check if worktree already exists and is valid (has .git file)
+		// A valid git worktree has a .git file (not directory) pointing to the main repo
+		const gitPath = path.join(worktreePath, '.git');
 		if (fs.existsSync(worktreePath)) {
-			return worktreePath;
+			if (fs.existsSync(gitPath)) {
+				// Valid worktree exists
+				return worktreePath;
+			}
+			// Directory exists but is not a valid worktree - clean it up
+			fs.rmSync(worktreePath, { recursive: true, force: true });
 		}
 
 		try {
@@ -1390,7 +1423,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				try {
 					await this._execGit(['worktree', 'add', worktreePath, branchName], workspaceFolder);
 				} catch {
-					if (fs.existsSync(worktreePath)) {
+					if (fs.existsSync(worktreePath) && fs.existsSync(gitPath)) {
 						return worktreePath;
 					}
 					throw error;
@@ -1421,7 +1454,6 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			return;
 		}
 
-		const tokenSource = new vscode.CancellationTokenSource();
 		const sessionId = generateUuid();
 
 		const pausedEmitter = new Emitter<boolean>();
@@ -1451,6 +1483,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				const stream = new WorkerResponseStream(worker);
 
 				// Run the agent using the proper IAgentRunner service
+				// Use the worker's cancellation token so stop() can interrupt it
 				const result = await this._agentRunner.run(
 					{
 						prompt: currentPrompt,
@@ -1458,7 +1491,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 						model,
 						suggestedFiles: task.context?.suggestedFiles,
 						additionalInstructions: task.context?.additionalInstructions,
-						token: tokenSource.token,
+						token: worker.cancellationToken,
 						onPaused: pausedEmitter.event,
 						maxToolCallIterations: 200,
 						worktreePath: worker.worktreePath,
@@ -1506,6 +1539,12 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				worker.start();
 
 			} catch (error) {
+				// Check if this was a cancellation (user clicked stop)
+				if (worker.cancellationToken.isCancellationRequested) {
+					// Don't treat as error - worker.stop() already handled the state
+					break;
+				}
+
 				consecutiveFailures++;
 				const errorMessage = String(error);
 
@@ -1525,8 +1564,6 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				break;
 			}
 		}
-
-		tokenSource.dispose();
 	}
 
 	private async _selectModel(preferredModelId?: string): Promise<vscode.LanguageModelChat | undefined> {

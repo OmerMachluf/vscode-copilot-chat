@@ -170,9 +170,28 @@ export function getBaseStyles(): string {
 			background: var(--vscode-testing-iconPassed);
 			color: white;
 		}
+		button.warning {
+			background: var(--vscode-notificationsWarningIcon-foreground);
+			color: black;
+		}
 		button.danger {
 			background: var(--vscode-errorForeground);
 			color: white;
+		}
+		button.stop-btn,
+		button.interrupt-btn {
+			width: 28px;
+			height: 28px;
+			padding: 0;
+			font-size: 16px;
+			border-radius: 4px;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+		}
+		button.interrupt-btn {
+			width: auto;
+			padding: 4px 8px;
 		}
 		button:disabled {
 			opacity: 0.5;

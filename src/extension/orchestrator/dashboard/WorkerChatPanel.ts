@@ -116,6 +116,10 @@ export class WorkerChatPanel extends Disposable {
 			case 'reject':
 				this._orchestrator.handleApproval(this._workerId, data.approvalId, false, data.reason);
 				break;
+			case 'stop':
+			case 'interrupt':
+				this._orchestrator.interruptWorker(this._workerId);
+				break;
 			case 'pause':
 				this._orchestrator.pauseWorker(this._workerId);
 				break;
@@ -664,6 +668,10 @@ export class WorkerChatPanel extends Disposable {
 					const reason = document.getElementById('approval-clarification-' + data.approvalId)?.value || '';
 					vscode.postMessage({ type: 'reject', approvalId: data.approvalId, reason });
 					break;
+				case 'stop':
+				case 'interrupt':
+					vscode.postMessage({ type: 'interrupt' });
+					break;
 				case 'pause':
 					vscode.postMessage({ type: 'pause' });
 					break;
@@ -742,6 +750,7 @@ export class WorkerChatPanel extends Disposable {
 			// Update action buttons
 			const actionsHtml = [];
 			if (worker.status === 'running') {
+				actionsHtml.push('<button data-action="interrupt" class="warning interrupt-btn" title="Interrupt agent to provide feedback">⏹️ Interrupt</button>');
 				actionsHtml.push('<button data-action="pause" class="secondary">⏸️ Pause</button>');
 			} else if (worker.status === 'paused') {
 				actionsHtml.push('<button data-action="resume">▶️ Resume</button>');

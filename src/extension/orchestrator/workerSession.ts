@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
+import { CancellationToken, CancellationTokenSource } from '../../util/vs/base/common/cancellation';
 import { Emitter, Event } from '../../util/vs/base/common/event';
 import { Disposable } from '../../util/vs/base/common/lifecycle';
 import { generateUuid } from '../../util/vs/base/common/uuid';
@@ -104,6 +105,7 @@ export class WorkerSession extends Disposable {
 	private _pendingClarification?: string;
 	private readonly _agentId?: string;
 	private readonly _agentInstructions?: string[];
+	private _cancellationTokenSource: CancellationTokenSource;
 
 	private readonly _onDidChange = this._register(new Emitter<void>());
 	public readonly onDidChange: Event<void> = this._onDidChange.event;
@@ -113,6 +115,9 @@ export class WorkerSession extends Disposable {
 
 	private readonly _onNeedsClarification = this._register(new Emitter<string>());
 	public readonly onNeedsClarification: Event<string> = this._onNeedsClarification.event;
+
+	private readonly _onDidStop = this._register(new Emitter<void>());
+	public readonly onDidStop: Event<void> = this._onDidStop.event;
 
 	constructor(
 		name: string,
@@ -134,12 +139,55 @@ export class WorkerSession extends Disposable {
 		this._agentInstructions = agentInstructions;
 		this._createdAt = Date.now();
 		this._lastActivityAt = this._createdAt;
+		this._cancellationTokenSource = new CancellationTokenSource();
 
 		// Add initial system message
 		this._addMessage({
 			role: 'system',
 			content: `Worker initialized for task: ${task}\nWorktree: ${worktreePath}${agentId ? `\nAgent: ${agentId}` : ''}`,
 		});
+	}
+
+	/**
+	 * Get the cancellation token for this worker's current operation.
+	 * The orchestrator should pass this to the agent runner.
+	 */
+	public get cancellationToken(): CancellationToken {
+		return this._cancellationTokenSource.token;
+	}
+
+	/**
+	 * Interrupt the current agent operation. This cancels the current LLM/tool iteration
+	 * and puts the worker in idle state so the user can provide feedback or redirect.
+	 * Unlike kill/stop, this keeps the worker alive and ready for new messages.
+	 */
+	public interrupt(): void {
+		if (this._status !== 'running' && this._status !== 'waiting-approval') {
+			return; // Nothing to interrupt
+		}
+
+		this._addMessage({
+			role: 'system',
+			content: '⏸️ Agent interrupted by user. Send a message to continue or redirect.',
+		});
+
+		// Cancel current operation
+		this._cancellationTokenSource.cancel();
+
+		// Create new token source for future operations
+		this._cancellationTokenSource = new CancellationTokenSource();
+
+		// Go to idle state - worker is still active and can receive new messages
+		this._status = 'idle';
+		this._onDidStop.fire();
+		this._onDidChange.fire();
+	}
+
+	/**
+	 * @deprecated Use interrupt() instead
+	 */
+	public stop(): void {
+		this.interrupt();
 	}
 
 	public get id(): string {

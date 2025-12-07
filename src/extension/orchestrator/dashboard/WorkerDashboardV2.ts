@@ -113,6 +113,10 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 				case 'reject':
 					this._orchestrator.handleApproval(data.workerId, data.approvalId, false, data.reason);
 					break;
+				case 'stop':
+				case 'interrupt':
+					this._orchestrator.interruptWorker(data.workerId);
+					break;
 				case 'pause':
 					this._orchestrator.pauseWorker(data.workerId);
 					break;
@@ -893,6 +897,10 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 				case 'open-chat':
 					vscode.postMessage({ type: 'openChat', workerId });
 					break;
+				case 'stop-worker':
+				case 'interrupt-worker':
+					vscode.postMessage({ type: 'interrupt', workerId });
+					break;
 				case 'pause-worker':
 					vscode.postMessage({ type: 'pause', workerId });
 					break;
@@ -1146,6 +1154,10 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 				? \`<button data-action="resume-worker" data-worker-id="\${worker.id}">▶ Resume</button>\`
 				: \`<button data-action="pause-worker" data-worker-id="\${worker.id}" class="secondary">⏸ Pause</button>\`;
 
+			const stopBtn = isRunning
+				? \`<button data-action="interrupt-worker" data-worker-id="\${worker.id}" class="warning interrupt-btn" title="Interrupt to provide feedback">⏹️</button>\`
+				: '';
+
 			const completeBtn = canComplete
 				? \`<button data-action="complete-worker" data-worker-id="\${worker.id}" class="success" title="Push to origin and clean up">✓ Complete</button>\`
 				: '';
@@ -1174,6 +1186,7 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 						</div>
 						<div class="worker-actions">
 							<button data-action="open-chat" data-worker-id="\${worker.id}" class="secondary" title="Open full chat panel">💬</button>
+							\${stopBtn}
 							\${completeWithPRBtn}
 							\${completeBtn}
 							\${pauseResumeBtn}
