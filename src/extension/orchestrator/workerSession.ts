@@ -10,6 +10,33 @@ import { Disposable } from '../../util/vs/base/common/lifecycle';
 import { generateUuid } from '../../util/vs/base/common/uuid';
 
 /**
+ * Serializable representation of a ChatResponsePart for persistence
+ * These can be reconstructed into actual ChatResponsePart objects
+ */
+export interface SerializedChatPart {
+	readonly type: 'markdown' | 'reference' | 'progress' | 'toolInvocation' | 'anchor' | 'filetree' | 'confirmation' | 'warning' | 'error' | 'thinkingProgress' | 'unknown';
+	readonly content?: string;
+	// For references
+	readonly uri?: string;
+	readonly range?: { startLine: number; startChar: number; endLine: number; endChar: number };
+	// For tool invocations
+	readonly toolName?: string;
+	readonly toolCallId?: string;
+	readonly isComplete?: boolean;
+	readonly isConfirmed?: boolean;
+	readonly isError?: boolean;
+	readonly invocationMessage?: string;
+	readonly pastTenseMessage?: string;
+	readonly toolSpecificData?: unknown;
+	// For progress
+	readonly progressMessage?: string;
+	// For confirmations
+	readonly title?: string;
+	readonly buttons?: string[];
+	readonly data?: unknown;
+}
+
+/**
  * Represents a message in a worker's conversation history
  */
 export interface WorkerMessage {
@@ -17,6 +44,8 @@ export interface WorkerMessage {
 	readonly timestamp: number;
 	readonly role: 'user' | 'assistant' | 'system' | 'tool';
 	readonly content: string;
+	/** Rich response parts for assistant messages - provides the full chat experience */
+	readonly parts?: readonly SerializedChatPart[];
 	readonly toolName?: string;
 	readonly toolCallId?: string;
 	readonly isApprovalRequest?: boolean;
@@ -64,6 +93,7 @@ export interface SerializedWorkerState {
 	readonly baseBranch?: string;
 	readonly agentId?: string;
 	readonly agentInstructions?: string[];
+	readonly modelId?: string;
 }
 
 /**
@@ -82,6 +112,8 @@ export interface WorkerSessionState {
 	readonly errorMessage?: string;
 	readonly planId?: string;
 	readonly baseBranch?: string;
+	readonly agentId?: string;
+	readonly modelId?: string;
 }
 
 /**
@@ -105,9 +137,17 @@ export class WorkerSession extends Disposable {
 	private _pauseResolve?: () => void;
 	private _clarificationResolve?: (message: string) => void;
 	private _pendingClarification?: string;
-	private readonly _agentId?: string;
-	private readonly _agentInstructions?: string[];
+	private _agentId?: string;
+	private _agentInstructions?: string[];
+	private _modelId?: string;
 	private _cancellationTokenSource: CancellationTokenSource;
+
+	/**
+	 * Attached real VS Code ChatResponseStream.
+	 * When set, the WorkerResponseStream will write to this real stream
+	 * in addition to storing parts, providing the true VS Code UI experience.
+	 */
+	private _attachedStream: vscode.ChatResponseStream | undefined;
 
 	private readonly _onDidChange = this._register(new Emitter<void>());
 	public readonly onDidChange: Event<void> = this._onDidChange.event;
@@ -121,6 +161,18 @@ export class WorkerSession extends Disposable {
 	private readonly _onDidStop = this._register(new Emitter<void>());
 	public readonly onDidStop: Event<void> = this._onDidStop.event;
 
+	/** Real-time stream event - fires when new parts are streamed */
+	private readonly _onStreamPart = this._register(new Emitter<SerializedChatPart>());
+	public readonly onStreamPart: Event<SerializedChatPart> = this._onStreamPart.event;
+
+	/** Real-time stream event - fires when streaming starts for a new response */
+	private readonly _onStreamStart = this._register(new Emitter<void>());
+	public readonly onStreamStart: Event<void> = this._onStreamStart.event;
+
+	/** Real-time stream event - fires when streaming ends */
+	private readonly _onStreamEnd = this._register(new Emitter<void>());
+	public readonly onStreamEnd: Event<void> = this._onStreamEnd.event;
+
 	constructor(
 		name: string,
 		task: string,
@@ -129,6 +181,7 @@ export class WorkerSession extends Disposable {
 		baseBranch?: string,
 		agentId?: string,
 		agentInstructions?: string[],
+		modelId?: string,
 	) {
 		super();
 		this._id = `worker-${generateUuid().substring(0, 8)}`;
@@ -139,6 +192,7 @@ export class WorkerSession extends Disposable {
 		this._baseBranch = baseBranch;
 		this._agentId = agentId;
 		this._agentInstructions = agentInstructions;
+		this._modelId = modelId;
 		this._createdAt = Date.now();
 		this._lastActivityAt = this._createdAt;
 		this._cancellationTokenSource = new CancellationTokenSource();
@@ -192,6 +246,31 @@ export class WorkerSession extends Disposable {
 		this.interrupt();
 	}
 
+	/**
+	 * Attach a real VS Code ChatResponseStream to this worker.
+	 * When attached, all stream writes will go to the REAL VS Code stream,
+	 * providing the exact same UI experience as local agent sessions.
+	 *
+	 * Returns a disposable that detaches the stream when disposed.
+	 */
+	public attachStream(stream: vscode.ChatResponseStream): vscode.Disposable {
+		this._attachedStream = stream;
+		return {
+			dispose: () => {
+				if (this._attachedStream === stream) {
+					this._attachedStream = undefined;
+				}
+			}
+		};
+	}
+
+	/**
+	 * Get the currently attached real stream, if any.
+	 */
+	public get attachedStream(): vscode.ChatResponseStream | undefined {
+		return this._attachedStream;
+	}
+
 	public get id(): string {
 		return this._id;
 	}
@@ -224,6 +303,27 @@ export class WorkerSession extends Disposable {
 		return this._agentInstructions;
 	}
 
+	/**
+	 * Update the agent for this worker session.
+	 * The new instructions take effect on the next agent iteration.
+	 */
+	public setAgent(agentId: string, instructions: string[]): void {
+		this._agentId = agentId;
+		this._agentInstructions = instructions;
+	}
+
+	public get modelId(): string | undefined {
+		return this._modelId;
+	}
+
+	/**
+	 * Update the model for this worker session.
+	 * The new model takes effect on the next agent iteration.
+	 */
+	public setModel(modelId: string): void {
+		this._modelId = modelId;
+	}
+
 	public get status(): WorkerStatus {
 		return this._status;
 	}
@@ -242,6 +342,8 @@ export class WorkerSession extends Disposable {
 			errorMessage: this._errorMessage,
 			planId: this._planId,
 			baseBranch: this._baseBranch,
+			agentId: this._agentId,
+			modelId: this._modelId,
 		};
 	}
 
@@ -263,6 +365,7 @@ export class WorkerSession extends Disposable {
 			baseBranch: this._baseBranch,
 			agentId: this._agentId,
 			agentInstructions: this._agentInstructions ? [...this._agentInstructions] : undefined,
+			modelId: this._modelId,
 		};
 	}
 
@@ -278,6 +381,7 @@ export class WorkerSession extends Disposable {
 			state.baseBranch,
 			state.agentId,
 			state.agentInstructions,
+			state.modelId,
 		);
 		// Override the auto-generated id and timestamps
 		(session as any)._id = state.id;
@@ -300,20 +404,21 @@ export class WorkerSession extends Disposable {
 	 * Add an assistant message to the conversation
 	 * @returns The message ID
 	 */
-	public addAssistantMessage(content: string): string {
-		return this._addMessage({ role: 'assistant', content });
+	public addAssistantMessage(content: string, parts?: readonly SerializedChatPart[]): string {
+		return this._addMessage({ role: 'assistant', content, parts });
 	}
 
 	/**
 	 * Update an existing assistant message (for streaming support)
 	 */
-	public updateAssistantMessage(messageId: string, content: string): void {
+	public updateAssistantMessage(messageId: string, content: string, parts?: readonly SerializedChatPart[]): void {
 		const messageIndex = this._messages.findIndex(m => m.id === messageId);
 		if (messageIndex >= 0) {
 			const existingMessage = this._messages[messageIndex];
 			this._messages[messageIndex] = {
 				...existingMessage,
 				content,
+				parts: parts ?? existingMessage.parts,
 			};
 			this._lastActivityAt = Date.now();
 			this._onDidChange.fire();
@@ -530,6 +635,113 @@ export class WorkerSession extends Disposable {
 		return this._status !== 'completed' && this._status !== 'error';
 	}
 
+	// #region Chat Session Integration
+
+	/**
+	 * Convert worker messages to VS Code chat history format for session UI
+	 */
+	public toChatHistory(): Array<{ role: 'user' | 'assistant'; content: string; name?: string }> {
+		const history: Array<{ role: 'user' | 'assistant'; content: string; name?: string }> = [];
+
+		for (const msg of this._messages) {
+			switch (msg.role) {
+				case 'user':
+					history.push({
+						role: 'user',
+						content: msg.content,
+					});
+					break;
+				case 'assistant':
+					history.push({
+						role: 'assistant',
+						content: msg.content,
+					});
+					break;
+				case 'system':
+					// System messages shown as assistant with [System] prefix
+					history.push({
+						role: 'assistant',
+						content: `*[System]* ${msg.content}`,
+					});
+					break;
+				case 'tool':
+					// Tool messages shown as assistant with tool context
+					if (msg.toolName) {
+						history.push({
+							role: 'assistant',
+							content: `\`${msg.toolName}\`: ${msg.content.substring(0, 200)}${msg.content.length > 200 ? '...' : ''}`,
+							name: msg.toolName,
+						});
+					}
+					break;
+			}
+		}
+
+		return history;
+	}
+
+	/**
+	 * Get the chat session status mapped from worker status
+	 */
+	public getChatSessionStatus(): 'busy' | 'idle' | 'waiting' | undefined {
+		switch (this._status) {
+			case 'running':
+				return 'busy';
+			case 'idle':
+			case 'completed':
+				return 'idle';
+			case 'waiting-approval':
+			case 'paused':
+				return 'waiting';
+			case 'error':
+				return undefined;
+			default:
+				return undefined;
+		}
+	}
+
+	/**
+	 * Get a label for the session in the chat sessions UI
+	 */
+	public getSessionLabel(): string {
+		// Use task name, truncated if needed
+		const maxLength = 50;
+		if (this._task.length > maxLength) {
+			return this._task.substring(0, maxLength - 3) + '...';
+		}
+		return this._task;
+	}
+
+	/**
+	 * Get a description for the session in the chat sessions UI
+	 */
+	public getSessionDescription(): string {
+		const statusEmoji = this._getStatusEmoji();
+		const branch = this._baseBranch ? ` (${this._baseBranch})` : '';
+		return `${statusEmoji} ${this._name}${branch}`;
+	}
+
+	private _getStatusEmoji(): string {
+		switch (this._status) {
+			case 'running':
+				return '🔄';
+			case 'idle':
+				return '⏸️';
+			case 'waiting-approval':
+				return '⏳';
+			case 'paused':
+				return '⏸️';
+			case 'completed':
+				return '✅';
+			case 'error':
+				return '❌';
+			default:
+				return '❔';
+		}
+	}
+
+	// #endregion
+
 	private _addMessage(message: Omit<WorkerMessage, 'id' | 'timestamp'>): string {
 		const fullMessage: WorkerMessage = {
 			...message,
@@ -554,40 +766,174 @@ export class WorkerSession extends Disposable {
 }
 
 /**
- * Creates a ChatResponseStream that reports back to a WorkerSession
- * Implements streaming by updating a single message rather than creating new ones per chunk
+ * Creates a ChatResponseStream that reports back to a WorkerSession.
+ *
+ * KEY ARCHITECTURE:
+ * - When a real VS Code ChatResponseStream is attached to the WorkerSession,
+ *   all writes go DIRECTLY to the real stream (providing the true VS Code UI)
+ * - Parts are also stored for history/replay purposes
+ * - Emits real-time stream events for any additional subscribers
  */
 export class WorkerResponseStream implements vscode.ChatResponseStream {
 	private _currentContent = '';
+	private _currentParts: SerializedChatPart[] = [];
 	private _currentMessageId: string | undefined;
 	private _flushDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+	private _isStreaming = false;
 
 	constructor(
 		private readonly _session: WorkerSession,
-		private readonly _debounceMs = 100,
+		private readonly _debounceMs = 50,  // Faster debounce for better UX
 	) { }
+
+	/**
+	 * Get the attached real stream (if any) for direct writes
+	 */
+	private get _realStream(): vscode.ChatResponseStream | undefined {
+		return this._session.attachedStream;
+	}
+
+	/**
+	 * Emit a part - writes to REAL stream if attached, emits events, and stores for history
+	 */
+	private _emitPart(part: SerializedChatPart): void {
+		// Start streaming if not already
+		if (!this._isStreaming) {
+			this._isStreaming = true;
+			(this._session as any)._onStreamStart?.fire();
+		}
+		// Emit for real-time subscribers (e.g., content provider fallback)
+		(this._session as any)._onStreamPart?.fire(part);
+		// Accumulate for message storage/history
+		this._currentParts.push(part);
+		this._scheduleFlush();
+	}
 
 	markdown(value: string | vscode.MarkdownString): void {
 		const content = typeof value === 'string' ? value : value.value;
 		this._currentContent += content;
-		this._scheduleFlush();
+		// Write to REAL stream if attached
+		this._realStream?.markdown(value);
+		this._emitPart({ type: 'markdown', content });
 	}
 
-	anchor(value: vscode.Uri | vscode.Location): void { }
-	button(command: vscode.Command): void { }
-	filetree(value: vscode.ChatResponseFileTree[], baseUri: vscode.Uri): void { }
+	anchor(value: vscode.Uri | vscode.Location): void {
+		// Write to REAL stream if attached
+		this._realStream?.anchor(value);
+		const uri = value instanceof vscode.Uri ? value : value.uri;
+		const range = !(value instanceof vscode.Uri) ? value.range : undefined;
+		this._emitPart({
+			type: 'anchor',
+			uri: uri.toString(),
+			range: range ? {
+				startLine: range.start.line,
+				startChar: range.start.character,
+				endLine: range.end.line,
+				endChar: range.end.character,
+			} : undefined,
+		});
+	}
+
+	button(command: vscode.Command): void {
+		// Write to REAL stream if attached
+		this._realStream?.button(command);
+		this._emitPart({
+			type: 'unknown',
+			content: `[Button: ${command.title}]`,
+			data: { command: command.command, arguments: command.arguments },
+		});
+	}
+
+	filetree(value: vscode.ChatResponseFileTree[], baseUri: vscode.Uri): void {
+		// Write to REAL stream if attached
+		this._realStream?.filetree(value, baseUri);
+		this._emitPart({
+			type: 'filetree',
+			uri: baseUri.toString(),
+			content: JSON.stringify(value),
+		});
+	}
 
 	progress(value: string): void {
-		// Progress messages are shown immediately as separate messages
-		this._session.addAssistantMessage(`[Progress] ${value}`);
+		// Write to REAL stream if attached
+		this._realStream?.progress(value);
+		this._emitPart({
+			type: 'progress',
+			progressMessage: value,
+		});
 	}
 
-	reference(value: vscode.Uri | vscode.Location): void { }
+	reference(value: vscode.Uri | vscode.Location): void {
+		// Write to REAL stream if attached
+		this._realStream?.reference(value);
+		const uri = value instanceof vscode.Uri ? value : value.uri;
+		const range = !(value instanceof vscode.Uri) ? value.range : undefined;
+		this._emitPart({
+			type: 'reference',
+			uri: uri.toString(),
+			range: range ? {
+				startLine: range.start.line,
+				startChar: range.start.character,
+				endLine: range.end.line,
+				endChar: range.end.character,
+			} : undefined,
+		});
+	}
+
+	reference2(value: vscode.Uri | vscode.Location | { variableName: string; value?: vscode.Uri | vscode.Location }, iconPath?: vscode.Uri | vscode.ThemeIcon | { light: vscode.Uri; dark: vscode.Uri }, options?: { status?: { kind: number; description: string } }): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.reference2?.(value, iconPath, options);
+		let uri: string | undefined;
+		let variableName: string | undefined;
+		let rangeData: SerializedChatPart['range'] | undefined;
+
+		if (value instanceof vscode.Uri) {
+			uri = value.toString();
+		} else if ('uri' in value) {
+			uri = value.uri.toString();
+			if ('range' in value && value.range) {
+				rangeData = {
+					startLine: value.range.start.line,
+					startChar: value.range.start.character,
+					endLine: value.range.end.line,
+					endChar: value.range.end.character,
+				};
+			}
+		} else if ('variableName' in value) {
+			variableName = value.variableName;
+			if (value.value instanceof vscode.Uri) {
+				uri = value.value.toString();
+			} else if (value.value && 'uri' in value.value) {
+				uri = value.value.uri.toString();
+			}
+		}
+
+		this._emitPart({
+			type: 'reference',
+			uri,
+			content: variableName,
+			range: rangeData,
+			data: options,
+		});
+	}
 
 	push(part: vscode.ChatResponsePart): void {
-		if ('value' in part && typeof part.value === 'string') {
-			this.markdown(part.value);
+		// Write to REAL stream if attached - pass through directly
+		this._realStream?.push(part);
+		// Handle various ChatResponsePart types for storage
+		if ('value' in part) {
+			if (typeof part.value === 'string') {
+				// Don't call this.markdown as it would double-write to real stream
+				this._currentContent += part.value;
+				this._emitPart({ type: 'markdown', content: part.value });
+			} else if (part.value && typeof part.value === 'object' && 'value' in part.value) {
+				// MarkdownString
+				const content = (part.value as vscode.MarkdownString).value;
+				this._currentContent += content;
+				this._emitPart({ type: 'markdown', content });
+			}
 		}
+		// Note: Other part types are handled by their specific methods
 	}
 
 	text(value: string): void {
@@ -595,43 +941,207 @@ export class WorkerResponseStream implements vscode.ChatResponseStream {
 	}
 
 	warning(value: string | vscode.MarkdownString): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.warning?.(value);
 		const content = typeof value === 'string' ? value : value.value;
-		this._session.addAssistantMessage(`⚠️ ${content}`);
+		this._currentContent += `⚠️ ${content}`;
+		this._emitPart({ type: 'warning', content });
 	}
 
 	error(value: string | vscode.MarkdownString): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.error?.(value);
 		const content = typeof value === 'string' ? value : value.value;
-		this._session.addAssistantMessage(`❌ ${content}`);
+		this._currentContent += `❌ ${content}`;
+		this._emitPart({ type: 'error', content });
 	}
 
 	confirmation(title: string, message: string | vscode.MarkdownString, data: any, buttons?: string[]): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.confirmation?.(title, message, data, buttons);
 		const messageText = typeof message === 'string' ? message : message.value;
-		const buttonsText = buttons?.length ? ` [${buttons.join(' | ')}]` : '';
-		this._session.addAssistantMessage(`[Confirmation] ${title}: ${messageText}${buttonsText}`);
+		this._currentContent += `[Confirmation] ${title}: ${messageText}`;
+		this._emitPart({
+			type: 'confirmation',
+			title,
+			content: messageText,
+			buttons,
+			data,
+		});
 	}
 
-	thinkingProgress(value: any): void { }
-	textEdit(target: any, edits: any): void { }
-	notebookEdit(target: any, edits: any): void { }
+	thinkingProgress(value: any): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.thinkingProgress?.(value);
+		const content = typeof value === 'string' ? value : (value?.value ?? JSON.stringify(value));
+		this._emitPart({
+			type: 'thinkingProgress',
+			content,
+		});
+	}
+
+	textEdit(target: any, edits: any): void {
+		// Write to REAL stream if attached - this is the key for proper rendering!
+		(this._realStream as any)?.textEdit?.(target, edits);
+		// Only store for history - don't emit as visible part since real stream handles rendering
+		this._emitPart({
+			type: 'unknown',
+			content: '[Text edit applied]',
+			data: { target: target?.toString?.(), editCount: Array.isArray(edits) ? edits.length : 1 },
+		});
+	}
+
+	notebookEdit(target: any, edits: any): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.notebookEdit?.(target, edits);
+		this._emitPart({
+			type: 'unknown',
+			content: '[Notebook edit applied]',
+			data: { target: target?.toString?.() },
+		});
+	}
 
 	externalEdit<T>(target: vscode.Uri | vscode.Uri[], callback: () => Thenable<T>): Thenable<T> {
+		// Write to REAL stream if attached
+		if ((this._realStream as any)?.externalEdit) {
+			return (this._realStream as any).externalEdit(target, callback);
+		}
+		const uris = Array.isArray(target) ? target : [target];
+		this._emitPart({
+			type: 'unknown',
+			content: `[External edit: ${uris.map(u => u.fsPath).join(', ')}]`,
+		});
 		return callback();
 	}
 
 	markdownWithVulnerabilities(value: string | vscode.MarkdownString, vulnerabilities: any[]): void {
-		this.markdown(value);
+		// Write to REAL stream if attached
+		(this._realStream as any)?.markdownWithVulnerabilities?.(value, vulnerabilities);
+		const content = typeof value === 'string' ? value : value.value;
+		this._currentContent += content;
+		this._emitPart({
+			type: 'markdown',
+			content,
+			data: { vulnerabilities },
+		});
 	}
 
-	codeblockUri(value: vscode.Uri): void { }
-	reference2(value: any): void { }
-	codeCitation(value: any): void { }
-	progress2(value: any): void { }
-	fileTree(value: any, baseUri: any): void { }
-	custom(value: any): void { }
-	code(value: any): void { }
-	command(value: any): void { }
-	prepareToolInvocation(toolName: string): void { }
-	clearToPreviousToolInvocation(reason: vscode.ChatResponseClearToPreviousToolInvocationReason): void { }
+	codeblockUri(value: vscode.Uri): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.codeblockUri?.(value);
+		this._emitPart({
+			type: 'reference',
+			uri: value.toString(),
+		});
+	}
+
+	codeCitation(value: any): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.codeCitation?.(value);
+		this._emitPart({
+			type: 'unknown',
+			content: '[Code citation]',
+			data: value,
+		});
+	}
+
+	progress2(value: { message: string } | string): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.progress2?.(value);
+		const msg = typeof value === 'string' ? value : value.message;
+		// Don't call this.progress as it would double-write
+		this._emitPart({
+			type: 'progress',
+			progressMessage: msg,
+		});
+	}
+
+	fileTree(value: any, baseUri: any): void {
+		this.filetree(value, baseUri);
+	}
+
+	custom(value: any): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.custom?.(value);
+		this._emitPart({
+			type: 'unknown',
+			content: '[Custom content]',
+			data: value,
+		});
+	}
+
+	code(value: any): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.code?.(value);
+		if (value && typeof value.value === 'string') {
+			const codeContent = '```\n' + value.value + '\n```';
+			this._currentContent += codeContent;
+			this._emitPart({
+				type: 'markdown',
+				content: codeContent,
+				data: { language: value.language },
+			});
+		}
+	}
+
+	command(value: any): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.command?.(value);
+		this._emitPart({
+			type: 'unknown',
+			content: `[Command: ${value?.title ?? 'unknown'}]`,
+			data: value,
+		});
+	}
+
+	prepareToolInvocation(toolName: string): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.prepareToolInvocation?.(toolName);
+		this._emitPart({
+			type: 'toolInvocation',
+			toolName,
+			isComplete: false,
+			isConfirmed: false,
+		});
+	}
+
+	/**
+	 * Record a complete tool invocation with full details
+	 */
+	toolInvocation(toolName: string, toolCallId: string, options?: {
+		isComplete?: boolean;
+		isConfirmed?: boolean;
+		isError?: boolean;
+		invocationMessage?: string;
+		pastTenseMessage?: string;
+		originMessage?: string;
+		toolSpecificData?: unknown;
+	}): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.toolInvocation?.(toolName, toolCallId, options);
+		this._emitPart({
+			type: 'toolInvocation',
+			toolName,
+			toolCallId,
+			isComplete: options?.isComplete ?? true,
+			isConfirmed: options?.isConfirmed ?? true,
+			isError: options?.isError ?? false,
+			invocationMessage: options?.invocationMessage,
+			pastTenseMessage: options?.pastTenseMessage,
+			toolSpecificData: options?.toolSpecificData,
+		});
+	}
+
+	clearToPreviousToolInvocation(reason: vscode.ChatResponseClearToPreviousToolInvocationReason): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.clearToPreviousToolInvocation?.(reason);
+		// Signal to clear - emit but don't accumulate
+		(this._session as any)._onStreamPart?.fire({
+			type: 'unknown',
+			content: '[Clear to previous tool invocation]',
+			data: { reason },
+		});
+	}
 
 	/**
 	 * Schedule a debounced flush of accumulated content
@@ -654,19 +1164,24 @@ export class WorkerResponseStream implements vscode.ChatResponseStream {
 			this._flushDebounceTimer = undefined;
 		}
 		this._flushInternal();
+		// Signal stream end
+		if (this._isStreaming) {
+			this._isStreaming = false;
+			(this._session as any)._onStreamEnd?.fire();
+		}
 	}
 
 	private _flushInternal(): void {
-		if (!this._currentContent) {
+		if (!this._currentContent && this._currentParts.length === 0) {
 			return;
 		}
 
 		if (this._currentMessageId) {
-			// Update existing message
-			this._session.updateAssistantMessage(this._currentMessageId, this._currentContent);
+			// Update existing message with content and parts
+			this._session.updateAssistantMessage(this._currentMessageId, this._currentContent, [...this._currentParts]);
 		} else {
-			// Create new message and track its ID for future updates
-			this._currentMessageId = this._session.addAssistantMessage(this._currentContent);
+			// Create new message with parts and track its ID for future updates
+			this._currentMessageId = this._session.addAssistantMessage(this._currentContent, [...this._currentParts]);
 		}
 	}
 
@@ -677,5 +1192,20 @@ export class WorkerResponseStream implements vscode.ChatResponseStream {
 		this.flush();
 		this._currentMessageId = undefined;
 		this._currentContent = '';
+		this._currentParts = [];
+	}
+
+	/**
+	 * Get the accumulated parts (for inspection)
+	 */
+	public get parts(): readonly SerializedChatPart[] {
+		return this._currentParts;
+	}
+
+	/**
+	 * Check if currently streaming
+	 */
+	public get isStreaming(): boolean {
+		return this._isStreaming;
 	}
 }

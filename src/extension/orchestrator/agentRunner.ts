@@ -17,6 +17,7 @@ import { ChatTelemetryBuilder } from '../prompt/node/chatParticipantTelemetry';
 import { DefaultIntentRequestHandler, IDefaultIntentRequestHandlerOptions } from '../prompt/node/defaultIntentRequestHandler';
 import { getContributedToolName } from '../tools/common/toolNames';
 import { IToolsService } from '../tools/common/toolsService';
+import { WorkerToolSet } from './workerToolsService';
 
 export const IAgentRunner = createDecorator<IAgentRunner>('agentRunner');
 
@@ -48,8 +49,22 @@ export interface IAgentRunOptions {
 	/** Maximum tool call iterations (defaults to 200 for agent mode) */
 	maxToolCallIterations?: number;
 
-	/** Worktree path for file operations (if different from main workspace) */
+	/**
+	 * Worker tool set for scoped tool access.
+	 * When provided, uses the worker's scoped instantiation service and tools.
+	 * This ensures tools operate within the worker's worktree.
+	 */
+	workerToolSet?: WorkerToolSet;
+
+	/**
+	 * @deprecated Use workerToolSet instead for proper tool scoping.
+	 * Worktree path for file operations (if different from main workspace).
+	 * Only used for prompt context when workerToolSet is not provided.
+	 */
 	worktreePath?: string;
+
+	/** Callback invoked when a message is added to the conversation */
+	onMessageAdded?: (message: { role: 'user' | 'assistant' | 'tool'; content: string }) => void;
 }
 
 /**
@@ -104,15 +119,48 @@ export class AgentRunnerService extends Disposable implements IAgentRunner {
 			sessionId = generateUuid(),
 			model,
 			suggestedFiles,
+			additionalInstructions,
 			token,
 			onPaused = Event.None,
 			maxToolCallIterations = 200,
+			workerToolSet,
 			worktreePath,
 		} = options;
 
+		// Determine the effective worktree path (from workerToolSet or legacy option)
+		const effectiveWorktreePath = workerToolSet?.worktreePath ?? worktreePath;
+
+		// Determine which instantiation service and tools service to use
+		// If a workerToolSet is provided, use its scoped services for proper worktree isolation
+		const instantiationService = workerToolSet?.scopedInstantiationService ?? this._instantiationService;
+		const toolsService: IToolsService = workerToolSet ?? this._toolsService;
+
 		try {
+			// Build final prompt with any additional instructions and worktree context
+			// Order: worktree context -> additional instructions -> task prompt
+			const promptParts: string[] = [];
+
+			// Prepend worktree instructions if operating in a worktree
+			// This ensures tools use absolute paths in the worktree directory
+			if (effectiveWorktreePath) {
+				promptParts.push(`IMPORTANT: You are working in a git worktree located at: ${effectiveWorktreePath}
+All file operations (create, edit, read) MUST use absolute paths within this worktree directory.
+When using tools like create_file, replace_string_in_file, read_file, etc., always use the full absolute path starting with "${effectiveWorktreePath}".
+Do NOT use paths relative to any other workspace folder.`);
+			}
+
+			// Add any additional instructions
+			if (additionalInstructions) {
+				promptParts.push(additionalInstructions);
+			}
+
+			// Add the actual task prompt
+			promptParts.push(prompt);
+
+			const finalPrompt = promptParts.join('\n\n');
+
 			// Create a synthetic ChatRequest with all tools enabled
-			const request = this._createRequest(prompt, model, suggestedFiles, worktreePath);
+			const request = this._createRequest(finalPrompt, model, toolsService, suggestedFiles, effectiveWorktreePath);
 
 			// Get the agent intent at Agent location (for headless/orchestrator execution)
 			const intent = this._intentService.getIntent(Intent.Agent, ChatLocation.Agent);
@@ -128,8 +176,8 @@ export class AgentRunnerService extends Disposable implements IAgentRunner {
 			const turn = Turn.fromRequest(turnId, request);
 			const conversation = new Conversation(sessionId, [turn]);
 
-			// Create telemetry builder
-			const chatTelemetry = this._instantiationService.createInstance(
+			// Create telemetry builder using the (possibly scoped) instantiation service
+			const chatTelemetry = instantiationService.createInstance(
 				ChatTelemetryBuilder,
 				Date.now(),
 				sessionId,
@@ -161,7 +209,9 @@ export class AgentRunnerService extends Disposable implements IAgentRunner {
 					onPaused
 				);
 			} else {
-				const handler = this._instantiationService.createInstance(
+				// Create handler using the (possibly scoped) instantiation service
+				// This ensures all tools created by the handler use the scoped workspace
+				const handler = instantiationService.createInstance(
 					DefaultIntentRequestHandler,
 					intent,
 					conversation,
@@ -200,6 +250,7 @@ export class AgentRunnerService extends Disposable implements IAgentRunner {
 	private _createRequest(
 		prompt: string,
 		model: vscode.LanguageModelChat,
+		toolsService: IToolsService,
 		suggestedFiles?: string[],
 		worktreePath?: string
 	): vscode.ChatRequest {
@@ -235,9 +286,10 @@ export class AgentRunnerService extends Disposable implements IAgentRunner {
 			});
 		}
 
-		// Enable all available tools - this is critical for full agent capabilities
+		// Enable all available tools from the provided tools service
+		// This uses the worker's scoped tools when a workerToolSet is provided
 		const toolsMap = new Map<string, boolean>();
-		for (const tool of this._toolsService.tools) {
+		for (const tool of toolsService.tools) {
 			toolsMap.set(getContributedToolName(tool.name), true);
 		}
 

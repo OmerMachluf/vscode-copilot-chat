@@ -9,6 +9,7 @@ import { ICustomInstructionsService } from '../../../platform/customInstructions
 import { RelativePattern } from '../../../platform/filesystem/common/fileTypes';
 import { IIgnoreService } from '../../../platform/ignore/common/ignoreService';
 import { ILanguageFeaturesService } from '../../../platform/languages/common/languageFeaturesService';
+import { ILogService } from '../../../platform/log/common/logService';
 import { IPromptPathRepresentationService } from '../../../platform/prompts/common/promptPathRepresentationService';
 import { ITabsAndEditorsService } from '../../../platform/tabs/common/tabsAndEditorsService';
 import { IWorkspaceService } from '../../../platform/workspace/common/workspaceService';
@@ -20,6 +21,7 @@ import { isEqual, normalizePath } from '../../../util/vs/base/common/resources';
 import { URI } from '../../../util/vs/base/common/uri';
 import { IInstantiationService, ServicesAccessor } from '../../../util/vs/platform/instantiation/common/instantiation';
 import { LanguageModelPromptTsxPart, LanguageModelToolResult, Position, SymbolKind } from '../../../vscodeTypes';
+import { IWorkerToolsService } from '../../orchestrator/workerToolsService';
 import { renderPromptElementJSON } from '../../prompts/node/base/promptRenderer';
 
 export function checkCancellation(token: CancellationToken): void {
@@ -101,6 +103,36 @@ export function resolveToolInputPath(path: string, promptPathRepresentationServi
 	return uri;
 }
 
+/**
+ * Check if a URI is in the workspace or in an active orchestrator worker's worktree.
+ * This is useful for tools that need to validate paths but should also allow
+ * operations in worktrees.
+ *
+ * @param accessor Services accessor
+ * @param uri The URI to check
+ * @returns true if the URI is in workspace or an active worktree
+ */
+export function isInWorkspaceOrWorktree(accessor: ServicesAccessor, uri: URI): boolean {
+	const workspaceService = accessor.get(IWorkspaceService);
+
+	// Check if in workspace
+	if (workspaceService.getWorkspaceFolder(normalizePath(uri))) {
+		return true;
+	}
+
+	// Check if in an active worktree
+	try {
+		const workerToolsService = accessor.get(IWorkerToolsService);
+		if (workerToolsService.getWorktreeForPath(uri)) {
+			return true;
+		}
+	} catch {
+		// IWorkerToolsService might not be available
+	}
+
+	return false;
+}
+
 export async function isFileOkForTool(accessor: ServicesAccessor, uri: URI): Promise<boolean> {
 	try {
 		await assertFileOkForTool(accessor, uri);
@@ -115,16 +147,60 @@ export async function assertFileOkForTool(accessor: ServicesAccessor, uri: URI):
 	const tabsAndEditorsService = accessor.get(ITabsAndEditorsService);
 	const promptPathRepresentationService = accessor.get(IPromptPathRepresentationService);
 	const customInstructionsService = accessor.get(ICustomInstructionsService);
+	const logService = accessor.get(ILogService);
+
+	// Get IWorkerToolsService early, before any await calls, because the accessor
+	// is only valid synchronously. It may not be available in all contexts (e.g., web).
+	let workerToolsService: IWorkerToolsService | undefined;
+	try {
+		workerToolsService = accessor.get(IWorkerToolsService);
+	} catch {
+		// Service not available in this context
+	}
+
+	logService.info(`[assertFileOkForTool] Checking URI: ${uri.fsPath}`);
 
 	await assertFileNotContentExcluded(accessor, uri);
 
-	const normalizedUri = normalizePath(uri);
+	// Check if the file is in the workspace
+	const isInWorkspace = workspaceService.getWorkspaceFolder(normalizePath(uri));
+	if (isInWorkspace) {
+		logService.info(`[assertFileOkForTool] File is in workspace: ${isInWorkspace.fsPath}`);
+		return; // File is in workspace, OK
+	}
 
-	if (!workspaceService.getWorkspaceFolder(normalizedUri) && uri.scheme !== Schemas.untitled && !customInstructionsService.isExternalInstructionsFile(normalizedUri)) {
-		const fileOpenInSomeTab = tabsAndEditorsService.tabs.some(tab => isEqual(tab.uri, uri));
-		if (!fileOpenInSomeTab) {
-			throw new Error(`File ${promptPathRepresentationService.getFilePath(normalizedUri)} is outside of the workspace, and not open in an editor, and can't be read`);
+	// Check if file is an external instructions file
+	if (customInstructionsService.isExternalInstructionsFile(uri)) {
+		logService.info(`[assertFileOkForTool] File is external instructions file`);
+		return; // External instructions file, OK
+	}
+
+	// Check if file is untitled
+	if (uri.scheme === Schemas.untitled) {
+		logService.info(`[assertFileOkForTool] File is untitled`);
+		return; // Untitled file, OK
+	}
+
+	// Check if file is in an active orchestrator worker's worktree
+	// This allows workers to access files in their worktree even though
+	// the worktree is not part of the main VS Code workspace
+	if (workerToolsService) {
+		logService.info(`[assertFileOkForTool] Checking worktrees...`);
+		logService.info(`[assertFileOkForTool] Active worktrees: ${workerToolsService.getActiveWorktrees().join(', ')}`);
+		const worktreePath = workerToolsService.getWorktreeForPath(uri);
+		if (worktreePath) {
+			logService.info(`[assertFileOkForTool] File is in active worktree: ${worktreePath}`);
+			return; // File is in an active worktree, OK
 		}
+		logService.info(`[assertFileOkForTool] File is NOT in any active worktree`);
+	} else {
+		logService.info(`[assertFileOkForTool] WorkerToolsService not available`);
+	}
+
+	// Last resort: check if file is open in an editor tab
+	const fileOpenInSomeTab = tabsAndEditorsService.tabs.some(tab => isEqual(tab.uri, uri));
+	if (!fileOpenInSomeTab) {
+		throw new Error(`File ${promptPathRepresentationService.getFilePath(uri)} is outside of the workspace, and not open in an editor, and can't be read`);
 	}
 }
 

@@ -1,4 +1,3 @@
-```chatagent
 ---
 name: Orchestrator
 description: Orchestrate multi-agent workflows, deploy plans, manage workers, and coordinate parallel execution

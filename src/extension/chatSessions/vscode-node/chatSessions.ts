@@ -23,13 +23,19 @@ import { CopilotCLISessionService, ICopilotCLISessionService } from '../../agent
 import { CopilotCLIMCPHandler, ICopilotCLIMCPHandler } from '../../agents/copilotcli/node/mcpHandler';
 import { ILanguageModelServer, LanguageModelServer } from '../../agents/node/langModelServer';
 import { IExtensionContribution } from '../../common/contributions';
+import { IAgentDiscoveryService } from '../../orchestrator/agentDiscoveryService';
+import { IOrchestratorService } from '../../orchestrator/orchestratorServiceV2';
 import { ChatSummarizerProvider } from '../../prompt/node/summarizer';
+import { IUnifiedWorktreeManager, UnifiedWorktreeManager } from '../common/unifiedWorktreeManager';
 import { ClaudeChatSessionContentProvider } from './claudeChatSessionContentProvider';
 import { ClaudeChatSessionItemProvider } from './claudeChatSessionItemProvider';
 import { ClaudeChatSessionParticipant } from './claudeChatSessionParticipant';
 import { CopilotCLIChatSessionContentProvider, CopilotCLIChatSessionItemProvider, CopilotCLIChatSessionParticipant, CopilotCLIWorktreeManager, registerCLIChatCommands } from './copilotCLIChatSessionsContribution';
 import { CopilotCLITerminalIntegration, ICopilotCLITerminalIntegration } from './copilotCLITerminalIntegration';
 import { CopilotCloudSessionsProvider } from './copilotCloudSessionsProvider';
+import { OrchestratorChatSessionContentProvider } from './orchestratorChatSessionContentProvider';
+import { OrchestratorChatSessionItemProvider } from './orchestratorChatSessionItemProvider';
+import { OrchestratorChatSessionParticipant } from './orchestratorChatSessionParticipant';
 import { PRContentProvider } from './prContentProvider';
 import { IPullRequestFileChangesService, PullRequestFileChangesService } from './pullRequestFileChangesService';
 
@@ -129,6 +135,66 @@ export class ChatSessionsContrib extends Disposable implements IExtensionContrib
 		const copilotcliParticipant = vscode.chat.createChatParticipant(this.copilotcliSessionType, copilotcliChatSessionParticipant.createHandler());
 		this._register(vscode.chat.registerChatSessionContentProvider(this.copilotcliSessionType, copilotcliChatSessionContentProvider, copilotcliParticipant));
 		this._register(registerCLIChatCommands(copilotcliSessionItemProvider, copilotCLISessionService, gitService));
+
+		// #region Orchestrator Chat Sessions
+		this._registerOrchestratorSessions(instantiationService);
+		// #endregion
+	}
+
+	/**
+	 * Register orchestrator chat sessions for plan task workers
+	 */
+	private _registerOrchestratorSessions(instantiationService: IInstantiationService): void {
+		const ORCHESTRATOR_SESSION_TYPE = 'orchestrator';
+
+		// Create service collection with unified worktree manager
+		const orchestratorInstaService = instantiationService.createChild(
+			new ServiceCollection(
+				[IUnifiedWorktreeManager, new SyncDescriptor(UnifiedWorktreeManager)],
+			));
+
+		// Get services
+		const orchestratorService = orchestratorInstaService.invokeFunction(accessor => accessor.get(IOrchestratorService));
+		const agentDiscoveryService = orchestratorInstaService.invokeFunction(accessor => accessor.get(IAgentDiscoveryService));
+		const worktreeManager = orchestratorInstaService.invokeFunction(accessor => accessor.get(IUnifiedWorktreeManager));
+
+		// Create item provider (lists workers as sessions)
+		const orchestratorSessionItemProvider = this._register(
+			new OrchestratorChatSessionItemProvider(orchestratorService, worktreeManager)
+		);
+		this._register(vscode.chat.registerChatSessionItemProvider(ORCHESTRATOR_SESSION_TYPE, orchestratorSessionItemProvider));
+
+		// Create content provider (provides session content and history)
+		const orchestratorContentProvider = new OrchestratorChatSessionContentProvider(
+			orchestratorService,
+			agentDiscoveryService
+		);
+
+		// Create participant (handles chat requests)
+		// Uses dependency injection for services
+		const orchestratorParticipant = orchestratorInstaService.createInstance(
+			OrchestratorChatSessionParticipant
+		);
+
+		// Register participant
+		const chatParticipant = vscode.chat.createChatParticipant(
+			ORCHESTRATOR_SESSION_TYPE,
+			orchestratorParticipant.createHandler()
+		);
+		chatParticipant.iconPath = new vscode.ThemeIcon('symbol-namespace');
+
+		// Register content provider with interruption support
+		this._register(vscode.chat.registerChatSessionContentProvider(
+			ORCHESTRATOR_SESSION_TYPE,
+			orchestratorContentProvider,
+			chatParticipant,
+			{ supportsInterruptions: true }
+		));
+
+		// Register commands
+		this._register(vscode.commands.registerCommand('github.copilot.orchestrator.sessions.refresh', () => {
+			orchestratorSessionItemProvider.refresh();
+		}));
 	}
 
 	private registerCopilotCloudAgent() {

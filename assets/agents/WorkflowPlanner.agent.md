@@ -1,4 +1,3 @@
-````chatagent
 ---
 name: WorkflowPlanner
 description: Creates high-level workflow plans (Process/Stages) by orchestrating specialized agents. Plans WHAT stages are needed, not HOW to implement them.

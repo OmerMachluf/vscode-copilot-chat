@@ -14,6 +14,7 @@ import { createDecorator } from '../../util/vs/platform/instantiation/common/ins
 import { IAgentInstructionService } from './agentInstructionService';
 import { IAgentRunner } from './agentRunner';
 import { SerializedWorkerState, WorkerResponseStream, WorkerSession, WorkerSessionState } from './workerSession';
+import { IWorkerToolsService, WorkerToolSet } from './workerToolsService';
 
 export const IOrchestratorService = createDecorator<IOrchestratorService>('orchestratorService');
 
@@ -26,8 +27,8 @@ export const IOrchestratorService = createDecorator<IOrchestratorService>('orche
  */
 export type OrchestratorEvent =
 	| { type: 'task.queued'; planId: string | undefined; taskId: string }
-	| { type: 'task.started'; planId: string | undefined; taskId: string; workerId: string }
-	| { type: 'task.completed'; planId: string | undefined; taskId: string; workerId: string }
+	| { type: 'task.started'; planId: string | undefined; taskId: string; workerId: string; sessionUri: string }
+	| { type: 'task.completed'; planId: string | undefined; taskId: string; workerId: string; sessionUri?: string }
 	| { type: 'task.failed'; planId: string | undefined; taskId: string; error: string }
 	| { type: 'task.blocked'; planId: string | undefined; taskId: string; reason: string }
 	| { type: 'worker.needs_approval'; workerId: string; approvalId: string }
@@ -83,6 +84,8 @@ export interface WorkerTask {
 	status: TaskStatus;
 	/** Worker ID if assigned */
 	workerId?: string;
+	/** Session URI for the VS Code chat session (orchestrator:/<taskId>) */
+	sessionUri?: string;
 	/** Completion timestamp */
 	completedAt?: number;
 	/** Error message if failed */
@@ -270,6 +273,23 @@ export interface IOrchestratorService {
 	/** Get model ID for a worker */
 	getWorkerModel(workerId: string): string | undefined;
 
+	/** Set the agent for a worker (reloads instructions, takes effect on next message) */
+	setWorkerAgent(workerId: string, agentId: string): Promise<void>;
+
+	/** Get agent ID for a worker */
+	getWorkerAgent(workerId: string): string | undefined;
+
+	// --- Session Integration ---
+
+	/** Get the session URI for a task (orchestrator:/<taskId>) */
+	getSessionUriForTask(taskId: string): string | undefined;
+
+	/** Get a task by its session URI */
+	getTaskBySessionUri(sessionUri: string): WorkerTask | undefined;
+
+	/** Get a WorkerSession by ID (for subscribing to real-time stream events) */
+	getWorkerSession(workerId: string): WorkerSession | undefined;
+
 	// Legacy compatibility
 	getWorkers(): Record<string, any>;
 }
@@ -345,9 +365,13 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 	private readonly _onOrchestratorEvent = this._register(new Emitter<OrchestratorEvent>());
 	public readonly onOrchestratorEvent: Event<OrchestratorEvent> = this._onOrchestratorEvent.event;
 
+	// Map from worker ID to its scoped tool set
+	private readonly _workerToolSets = new Map<string, WorkerToolSet>();
+
 	constructor(
 		@IAgentInstructionService private readonly _agentInstructionService: IAgentInstructionService,
 		@IAgentRunner private readonly _agentRunner: IAgentRunner,
+		@IWorkerToolsService private readonly _workerToolsService: IWorkerToolsService,
 	) {
 		super();
 		// Restore state on initialization
@@ -897,7 +921,10 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			const agentId = rawAgentId.replace(/^@/, '').toLowerCase();
 			const composedInstructions = await this._agentInstructionService.loadInstructions(agentId);
 
-			// Create worker session with agent instructions
+			// Determine model ID: deploy options override > task's model > undefined
+			const effectiveModelId = options?.modelId ?? task.modelId;
+
+			// Create worker session with agent instructions and model
 			const worker = new WorkerSession(
 				task.name,
 				task.description,
@@ -906,16 +933,23 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				baseBranch,
 				agentId,
 				composedInstructions.instructions,
+				effectiveModelId,
 			);
 
-			// Apply model override from deploy options if provided
-			if (options?.modelId) {
-				this._workerModelOverrides.set(worker.id, options.modelId);
+			// Create scoped tool set for this worker
+			// This ensures tools operate within the worker's worktree
+			const workerToolSet = this._workerToolsService.createWorkerToolSet(worker.id, worktreePath);
+			this._workerToolSets.set(worker.id, workerToolSet);
+
+			// Also store in override map for runtime changes (kept for backward compat)
+			if (effectiveModelId) {
+				this._workerModelOverrides.set(worker.id, effectiveModelId);
 			}
 
-			// Link task to worker
+			// Link task to worker and create session URI
 			task.status = 'running';
 			task.workerId = worker.id;
+			task.sessionUri = this._createSessionUri(task.id);
 			this._workers.set(worker.id, worker);
 
 			this._onOrchestratorEvent.fire({
@@ -923,6 +957,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				planId: task.planId,
 				taskId: task.id,
 				workerId: worker.id,
+				sessionUri: task.sessionUri,
 			});
 
 			this._register(worker.onDidChange(() => {
@@ -946,6 +981,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 						planId: linkedTask.planId,
 						taskId: linkedTask.id,
 						workerId: worker.id,
+						sessionUri: linkedTask.sessionUri,
 					});
 
 					// Trigger deployment of dependent tasks
@@ -1159,6 +1195,12 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		worker.dispose();
 		this._workers.delete(workerId);
 
+		// Dispose worker tool set
+		if (this._workerToolSets.has(workerId)) {
+			this._workerToolsService.disposeWorkerToolSet(workerId);
+			this._workerToolSets.delete(workerId);
+		}
+
 		// Reset task if requested
 		if (resetTask && linkedTask) {
 			linkedTask.status = 'pending';
@@ -1261,6 +1303,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		}
 
 		this._workerModelOverrides.set(workerId, modelId);
+		worker.setModel(modelId);
 		worker.addUserMessage(`[System: Model changed to ${modelId}. Takes effect on next message.]`);
 		this._onDidChangeWorkers.fire();
 	}
@@ -1269,7 +1312,38 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 	 * Get model ID for a worker
 	 */
 	public getWorkerModel(workerId: string): string | undefined {
-		return this._workerModelOverrides.get(workerId);
+		// Check worker session first, then fallback to override map
+		const worker = this._workers.get(workerId);
+		return worker?.modelId ?? this._workerModelOverrides.get(workerId);
+	}
+
+	/**
+	 * Set the agent for a worker (reloads instructions, takes effect on next message)
+	 */
+	public async setWorkerAgent(workerId: string, agentId: string): Promise<void> {
+		const worker = this._workers.get(workerId);
+		if (!worker) {
+			throw new Error(`Worker ${workerId} not found`);
+		}
+
+		// Normalize agent ID: strip @ prefix and lowercase
+		const normalizedAgentId = agentId.replace(/^@/, '').toLowerCase();
+
+		// Load new agent instructions
+		const composedInstructions = await this._agentInstructionService.loadInstructions(normalizedAgentId);
+
+		// Update worker with new agent
+		worker.setAgent(normalizedAgentId, composedInstructions.instructions);
+		worker.addUserMessage(`[System: Agent changed to @${normalizedAgentId}. Takes effect on next message.]`);
+		this._onDidChangeWorkers.fire();
+	}
+
+	/**
+	 * Get agent ID for a worker
+	 */
+	public getWorkerAgent(workerId: string): string | undefined {
+		const worker = this._workers.get(workerId);
+		return worker?.agentId;
 	}
 
 	/**
@@ -1436,6 +1510,51 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		return worktreePath;
 	}
 
+	// --- Session URI Management ---
+
+	/**
+	 * Create a session URI for a task in the orchestrator:/ scheme
+	 */
+	private _createSessionUri(taskId: string): string {
+		return `orchestrator:/${taskId}`;
+	}
+
+	/**
+	 * Parse a task ID from a session URI
+	 */
+	private _parseSessionUri(sessionUri: string): string | undefined {
+		if (!sessionUri.startsWith('orchestrator:/')) {
+			return undefined;
+		}
+		return sessionUri.slice('orchestrator:/'.length);
+	}
+
+	/**
+	 * Get the session URI for a task
+	 */
+	public getSessionUriForTask(taskId: string): string | undefined {
+		const task = this._tasks.find(t => t.id === taskId);
+		return task?.sessionUri;
+	}
+
+	/**
+	 * Get a task by its session URI
+	 */
+	public getTaskBySessionUri(sessionUri: string): WorkerTask | undefined {
+		const taskId = this._parseSessionUri(sessionUri);
+		if (!taskId) {
+			return undefined;
+		}
+		return this._tasks.find(t => t.id === taskId);
+	}
+
+	/**
+	 * Get a WorkerSession by ID (for subscribing to real-time stream events)
+	 */
+	public getWorkerSession(workerId: string): WorkerSession | undefined {
+		return this._workers.get(workerId);
+	}
+
 	private async _runWorkerTask(worker: WorkerSession, task: WorkerTask): Promise<void> {
 		worker.start();
 
@@ -1487,6 +1606,9 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				const taskInstructions = task.context?.additionalInstructions || '';
 				const combinedInstructions = [agentInstructions, taskInstructions].filter(Boolean).join('\n\n');
 
+				// Get the worker's scoped tool set for proper worktree isolation
+				const workerToolSet = this._workerToolSets.get(worker.id);
+
 				// Run the agent using the proper IAgentRunner service
 				// Use the worker's cancellation token so interrupt() can stop it
 				const result = await this._agentRunner.run(
@@ -1499,7 +1621,8 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 						token: worker.cancellationToken,
 						onPaused: pausedEmitter.event,
 						maxToolCallIterations: 200,
-						worktreePath: worker.worktreePath,
+						workerToolSet,
+						worktreePath: worker.worktreePath, // Kept for prompt context
 					},
 					stream as unknown as vscode.ChatResponseStream
 				);

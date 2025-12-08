@@ -972,6 +972,156 @@ USER                    PLANNER              ORCHESTRATOR
 
 ---
 
+## VS Code Agent Sessions Integration
+
+The orchestrator workers are now exposed as VS Code Agent Sessions, allowing users to interact with workers directly through the standard chat sessions UI.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    VS Code Agent Sessions UI                         │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌────────────────┐ │
+│  │ Claude Code │ │ Copilot CLI │ │ Cloud Agent │ │  Orchestrator  │ │
+│  │  Sessions   │ │  Sessions   │ │   Sessions  │ │    Sessions    │ │
+│  └─────────────┘ └─────────────┘ └─────────────┘ └────────────────┘ │
+└─────────────────────────────────────────────────────────────────────┘
+                                                          │
+                                                          ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                 Orchestrator Session Provider                        │
+│  ┌─────────────────────┐  ┌─────────────────────────────────────┐   │
+│  │ ChatSessionItem     │  │ ChatSessionContentProvider          │   │
+│  │ Provider            │  │ - Session options (agent selection) │   │
+│  │ - Lists workers     │  │ - Chat history from worker messages │   │
+│  │ - Status mapping    │  │ - Streaming via AgentRunner         │   │
+│  └─────────────────────┘  └─────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Orchestrator Service                              │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────────┐  │
+│  │   Plans     │  │   Tasks     │  │   WorkerSessions            │  │
+│  │             │  │             │  │   - toChatHistory()         │  │
+│  │             │  │             │  │   - getChatSessionStatus()  │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Components
+
+#### 1. OrchestratorChatSessionItemProvider
+Lists orchestrator workers as selectable chat sessions:
+- Maps `WorkerSession` → `ChatSessionItem`
+- Provides status, labels, and descriptions
+- Updates when orchestrator state changes
+
+#### 2. OrchestratorChatSessionContentProvider
+Provides session content and handles chat:
+- Agent options from `AgentDiscoveryService`
+- Chat history from `WorkerSession.toChatHistory()`
+- Routes requests through `AgentRunner` with worktree context
+
+#### 3. OrchestratorChatSessionParticipant
+Handles chat requests within sessions:
+- Resolves worker from session URI
+- Creates scoped instantiation with worktree context
+- Invokes `AgentRunner` for actual agent execution
+
+#### 4. UnifiedWorktreeManager
+Shared worktree infrastructure:
+- Used by orchestrator workers
+- Can be adopted by other session types (CLI, Cloud)
+- Handles create/complete/remove lifecycle
+
+### Session Identification
+
+Sessions use URI scheme `orchestrator:/<taskId>`:
+```typescript
+// Create session resource
+OrchestratorSessionId.getResource(taskId)  // → vscode.Uri
+
+// Parse from URI
+OrchestratorSessionId.parse(uri)  // → { taskId: string }
+```
+
+### Status Mapping
+
+Worker status maps to VS Code chat session status:
+| Worker Status | Chat Session Status |
+|--------------|---------------------|
+| `pending`    | `starting`          |
+| `running`    | `active`            |
+| `blocked`    | `paused`            |
+| `completed`  | `completed`         |
+| `error`      | `error`             |
+
+### Registration
+
+Session providers registered in `chatSessions.ts`:
+```typescript
+private _registerOrchestratorSessions(): void {
+    const child = this._instantiationService.createChild(
+        new ServiceCollection([IUnifiedWorktreeManager, new SyncDescriptor(UnifiedWorktreeManager)])
+    );
+
+    // Register item provider
+    this._register(vscode.chat.registerChatSessionItemProvider('orchestrator', itemProvider));
+
+    // Register content provider
+    this._register(vscode.chat.registerChatSessionContentProvider('orchestrator', contentProvider));
+
+    // Register participant
+    this._register(vscode.chat.registerChatParticipant('copilot-orchestrator.session', participant.provideRequest.bind(participant)));
+}
+```
+
+### Extension Manifest
+
+The `orchestrator` session type declared in `package.json`:
+```json
+{
+    "chatSessionProviderInfo": [
+        {
+            "type": "orchestrator",
+            "name": "%chatSessionProviderInfo.orchestrator.name%",
+            "icon": "$(symbol-namespace)"
+        }
+    ]
+}
+```
+
+### OrchestratorService Integration
+
+The `IOrchestratorService` interface includes session-aware methods:
+
+```typescript
+interface WorkerTask {
+    // ... existing fields ...
+    sessionUri?: string;  // orchestrator:/<taskId>
+}
+
+type OrchestratorEvent =
+    | { type: 'task.started'; planId: string | undefined; taskId: string; workerId: string; sessionUri: string }
+    | { type: 'task.completed'; planId: string | undefined; taskId: string; workerId: string; sessionUri?: string }
+    // ... other events ...
+
+interface IOrchestratorService {
+    // Session integration methods
+    getSessionUriForTask(taskId: string): string | undefined;
+    getTaskBySessionUri(sessionUri: string): WorkerTask | undefined;
+}
+```
+
+### Tools Integration
+
+The orchestrator tools now expose session URIs:
+- `orchestrator_deploy` returns session URI for the deployed task
+- `orchestrator_listWorkers` shows session URIs in task lists and "Active Sessions" section
+
+---
+
 ## Open Questions
 
 ### Resolved

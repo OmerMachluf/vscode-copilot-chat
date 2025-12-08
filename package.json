@@ -5604,6 +5604,22 @@
 				"capabilities": {
 					"supportsFileAttachments": true
 				}
+			},
+			{
+				"type": "orchestrator",
+				"name": "orchestrator",
+				"displayName": "Orchestrator Workers",
+				"icon": "$(symbol-namespace)",
+				"welcomeTitle": "Orchestrator Workers",
+				"welcomeMessage": "Manage parallel plan tasks with orchestrated workers",
+				"inputPlaceholder": "Send a message to this worker or redirect the task",
+				"order": 4,
+				"description": "Orchestrator workers execute plan tasks in isolated worktrees with full agent capabilities",
+				"capabilities": {
+					"supportsFileAttachments": true,
+					"supportsProblemAttachments": true,
+					"supportsToolAttachments": true
+				}
 			}
 		],
 		"debuggers": [

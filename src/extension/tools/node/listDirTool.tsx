@@ -6,20 +6,17 @@
 import * as l10n from '@vscode/l10n';
 import { BasePromptElementProps, PromptElement, PromptPiece, PromptSizing, TextChunk } from '@vscode/prompt-tsx';
 import type * as vscode from 'vscode';
+import { ICustomInstructionsService } from '../../../platform/customInstructions/common/customInstructionsService';
 import { IFileSystemService } from '../../../platform/filesystem/common/fileSystemService';
 import { FileType } from '../../../platform/filesystem/common/fileTypes';
 import { IPromptPathRepresentationService } from '../../../platform/prompts/common/promptPathRepresentationService';
-import { IWorkspaceService } from '../../../platform/workspace/common/workspaceService';
 import { CancellationToken } from '../../../util/vs/base/common/cancellation';
-import { normalizePath } from '../../../util/vs/base/common/resources';
 import { IInstantiationService } from '../../../util/vs/platform/instantiation/common/instantiation';
 import { LanguageModelPromptTsxPart, LanguageModelToolResult, MarkdownString } from '../../../vscodeTypes';
 import { renderPromptElementJSON } from '../../prompts/node/base/promptRenderer';
 import { ToolName } from '../common/toolNames';
 import { ToolRegistry } from '../common/toolsRegistry';
-import { formatUriForFileWidget } from '../common/toolUtils';
-import { checkCancellation, resolveToolInputPath } from './toolUtils';
-import { ICustomInstructionsService } from '../../../platform/customInstructions/common/customInstructionsService';
+import { checkCancellation, formatUriForFileWidget, isInWorkspaceOrWorktree, resolveToolInputPath } from './toolUtils';
 
 interface IListDirParams {
 	path: string;
@@ -31,16 +28,16 @@ class ListDirTool implements vscode.LanguageModelTool<IListDirParams> {
 	constructor(
 		@IFileSystemService private readonly fsService: IFileSystemService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
-		@IWorkspaceService private readonly workspaceService: IWorkspaceService,
 		@IPromptPathRepresentationService private readonly promptPathRepresentationService: IPromptPathRepresentationService,
 		@ICustomInstructionsService private readonly customInstructionsService: ICustomInstructionsService,
 	) { }
 
 	async invoke(options: vscode.LanguageModelToolInvocationOptions<IListDirParams>, token: CancellationToken) {
 		const uri = resolveToolInputPath(options.input.path, this.promptPathRepresentationService);
-		const normalizedUri = normalizePath(uri);
-		const relativeToWorkspace = this.workspaceService.getWorkspaceFolder(normalizedUri);
-		if (!relativeToWorkspace && !this.customInstructionsService.isExternalInstructionsFolder(normalizedUri)) {
+
+		// Check if directory is in workspace or an active worktree
+		const isAllowed = this.instantiationService.invokeFunction(accessor => isInWorkspaceOrWorktree(accessor, uri));
+		if (!isAllowed) {
 			throw new Error(`Directory ${options.input.path} is outside of the workspace and can't be read`);
 		}
 

@@ -1,0 +1,402 @@
+implementation:
+  summary: |
+    ## Unified Orchestrator Sessions - Architecture Plan
+
+    This plan unifies the **Orchestrator Worker System** with the **Agent Sessions UI**,
+    providing a seamless experience where:
+
+    1. **Orchestrator workers become Agent Sessions** - Workers are displayed as chat sessions
+       in the VS Code Chat Session picker, with full session UI (history, streaming, approvals)
+
+    2. **Both Copilot CLI and Local Chat agents get worktree support** - Any session type
+       can operate in an isolated git worktree
+
+    3. **Dashboard shows only Plans/Tasks** - The orchestrator dashboard is simplified to
+       show plans and their task DAG, with workers accessed via the sessions UI
+
+    4. **Full orchestrator functionality preserved** - Plans, tasks, dependencies,
+       deploy/retry/cancel, parallelization all work through the new unified system
+
+    ### Architecture Overview
+
+    ```
+    ┌─────────────────────────────────────────────────────────────────┐
+    │                    VS CODE CHAT SESSIONS UI                      │
+    │              (Session Picker, Chat History, Streaming)           │
+    └─────────────────────────────────────────────────────────────────┘
+                                    │
+           ┌────────────────────────┼────────────────────────┐
+           ▼                        ▼                        ▼
+    ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐
+    │  orchestrator   │   │   copilotcli    │   │   claude-code   │
+    │  (NEW type)     │   │   (existing)    │   │   (existing)    │
+    │                 │   │                 │   │                 │
+    │  Plan Workers   │   │ Standalone CLI  │   │ Claude Sessions │
+    │  as Sessions    │   │    Sessions     │   │                 │
+    └─────────────────┘   └─────────────────┘   └─────────────────┘
+           │                        │
+           ▼                        ▼
+    ┌─────────────────────────────────────────────────────────────────┐
+    │               SHARED WORKTREE INFRASTRUCTURE                     │
+    │                   (UnifiedWorktreeManager)                       │
+    │                                                                 │
+    │   - Creates/manages git worktrees for any session type          │
+    │   - Persists session → worktree mappings                        │
+    │   - Handles completion: commit, push, PR creation               │
+    └─────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+    ┌─────────────────────────────────────────────────────────────────┐
+    │                    ORCHESTRATOR SERVICE                          │
+    │               (orchestratorServiceV2.ts - modified)              │
+    │                                                                 │
+    │   Plans ───► Tasks ───► Session URIs (instead of WorkerSession)│
+    │                                                                 │
+    │   - Still manages DAG, dependencies, parallelization            │
+    │   - Workers replaced by session references                      │
+    │   - deploy() creates a session instead of WorkerSession         │
+    └─────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+    ┌─────────────────────────────────────────────────────────────────┐
+    │              ORCHESTRATOR DASHBOARD (Simplified)                 │
+    │                                                                 │
+    │   - Shows Plans list with status                                │
+    │   - Shows Task DAG with dependencies                            │
+    │   - "Open Session" button links to chat session UI              │
+    │   - No more embedded worker cards                               │
+    └─────────────────────────────────────────────────────────────────┘
+    ```
+
+    ### Key Design Decisions
+
+    1. **New Session Type: `orchestrator`**
+       - A new ChatSessionItemProvider/ContentProvider for orchestrator sessions
+       - Sessions are backed by WorkerSession state (reusing existing code)
+       - Provides full VS Code chat UI with history, streaming, tool approval
+
+    2. **Shared Worktree Manager**
+       - Extract worktree logic from CopilotCLIWorktreeManager
+       - Create UnifiedWorktreeManager usable by all session types
+       - Support worktree isolation as an option for orchestrator AND standalone sessions
+
+    3. **Modified OrchestratorService**
+       - Replace direct WorkerSession creation with session creation
+       - Task.sessionUri instead of Task.workerId
+       - Events reference session URIs
+
+    4. **AgentRunner Integration**
+       - AgentRunner still handles the actual LLM execution
+       - Now invoked through the session's requestHandler
+       - Worktree path passed through session context
+
+    5. **Simplified Dashboard**
+       - Plan selector and controls remain
+       - Task DAG visualization remains
+       - Worker cards removed - replaced with "Open in Chat" links
+       - Session status shown in task list
+
+  files_to_create:
+    # Core Infrastructure
+    - path: src/extension/chatSessions/common/unifiedWorktreeManager.ts
+      purpose: |
+        Shared worktree manager extracted from CopilotCLIWorktreeManager.
+        Provides worktree creation/management for any session type.
+        Methods:
+        - createWorktree(sessionId, baseBranch): Promise<string>
+        - getWorktreePath(sessionId): string | undefined
+        - storeWorktreePath(sessionId, path): Promise<void>
+        - removeWorktree(sessionId): Promise<void>
+        - commitAndPush(sessionId, message): Promise<void>
+        - createPullRequest(sessionId, options): Promise<PRInfo>
+      template: Based on CopilotCLIWorktreeManager in copilotCLIChatSessionsContribution.ts
+
+    # Orchestrator Sessions Provider
+    - path: src/extension/chatSessions/vscode-node/orchestratorChatSessionItemProvider.ts
+      purpose: |
+        ChatSessionItemProvider for orchestrator worker sessions.
+        Lists all active orchestrator workers as ChatSessionItems.
+        Shows: task name, status, worktree path, plan association, statistics.
+        Refreshes on orchestrator state changes.
+      template: Based on CopilotCLIChatSessionItemProvider
+
+    - path: src/extension/chatSessions/vscode-node/orchestratorChatSessionContentProvider.ts
+      purpose: |
+        ChatSessionContentProvider for orchestrator sessions.
+        Converts WorkerSession messages to ChatRequestTurn/ChatResponseTurn2.
+        Provides requestHandler that routes to AgentRunner.
+        Provides activeResponseCallback for in-progress sessions.
+        Supports model selection, agent selection options.
+      template: Based on CopilotCLIChatSessionContentProvider
+
+    - path: src/extension/chatSessions/vscode-node/orchestratorChatSessionParticipant.ts
+      purpose: |
+        ChatParticipant handler for orchestrator sessions.
+        Routes requests to AgentRunner with proper worktree context.
+        Handles approval flows through VS Code chat confirmation UI.
+        Manages session lifecycle (start, pause, interrupt, complete).
+      template: Based on CopilotCLIChatSessionParticipant
+
+    - path: src/extension/chatSessions/vscode-node/orchestratorChatSessionHelpers.ts
+      purpose: |
+        Helper functions for orchestrator sessions:
+        - SessionIdForOrchestrator.getResource(taskId) / .parse(uri)
+        - Convert WorkerMessage[] to ChatHistory
+        - Convert WorkerStatus to ChatSessionStatus
+        - Build session options (model, agent, plan)
+
+    # Dashboard Simplification
+    - path: src/extension/orchestrator/dashboard/PlanDashboard.ts
+      purpose: |
+        Simplified dashboard showing only plans and tasks.
+        Features:
+        - Plan list with status badges
+        - Task DAG visualization (reuse existing SVG logic)
+        - Task list with dependencies, status, agent
+        - "Open Session" buttons linking to chat sessions
+        - Deploy/Cancel/Retry controls
+        No worker cards - sessions accessed via chat UI.
+      template: Extract from WorkerDashboardV2.ts, remove worker sections
+
+  files_to_modify:
+    # Chat Sessions Registration
+    - path: src/extension/chatSessions/vscode-node/chatSessions.ts
+      changes: |
+        1. Import new orchestrator session providers
+        2. Create orchestratorAgentInstaService with required services:
+           - IOrchestratorService
+           - IAgentRunner
+           - IUnifiedWorktreeManager
+           - IAgentInstructionService
+        3. Register 'orchestrator' session type:
+           - registerChatSessionItemProvider('orchestrator', orchestratorItemProvider)
+           - registerChatSessionContentProvider('orchestrator', contentProvider, participant)
+        4. Register orchestrator session commands:
+           - github.copilot.orchestrator.sessions.refresh
+           - github.copilot.orchestrator.sessions.openChanges
+           - github.copilot.orchestrator.sessions.complete
+           - github.copilot.orchestrator.sessions.completeWithPR
+      complexity: medium
+
+    # Orchestrator Service Modifications
+    - path: src/extension/orchestrator/orchestratorServiceV2.ts
+      changes: |
+        1. Remove direct WorkerSession creation in deploy()
+        2. Add new method: createSessionForTask(taskId): Promise<vscode.Uri>
+           - Creates worktree via UnifiedWorktreeManager
+           - Creates WorkerSession for state tracking
+           - Returns session URI for chat UI
+        3. Change WorkerTask interface:
+           - Add: sessionUri?: string (replaces workerId reference)
+        4. Modify events to emit session URIs:
+           - task.started: { sessionUri, taskId, planId }
+        5. Add method: getSessionForTask(taskId): vscode.Uri | undefined
+        6. Keep existing WorkerSession for state tracking (messages, status)
+           but access through session UI, not dashboard workers
+        7. Add: linkTaskToSession(taskId, sessionUri): void
+        8. Modify completeWorker to work with session URIs
+      complexity: large
+
+    # Worker Session Adaptations
+    - path: src/extension/orchestrator/workerSession.ts
+      changes: |
+        1. Add method to convert messages to chat history format:
+           - toChatHistory(): (ChatRequestTurn | ChatResponseTurn2)[]
+        2. Add method to get session status:
+           - getChatSessionStatus(): vscode.ChatSessionStatus
+        3. Add stream adapter method:
+           - createResponseStream(): vscode.ChatResponseStream adapter
+        4. Keep all existing functionality - just add adapters
+      complexity: medium
+
+    # Worktree Manager Refactor (Copilot CLI)
+    - path: src/extension/chatSessions/vscode-node/copilotCLIChatSessionsContribution.ts
+      changes: |
+        1. Replace CopilotCLIWorktreeManager with UnifiedWorktreeManager
+        2. Update all references to use the new shared manager
+        3. Keep CopilotCLIWorktreeManager as thin wrapper for backward compat
+           that delegates to UnifiedWorktreeManager
+        4. Update CopilotCLIChatSessionItemProvider constructor
+        5. Update CopilotCLIChatSessionContentProvider to use unified manager
+      complexity: medium
+
+    # Dashboard Simplification
+    - path: src/extension/orchestrator/dashboard/WorkerDashboardV2.ts
+      changes: |
+        1. Remove worker cards section entirely
+        2. Remove worker message display
+        3. Remove approval handling UI (now in chat session)
+        4. Keep plan selector
+        5. Keep task list with modified actions:
+           - "Open Session" instead of embedded worker view
+           - Deploy, Cancel, Retry buttons remain
+        6. Keep DAG visualization
+        7. Add links to open session URIs in chat
+        8. Simplify significantly - becomes ~500 lines instead of 1600+
+      complexity: large
+
+    # Agent Runner Integration
+    - path: src/extension/orchestrator/agentRunner.ts
+      changes: |
+        1. Add optional sessionId to IAgentRunOptions:
+           - sessionId?: string (for linking to orchestrator session)
+        2. Add onMessageAdded callback:
+           - For session to track messages being added
+        3. Ensure worktreePath is properly propagated to all tools
+        4. Add pause/resume integration via session events
+      complexity: small
+
+    # Orchestrator Tools Updates
+    - path: src/extension/tools/node/orchestratorTools.ts
+      changes: |
+        1. Update orchestrator_deploy to return session URI
+        2. Update orchestrator_listWorkers output:
+           - Workers section becomes "Active Sessions"
+           - Include session URIs for each task with running session
+        3. Add orchestrator_openSession tool (optional):
+           - Opens a session in the chat UI
+        4. Update orchestrator_sendMessage to work with session URIs
+      complexity: medium
+
+    # Package.json Updates
+    - path: package.json
+      changes: |
+        1. Add 'orchestrator' to chatSessions contribution:
+           "chatSessions": ["claude-code", "copilotcli", "copilot-cloud-agent", "orchestrator"]
+        2. Add orchestrator session commands:
+           - github.copilot.orchestrator.sessions.refresh
+           - github.copilot.orchestrator.sessions.openChanges
+           - github.copilot.orchestrator.sessions.complete
+        3. Add orchestrator session menu contributions
+      complexity: small
+
+  test_strategy:
+    unit:
+      - file: src/extension/chatSessions/vscode-node/__tests__/orchestratorChatSessionItemProvider.spec.ts
+        cases:
+          - "Provides session items for all active workers"
+          - "Shows correct status for running/idle/completed workers"
+          - "Includes worktree path and plan info in session items"
+          - "Fires onDidChangeChatSessionItems when orchestrator state changes"
+
+      - file: src/extension/chatSessions/vscode-node/__tests__/orchestratorChatSessionContentProvider.spec.ts
+        cases:
+          - "Converts WorkerMessages to ChatHistory correctly"
+          - "Provides activeResponseCallback for running sessions"
+          - "Returns requestHandler that routes to AgentRunner"
+          - "Handles model and agent options"
+
+      - file: src/extension/chatSessions/common/__tests__/unifiedWorktreeManager.spec.ts
+        cases:
+          - "Creates worktree with correct branch name"
+          - "Stores and retrieves worktree paths"
+          - "Commits and pushes changes"
+          - "Creates pull requests"
+
+      - file: src/extension/orchestrator/__tests__/orchestratorServiceV2.sessions.spec.ts
+        cases:
+          - "createSessionForTask creates worktree and returns URI"
+          - "Tasks link to session URIs correctly"
+          - "Events include session URIs"
+          - "completeWorker works with session-based workers"
+
+    integration:
+      - file: test/e2e/orchestrator-sessions.test.ts
+        scope: |
+          End-to-end test of unified workflow:
+          1. Create plan via orchestrator_savePlan
+          2. Deploy task → Session appears in session picker
+          3. Open session → Chat UI shows task conversation
+          4. Send message → Agent processes with worktree context
+          5. Complete session → PR created, session marked complete
+
+    e2e:
+      needed: true
+      reason: |
+        Critical integration point between two major systems.
+        Need to verify chat UI correctly shows orchestrator sessions,
+        message flow works, and worktree operations succeed.
+
+  parallelization:
+    - group: infrastructure
+      files:
+        - src/extension/chatSessions/common/unifiedWorktreeManager.ts
+      reason: "Foundation - no dependencies, can start immediately"
+
+    - group: session-providers
+      files:
+        - src/extension/chatSessions/vscode-node/orchestratorChatSessionItemProvider.ts
+        - src/extension/chatSessions/vscode-node/orchestratorChatSessionContentProvider.ts
+        - src/extension/chatSessions/vscode-node/orchestratorChatSessionParticipant.ts
+        - src/extension/chatSessions/vscode-node/orchestratorChatSessionHelpers.ts
+      reason: "These can all be developed in parallel, same interface patterns"
+
+    - group: dashboard-simplification
+      files:
+        - src/extension/orchestrator/dashboard/PlanDashboard.ts
+      reason: "Independent UI work, can be done in parallel with providers"
+
+    sequential:
+      - files:
+          - src/extension/orchestrator/orchestratorServiceV2.ts
+          - src/extension/orchestrator/workerSession.ts
+        reason: "WorkerSession changes affect orchestratorServiceV2"
+
+      - files:
+          - src/extension/chatSessions/vscode-node/chatSessions.ts
+          - package.json
+        reason: "Registration depends on all providers being ready"
+
+      - files:
+          - src/extension/chatSessions/vscode-node/copilotCLIChatSessionsContribution.ts
+        reason: "Depends on UnifiedWorktreeManager being complete"
+
+      - files:
+          - src/extension/tools/node/orchestratorTools.ts
+        reason: "Depends on orchestratorServiceV2 changes"
+
+  considerations:
+    - title: "Backward Compatibility"
+      detail: |
+        Existing orchestrator state files contain WorkerSession data.
+        Need migration path or version check to handle:
+        - Old format: workerId references
+        - New format: sessionUri references
+        Consider keeping workerId as internal link, sessionUri for UI.
+
+    - title: "Session Persistence"
+      detail: |
+        WorkerSession already persists to .copilot-orchestrator-state.json.
+        ChatSession history is derived from WorkerSession.messages.
+        Need to ensure session content provider correctly reconstructs
+        history from persisted state after VS Code restart.
+
+    - title: "Active Response Handling"
+      detail: |
+        When a session is actively running (AgentRunner processing),
+        the ChatSessionContentProvider must return an activeResponseCallback.
+        This callback streams the current response parts.
+        Need careful coordination between WorkerSession state and callback.
+
+    - title: "Multi-Session Consistency"
+      detail: |
+        User might have orchestrator dashboard open AND session in chat UI.
+        State changes must be reflected in both:
+        - Dashboard shows task status changes
+        - Session shows conversation updates
+        Use shared WorkerSession.onDidChange event for both.
+
+    - title: "Worktree Cleanup"
+      detail: |
+        When session is completed/deleted:
+        - Commit pending changes
+        - Optionally create PR
+        - Remove worktree
+        - Clean up session state
+        Ensure proper cleanup even if VS Code crashes.
+
+    - title: "Model Override"
+      detail: |
+        Users can select model per session in chat UI.
+        This needs to flow through to AgentRunner.
+        Store in session options, retrieve in requestHandler.

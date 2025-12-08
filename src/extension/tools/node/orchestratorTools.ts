@@ -72,9 +72,11 @@ class DeployTool implements ICopilotTool<IDeployParams> {
 			// Option 1: Deploy a specific task by taskId
 			if (taskId) {
 				const worker = await this._orchestratorService.deploy(taskId, deployOptions);
+				const task = this._orchestratorService.getTaskById(taskId);
 				const modelInfo = modelId ? ` (model: ${modelId})` : '';
+				const sessionUri = task?.sessionUri ? `\nSession URI: ${task.sessionUri}` : '';
 				return new LanguageModelToolResult([
-					new LanguageModelTextPart(`✅ Deployed worker ${worker.id} for task: ${taskId}${modelInfo}\nTask: ${worker.task}`)
+					new LanguageModelTextPart(`✅ Deployed worker ${worker.id} for task: ${taskId}${modelInfo}\nTask: ${worker.task}${sessionUri}`)
 				]);
 			}
 
@@ -173,8 +175,9 @@ class ListWorkersTool implements ICopilotTool<void> {
 							? ` (depends on: ${task.dependencies.join(', ')})`
 							: ' (no dependencies)';
 						const agentStr = task.agent ? ` [${task.agent}]` : '';
+						const sessionStr = task.sessionUri ? ` | Session: ${task.sessionUri}` : '';
 
-						lines.push(`  ${taskIcon} ${task.id}: ${task.name}${agentStr} - ${task.status}${depsStr}`);
+						lines.push(`  ${taskIcon} ${task.id}: ${task.name}${agentStr} - ${task.status}${depsStr}${sessionStr}`);
 					}
 					lines.push('');
 				}
@@ -196,15 +199,16 @@ class ListWorkersTool implements ICopilotTool<void> {
 				const taskIcon = task.status === 'completed' ? '✅' :
 					task.status === 'running' ? '🔄' :
 						task.status === 'failed' ? '❌' : '⬜';
-				lines.push(`${taskIcon} ${task.id}: ${task.name} - ${task.status}`);
+				const sessionStr = task.sessionUri ? ` | Session: ${task.sessionUri}` : '';
+				lines.push(`${taskIcon} ${task.id}: ${task.name} - ${task.status}${sessionStr}`);
 			}
 			lines.push('');
 		}
 
-		// Show active workers
+		// Show active workers (now called Active Sessions)
 		const workers = this._orchestratorService.getWorkerStates();
 		if (workers.length > 0) {
-			lines.push('## Active Workers\n');
+			lines.push('## Active Sessions\n');
 			for (const w of workers) {
 				const statusIcon = w.status === 'running' ? '🔄' :
 					w.status === 'idle' ? '💤' :
@@ -213,9 +217,17 @@ class ListWorkersTool implements ICopilotTool<void> {
 								w.status === 'completed' ? '✅' :
 									w.status === 'error' ? '❌' : '❓';
 
+				// Find the task to get session URI
+				const tasks = this._orchestratorService.getTasks();
+				const linkedTask = tasks.find(t => t.workerId === w.id);
+				const sessionUri = linkedTask?.sessionUri;
+
 				lines.push(`${statusIcon} **${w.id}** (${w.name})`);
 				lines.push(`   Status: ${w.status}`);
 				lines.push(`   Task: ${w.task}`);
+				if (sessionUri) {
+					lines.push(`   Session: ${sessionUri}`);
+				}
 				if (w.planId) {
 					lines.push(`   Plan: ${w.planId}`);
 				}

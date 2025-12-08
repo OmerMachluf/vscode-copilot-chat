@@ -31,6 +31,7 @@ import { URI } from '../../../util/vs/base/common/uri';
 import { Position as EditorPosition } from '../../../util/vs/editor/common/core/position';
 import { ServicesAccessor } from '../../../util/vs/platform/instantiation/common/instantiation';
 import { EndOfLine, Position, Range, TextEdit } from '../../../vscodeTypes';
+import { IWorkerToolsService } from '../../orchestrator/workerToolsService';
 import { IBuildPromptContext } from '../../prompt/common/intents';
 import { formatUriForFileWidget } from '../common/toolUtils';
 
@@ -796,7 +797,7 @@ export const enum ConfirmationCheckResult {
  * Returns a function that returns whether a URI is approved for editing without
  * further user confirmation.
  */
-export function makeUriConfirmationChecker(configuration: IConfigurationService, workspaceService: IWorkspaceService, customInstructionsService: ICustomInstructionsService) {
+export function makeUriConfirmationChecker(configuration: IConfigurationService, workspaceService: IWorkspaceService, customInstructionsService: ICustomInstructionsService, workerToolsService: IWorkerToolsService | undefined) {
 	const patterns = configuration.getNonExtensionConfig<Record<string, boolean>>('chat.tools.edits.autoApprove');
 
 	const checks = new ResourceMap<{ patterns: { pattern: glob.ParsedPattern; isApproved: boolean }[]; ignoreCasing: boolean }>();
@@ -821,9 +822,18 @@ export function makeUriConfirmationChecker(configuration: IConfigurationService,
 	};
 
 	function checkUri(uri: URI) {
-		const normalizedUri = normalizePath(uri);
-		const workspaceFolder = workspaceService.getWorkspaceFolder(normalizedUri);
-		if (!workspaceFolder && uri.scheme !== Schemas.untitled) { // don't allow to edit external instruction files
+		let workspaceFolder = workspaceService.getWorkspaceFolder(uri);
+
+		// If not in workspace, check if it's in an active worktree
+		if (!workspaceFolder && workerToolsService) {
+			const worktreePath = workerToolsService.getWorktreeForPath(uri);
+			if (worktreePath) {
+				// Treat the worktree as an effective workspace folder for pattern matching
+				workspaceFolder = URI.file(worktreePath);
+			}
+		}
+
+		if (!workspaceFolder && !customInstructionsService.isExternalInstructionsFile(uri) && uri.scheme !== Schemas.untitled) {
 			return ConfirmationCheckResult.OutsideWorkspace;
 		}
 
@@ -887,7 +897,13 @@ export function makeUriConfirmationChecker(configuration: IConfigurationService,
 }
 
 export async function createEditConfirmation(accessor: ServicesAccessor, uris: readonly URI[], detailMessage?: (urisNeedingConfirmation: readonly URI[]) => Promise<string>): Promise<PreparedToolInvocation> {
-	const checker = makeUriConfirmationChecker(accessor.get(IConfigurationService), accessor.get(IWorkspaceService), accessor.get(ICustomInstructionsService));
+	let workerToolsService: IWorkerToolsService | undefined;
+	try {
+		workerToolsService = accessor.get(IWorkerToolsService);
+	} catch {
+		// IWorkerToolsService might not be available in all contexts
+	}
+	const checker = makeUriConfirmationChecker(accessor.get(IConfigurationService), accessor.get(IWorkspaceService), accessor.get(ICustomInstructionsService), workerToolsService);
 	const needsConfirmation = (await Promise.all(uris
 		.map(async uri => ({ uri, reason: await checker(uri) }))
 	)).filter(r => r.reason !== ConfirmationCheckResult.NoConfirmation);
