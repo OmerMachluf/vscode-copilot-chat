@@ -6,6 +6,7 @@
 import * as vscode from 'vscode';
 import { IOrchestratorService } from '../orchestratorServiceV2';
 import { WorkerChatPanel } from './WorkerChatPanel';
+import { IAuditLogService, IAuditLogFilter, AuditEventType } from '../auditLog';
 
 /**
  * Enhanced Worker Dashboard that provides full conversation view,
@@ -14,10 +15,12 @@ import { WorkerChatPanel } from './WorkerChatPanel';
 export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 	public static readonly viewType = 'copilot.orchestrator.dashboard';
 	private _view?: vscode.WebviewView;
+	private _auditLogFilter: IAuditLogFilter = {};
 
 	constructor(
 		private readonly _orchestrator: IOrchestratorService,
 		private readonly _extensionUri: vscode.Uri,
+		private readonly _auditLog?: IAuditLogService,
 	) { }
 
 	public resolveWebviewView(
@@ -186,6 +189,26 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 				case 'resumePlan':
 					this._orchestrator.resumePlan(data.planId);
 					break;
+				// Phase 12: Inbox and Audit Log handlers
+				case 'getInboxItems':
+					this._sendInboxItems();
+					break;
+				case 'inboxAction':
+					this._handleInboxAction(data.itemId, data.action, data.reason);
+					break;
+				case 'getAuditLogs':
+					this._sendAuditLogs(data.filter);
+					break;
+				case 'exportAuditLogs':
+					await this._exportAuditLogs(data.format || 'json');
+					break;
+				case 'setAuditRetention':
+					this._auditLog?.setRetentionDays(data.days);
+					break;
+				case 'clearAuditLogs':
+					this._auditLog?.clear();
+					this._sendAuditLogs();
+					break;
 			}
 		});
 
@@ -217,6 +240,130 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 		} catch (error) {
 			console.error('Failed to fetch available models:', error);
 		}
+	}
+
+	private _sendInboxItems(): void {
+		if (!this._view) {
+			return;
+		}
+
+		// Collect inbox items from workers' pending approvals
+		const workers = this._orchestrator.getWorkerStates();
+		const items: any[] = [];
+
+		for (const worker of workers) {
+			for (const approval of (worker.pendingApprovals || [])) {
+				items.push({
+					id: `${worker.id}:${approval.id}`,
+					workerId: worker.id,
+					workerName: worker.name,
+					approvalId: approval.id,
+					type: 'approval',
+					priority: this._inferPriority(approval),
+					title: `${approval.toolName} - ${worker.name}`,
+					description: approval.description,
+					details: approval.parameters,
+					planId: worker.planId,
+					taskDescription: worker.task,
+					createdAt: approval.timestamp || Date.now(),
+				});
+			}
+		}
+
+		// Sort by priority (critical first), then by time
+		const priorityOrder: Record<string, number> = { critical: 0, high: 1, normal: 2, low: 3 };
+		items.sort((a, b) => {
+			const priorityDiff = (priorityOrder[a.priority] || 2) - (priorityOrder[b.priority] || 2);
+			if (priorityDiff !== 0) {
+				return priorityDiff;
+			}
+			return (a.createdAt || 0) - (b.createdAt || 0);
+		});
+
+		this._view.webview.postMessage({
+			type: 'inboxItems',
+			items,
+			total: items.length,
+		});
+	}
+
+	private _inferPriority(approval: any): string {
+		// Infer priority based on tool type
+		const criticalTools = ['deleteFile', 'rm', 'drop', 'truncate'];
+		const highTools = ['createFile', 'runCommand', 'execute'];
+
+		const toolName = (approval.toolName || '').toLowerCase();
+
+		if (criticalTools.some(t => toolName.includes(t))) {
+			return 'critical';
+		}
+		if (highTools.some(t => toolName.includes(t))) {
+			return 'high';
+		}
+		return 'normal';
+	}
+
+	private _handleInboxAction(itemId: string, action: 'approve' | 'deny' | 'defer', reason?: string): void {
+		const [workerId, approvalId] = itemId.split(':');
+		if (!workerId || !approvalId) {
+			return;
+		}
+
+		switch (action) {
+			case 'approve':
+				this._orchestrator.handleApproval(workerId, approvalId, true, reason);
+				break;
+			case 'deny':
+				this._orchestrator.handleApproval(workerId, approvalId, false, reason);
+				break;
+			case 'defer':
+				// Defer doesn't take action, just logs it
+				this._auditLog?.log(
+					AuditEventType.OrchestratorDecisionDeferred,
+					'orchestrator',
+					`Decision deferred for approval ${approvalId}`,
+					{
+						workerId,
+						details: { action: 'deferred', approvalId },
+					}
+				);
+				break;
+		}
+
+		// Refresh inbox
+		this._sendInboxItems();
+	}
+
+	private _sendAuditLogs(filter?: IAuditLogFilter): void {
+		if (!this._view || !this._auditLog) {
+			return;
+		}
+
+		this._auditLogFilter = filter || {};
+		const entries = this._auditLog.getEntries(this._auditLogFilter);
+		const stats = this._auditLog.getStats();
+
+		this._view.webview.postMessage({
+			type: 'auditLogs',
+			entries: entries.slice(0, 100), // Limit to 100 for performance
+			stats,
+			filter: this._auditLogFilter,
+		});
+	}
+
+	private async _exportAuditLogs(format: 'json' | 'markdown'): Promise<void> {
+		if (!this._auditLog) {
+			return;
+		}
+
+		const content = this._auditLog.export(format);
+
+		// Open in new untitled document
+		const doc = await vscode.workspace.openTextDocument({
+			content,
+			language: format === 'json' ? 'json' : 'markdown',
+		});
+		await vscode.window.showTextDocument(doc);
 	}
 
 	private _update() {
@@ -252,7 +399,12 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 				activePlanId,
 				readyTasks,
 				allTasks,
+				pendingApprovals,
 			});
+
+			// Also send inbox and audit data on update
+			this._sendInboxItems();
+			this._sendAuditLogs(this._auditLogFilter);
 		}
 	}
 
@@ -739,6 +891,145 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 		h3 { margin: 0 0 10px 0; font-size: 1.1em; }
 		h4 { margin: 10px 0 5px 0; font-size: 1em; }
 		label { font-size: 0.9em; color: var(--vscode-descriptionForeground); }
+
+		/* Tab badges */
+		.tab-badge {
+			display: inline-block;
+			background: var(--vscode-badge-background);
+			color: var(--vscode-badge-foreground);
+			font-size: 0.75em;
+			padding: 1px 6px;
+			border-radius: 10px;
+			margin-left: 4px;
+		}
+		.count-badge {
+			font-size: 0.85em;
+			color: var(--vscode-descriptionForeground);
+		}
+
+		/* Tab header */
+		.tab-header {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			margin-bottom: 10px;
+		}
+
+		/* Inbox items */
+		.inbox-item {
+			padding: 12px;
+			margin-bottom: 8px;
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-widget-border);
+			border-radius: 4px;
+		}
+		.inbox-item.critical { border-left: 3px solid var(--vscode-errorForeground); }
+		.inbox-item.high { border-left: 3px solid var(--vscode-notificationsWarningIcon-foreground); }
+		.inbox-header {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			margin-bottom: 8px;
+		}
+		.inbox-title { font-weight: bold; }
+		.inbox-priority {
+			font-size: 0.75em;
+			padding: 2px 6px;
+			border-radius: 3px;
+		}
+		.inbox-priority.critical { background: var(--vscode-errorForeground); color: white; }
+		.inbox-priority.high { background: var(--vscode-notificationsWarningIcon-foreground); color: black; }
+		.inbox-priority.normal { background: var(--vscode-descriptionForeground); color: white; }
+		.inbox-priority.low { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+		.inbox-description { color: var(--vscode-descriptionForeground); margin-bottom: 8px; }
+		.inbox-meta {
+			font-size: 0.85em;
+			color: var(--vscode-descriptionForeground);
+			margin-bottom: 8px;
+		}
+		.inbox-actions {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+		}
+		.inbox-actions input {
+			flex: 1;
+			padding: 4px 8px;
+		}
+
+		/* Audit log */
+		.audit-actions {
+			display: flex;
+			gap: 8px;
+		}
+		.audit-filter-bar {
+			display: flex;
+			gap: 8px;
+			margin-bottom: 12px;
+			flex-wrap: wrap;
+		}
+		.audit-filter-bar select, .audit-filter-bar input {
+			padding: 4px 8px;
+			background: var(--vscode-input-background);
+			color: var(--vscode-input-foreground);
+			border: 1px solid var(--vscode-input-border);
+			border-radius: 3px;
+		}
+		.audit-filter-bar input { flex: 1; min-width: 100px; }
+		.audit-stats {
+			display: flex;
+			gap: 16px;
+			margin-bottom: 12px;
+			font-size: 0.9em;
+			color: var(--vscode-descriptionForeground);
+		}
+		.audit-entry {
+			padding: 10px;
+			margin-bottom: 6px;
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-widget-border);
+			border-radius: 4px;
+			border-left: 3px solid var(--vscode-descriptionForeground);
+			cursor: pointer;
+		}
+		.audit-entry:hover { background: var(--vscode-list-hoverBackground); }
+		.audit-entry.plan { border-left-color: var(--vscode-charts-blue); }
+		.audit-entry.task { border-left-color: var(--vscode-charts-green); }
+		.audit-entry.worker { border-left-color: var(--vscode-charts-purple); }
+		.audit-entry.error { border-left-color: var(--vscode-errorForeground); }
+		.audit-entry-header {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			margin-bottom: 4px;
+		}
+		.audit-event-type {
+			font-weight: bold;
+			font-family: monospace;
+		}
+		.audit-timestamp {
+			font-size: 0.8em;
+			color: var(--vscode-descriptionForeground);
+		}
+		.audit-entry-body {
+			display: flex;
+			gap: 16px;
+			font-size: 0.9em;
+		}
+		.audit-actor, .audit-target {
+			color: var(--vscode-textLink-foreground);
+		}
+		.audit-details {
+			margin-top: 6px;
+			padding: 6px;
+			background: var(--vscode-input-background);
+			border-radius: 3px;
+			font-family: monospace;
+			font-size: 0.85em;
+			display: none;
+			white-space: pre-wrap;
+		}
+		.audit-entry.expanded .audit-details { display: block; }
 	</style>
 </head>
 <body>
@@ -746,6 +1037,8 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 		<div class="tabs">
 			<button class="tab active" data-tab="workers">Workers</button>
 			<button class="tab" data-tab="plan">Plan</button>
+			<button class="tab" data-tab="inbox">Inbox <span id="inbox-badge" class="tab-badge" style="display:none"></span></button>
+			<button class="tab" data-tab="audit">Audit</button>
 		</div>
 
 		<div id="workers-tab" class="tab-content active">
@@ -858,15 +1151,51 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			<div id="plan-container"></div>
 			<svg id="dependency-graph" class="dependency-graph" style="display: none;"></svg>
 		</div>
+
+		<!-- Inbox Tab -->
+		<div id="inbox-tab" class="tab-content">
+			<div class="tab-header">
+				<h3>Orchestrator Inbox</h3>
+				<span id="inbox-count" class="count-badge"></span>
+			</div>
+			<div id="inbox-container"></div>
+		</div>
+
+		<!-- Audit Tab -->
+		<div id="audit-tab" class="tab-content">
+			<div class="tab-header">
+				<h3>Audit Log</h3>
+				<div class="audit-actions">
+					<button data-action="export-audit-json" class="secondary">📥 JSON</button>
+					<button data-action="export-audit-md" class="secondary">📥 Markdown</button>
+					<button data-action="clear-audit" class="danger">🗑 Clear</button>
+				</div>
+			</div>
+			<div class="audit-filter-bar">
+				<select id="audit-filter-type">
+					<option value="">All Event Types</option>
+				</select>
+				<input type="text" id="audit-filter-actor" placeholder="Filter by actor..." />
+				<input type="text" id="audit-filter-plan" placeholder="Filter by plan ID..." />
+				<input type="text" id="audit-filter-search" placeholder="Search..." />
+				<button data-action="apply-audit-filter">🔍 Filter</button>
+			</div>
+			<div id="audit-stats" class="audit-stats"></div>
+			<div id="audit-container"></div>
+		</div>
 	</div>
 
 	<script>
 		const vscode = acquireVsCodeApi();
 		let expandedWorkers = new Set();
+		let expandedAuditEntries = new Set();
 		let currentPlans = [];
 		let currentActivePlanId = null;
 		let currentPlan = null;
 		let allTasks = [];
+		let currentInboxItems = [];
+		let currentAuditLogs = [];
+		let currentAuditStats = {};
 
 		// Tab switching
 		document.querySelectorAll('.tab').forEach(tab => {
@@ -985,6 +1314,38 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 				case 'set-view-graph':
 					setView('graph');
 					break;
+				// Inbox actions
+				case 'inbox-approve': {
+					const inboxClarification = document.getElementById('inbox-input-' + target.dataset.itemId)?.value || '';
+					vscode.postMessage({ type: 'inboxApprove', itemId: target.dataset.itemId, clarification: inboxClarification });
+					break;
+				}
+				case 'inbox-deny': {
+					const inboxReason = document.getElementById('inbox-input-' + target.dataset.itemId)?.value || '';
+					vscode.postMessage({ type: 'inboxDeny', itemId: target.dataset.itemId, reason: inboxReason });
+					break;
+				}
+				case 'inbox-defer':
+					vscode.postMessage({ type: 'inboxDefer', itemId: target.dataset.itemId });
+					break;
+				// Audit actions
+				case 'export-audit-json':
+					vscode.postMessage({ type: 'exportAuditLogs', format: 'json' });
+					break;
+				case 'export-audit-md':
+					vscode.postMessage({ type: 'exportAuditLogs', format: 'markdown' });
+					break;
+				case 'clear-audit':
+					if (confirm('Clear all audit logs?')) {
+						vscode.postMessage({ type: 'clearAuditLogs' });
+					}
+					break;
+				case 'apply-audit-filter':
+					applyAuditFilter();
+					break;
+				case 'toggle-audit-entry':
+					toggleAuditEntry(target.dataset.entryId);
+					break;
 			}
 		});
 
@@ -1034,6 +1395,13 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 				currentModels = message.models || [];
 				renderModelsDropdown(currentModels);
 				populateWorkerModelSelectors(currentModels);
+			} else if (message.type === 'inboxItems') {
+				currentInboxItems = message.items || [];
+				renderInbox(currentInboxItems);
+			} else if (message.type === 'auditLogs') {
+				currentAuditLogs = message.entries || [];
+				currentAuditStats = message.stats || {};
+				renderAuditLogs(currentAuditLogs, currentAuditStats);
 			}
 		});
 
@@ -1612,6 +1980,130 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			});
 		}
 
+		// ===== Inbox Functions =====
+		function renderInbox(items) {
+			const container = document.getElementById('inbox-container');
+			const badge = document.getElementById('inbox-badge');
+			const countDisplay = document.getElementById('inbox-count');
+
+			if (items.length > 0) {
+				badge.textContent = items.length;
+				badge.style.display = 'inline-block';
+			} else {
+				badge.style.display = 'none';
+			}
+
+			countDisplay.textContent = items.length + ' pending item' + (items.length !== 1 ? 's' : '');
+
+			if (!items || items.length === 0) {
+				container.innerHTML = '<div class="empty-state">No pending items requiring attention.</div>';
+				return;
+			}
+
+			container.innerHTML = items.map(item => \`
+				<div class="inbox-item \${item.priority}">
+					<div class="inbox-header">
+						<span class="inbox-title">\${escapeHtml(item.title)}</span>
+						<span class="inbox-priority \${item.priority}">\${item.priority}</span>
+					</div>
+					<div class="inbox-description">\${escapeHtml(item.description)}</div>
+					<div class="inbox-meta">
+						\${item.planId ? 'Plan: ' + escapeHtml(item.planId) + ' • ' : ''}
+						Worker: \${escapeHtml(item.workerName)} •
+						\${new Date(item.createdAt).toLocaleTimeString()}
+					</div>
+					<div class="inbox-actions">
+						<input type="text" id="inbox-input-\${item.id}" placeholder="Clarification / reason (optional)..." />
+						<button data-action="inbox-approve" data-item-id="\${item.id}" class="success">✓ Approve</button>
+						<button data-action="inbox-deny" data-item-id="\${item.id}" class="danger">✕ Deny</button>
+						<button data-action="inbox-defer" data-item-id="\${item.id}" class="secondary">⏸ Defer</button>
+					</div>
+				</div>
+			\`).join('');
+		}
+
+		// ===== Audit Log Functions =====
+		function renderAuditLogs(entries, stats) {
+			const statsContainer = document.getElementById('audit-stats');
+			const container = document.getElementById('audit-container');
+			const typeSelect = document.getElementById('audit-filter-type');
+
+			// Populate event type dropdown if not done
+			if (typeSelect.options.length <= 1) {
+				const eventTypes = new Set(entries.map(e => e.eventType));
+				eventTypes.forEach(type => {
+					const option = document.createElement('option');
+					option.value = type;
+					option.textContent = type;
+					typeSelect.appendChild(option);
+				});
+			}
+
+			statsContainer.innerHTML = \`
+				<span>Total: \${stats.totalEntries || entries.length}</span>
+				<span>Showing: \${entries.length}</span>
+				<span>Retention: \${stats.retentionDays || 30} days</span>
+			\`;
+
+			if (!entries || entries.length === 0) {
+				container.innerHTML = '<div class="empty-state">No audit log entries.</div>';
+				return;
+			}
+
+			container.innerHTML = entries.map(entry => {
+				const isExpanded = expandedAuditEntries.has(entry.id);
+				const category = getAuditCategory(entry.eventType);
+
+				return \`
+					<div class="audit-entry \${category}\${isExpanded ? ' expanded' : ''}" data-action="toggle-audit-entry" data-entry-id="\${entry.id}">
+						<div class="audit-entry-header">
+							<span class="audit-event-type">\${escapeHtml(entry.eventType)}</span>
+							<span class="audit-timestamp">\${new Date(entry.timestamp).toLocaleString()}</span>
+						</div>
+						<div class="audit-entry-body">
+							<span>Actor: <span class="audit-actor">\${escapeHtml(entry.actor)}</span></span>
+							<span>Target: <span class="audit-target">\${escapeHtml(entry.target || '-')}</span></span>
+							\${entry.planId ? '<span>Plan: ' + escapeHtml(entry.planId) + '</span>' : ''}
+							\${entry.taskId ? '<span>Task: ' + escapeHtml(entry.taskId) + '</span>' : ''}
+						</div>
+						<div class="audit-details">\${entry.details ? escapeHtml(JSON.stringify(entry.details, null, 2)) : 'No details'}</div>
+					</div>
+				\`;
+			}).join('');
+		}
+
+		function getAuditCategory(eventType) {
+			if (eventType.startsWith('plan_')) return 'plan';
+			if (eventType.startsWith('task_')) return 'task';
+			if (eventType.startsWith('worker_')) return 'worker';
+			if (eventType.includes('error') || eventType.includes('failed')) return 'error';
+			return '';
+		}
+
+		function toggleAuditEntry(entryId) {
+			if (expandedAuditEntries.has(entryId)) {
+				expandedAuditEntries.delete(entryId);
+			} else {
+				expandedAuditEntries.add(entryId);
+			}
+			renderAuditLogs(currentAuditLogs, currentAuditStats);
+		}
+
+		function applyAuditFilter() {
+			const eventType = document.getElementById('audit-filter-type').value;
+			const actor = document.getElementById('audit-filter-actor').value.trim();
+			const planId = document.getElementById('audit-filter-plan').value.trim();
+			const search = document.getElementById('audit-filter-search').value.trim();
+
+			const filter = {};
+			if (eventType) filter.eventType = eventType;
+			if (actor) filter.actor = actor;
+			if (planId) filter.planId = planId;
+			if (search) filter.search = search;
+
+			vscode.postMessage({ type: 'getAuditLogs', filter });
+		}
+
 		function escapeHtml(text) {
 			const div = document.createElement('div');
 			div.textContent = text || '';
@@ -1621,6 +2113,8 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 		// Initial load
 		vscode.postMessage({ type: 'refresh' });
 		vscode.postMessage({ type: 'getModels' });
+		vscode.postMessage({ type: 'getInboxItems' });
+		vscode.postMessage({ type: 'getAuditLogs' });
 	</script>
 </body>
 </html>`;
