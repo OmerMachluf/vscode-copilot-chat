@@ -1,0 +1,19 @@
+{
+    "copilot.orchestrator.permissions": {
+        "fileSystem": {
+            "read": "ask_user",
+            "write": "ask_user",
+            "delete": "ask_user"
+        },
+        "terminal": {
+            "execute": "ask_user"
+        },
+        "network": {
+            "fetch": "ask_user"
+        }
+    },
+    "copilot.orchestrator.limits": {
+        "maxSubtaskDepth": 1,
+        "maxSubtasksPerWorker": 5
+    }
+}

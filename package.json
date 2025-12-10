@@ -2985,35 +2985,69 @@
 						"default": true,
 						"markdownDescription": "%github.copilot.config.codeGeneration.useInstructionFiles%"
 					},
+					"github.copilot.agents.capabilities": {
+						"type": "object",
+						"description": "Override agent capabilities",
+						"properties": {
+							"architect": {
+								"type": "object",
+								"properties": {
+									"skills": { "type": "array", "items": { "type": "string" } },
+									"allowedTools": { "type": "array", "items": { "type": "string" } }
+								}
+							}
+						}
+					},
 					"github.copilot.orchestrator.permissions": {
 						"type": "object",
-						"default": {},
-						"description": "Configuration for Orchestrator agent permissions and limits.",
+						"description": "Override orchestrator permissions",
 						"properties": {
-							"auto_approve": {
-								"type": "array",
-								"items": { "type": "string" },
-								"description": "List of actions that are automatically approved."
-							},
-							"ask_user": {
-								"type": "array",
-								"items": { "type": "string" },
-								"description": "List of actions that require user confirmation."
-							},
-							"auto_deny": {
-								"type": "array",
-								"items": { "type": "string" },
-								"description": "List of actions that are automatically denied."
-							},
-							"limits": {
+							"fileSystem": {
 								"type": "object",
-								"description": "Operational limits for the Orchestrator.",
 								"properties": {
-									"max_subtask_depth": { "type": "number", "default": 2 },
-									"max_subtasks_per_worker": { "type": "number", "default": 10 },
-									"max_parallel_subtasks": { "type": "number", "default": 5 },
-									"subtask_spawn_rate_limit": { "type": "number", "default": 20 }
+									"read": { "type": "string", "enum": ["auto_approve", "ask_user", "deny"] },
+									"write": { "type": "string", "enum": ["auto_approve", "ask_user", "deny"] },
+									"delete": { "type": "string", "enum": ["auto_approve", "ask_user", "deny"] }
 								}
+							},
+							"terminal": {
+								"type": "object",
+								"properties": {
+									"execute": { "type": "string", "enum": ["auto_approve", "ask_user", "deny"] }
+								}
+							},
+							"network": {
+								"type": "object",
+								"properties": {
+									"fetch": { "type": "string", "enum": ["auto_approve", "ask_user", "deny"] }
+								}
+							}
+						}
+					},
+					"github.copilot.orchestrator.limits": {
+						"type": "object",
+						"properties": {
+							"maxSubtaskDepth": { "type": "number", "default": 2 },
+							"maxSubtasksPerWorker": { "type": "number", "default": 10 }
+						}
+					},
+					"github.copilot.orchestrator.modelPreferences": {
+						"type": "object",
+						"description": "Model preferences by task type",
+						"properties": {
+							"default": { "type": "string" },
+							"byTaskType": {
+								"type": "object",
+								"properties": {
+									"architecture": { "type": "string" },
+									"implementation": { "type": "string" },
+									"review": { "type": "string" },
+									"testing": { "type": "string" }
+								}
+							},
+							"byAgent": {
+								"type": "object",
+								"additionalProperties": { "type": "string" }
 							}
 						}
 					},
