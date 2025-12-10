@@ -87,6 +87,7 @@ export enum ToolName {
 	A2ASpawnSubTask = 'a2a_spawn_subtask',
 	A2ASpawnParallelSubTasks = 'a2a_spawn_parallel_subtasks',
 	A2AAwaitSubTasks = 'a2a_await_subtasks',
+	A2ANotifyOrchestrator = 'a2a_notify_orchestrator',
 }
 
 export enum ContributedToolName {
@@ -149,6 +150,7 @@ export enum ContributedToolName {
 	A2ASpawnSubTask = 'copilot_a2aSpawnSubTask',
 	A2ASpawnParallelSubTasks = 'copilot_a2aSpawnParallelSubTasks',
 	A2AAwaitSubTasks = 'copilot_a2aAwaitSubTasks',
+	A2ANotifyOrchestrator = 'copilot_a2aNotifyOrchestrator',
 }
 
 export const byokEditToolNamesToToolNames = {
@@ -279,6 +281,7 @@ export const toolCategories: Record<ToolName, ToolCategory> = {
 	[ToolName.A2ASpawnSubTask]: ToolCategory.Core,
 	[ToolName.A2ASpawnParallelSubTasks]: ToolCategory.Core,
 	[ToolName.A2AAwaitSubTasks]: ToolCategory.Core,
+	[ToolName.A2ANotifyOrchestrator]: ToolCategory.Core,
 } as const;
 
 

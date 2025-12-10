@@ -296,6 +296,23 @@ export interface IOrchestratorService {
 	/** Get a WorkerSession by ID (for subscribing to real-time stream events) */
 	getWorkerSession(workerId: string): WorkerSession | undefined;
 
+	// --- Inbox Management ---
+
+	/** Get all pending inbox items that require action */
+	getInboxPendingItems(): IOrchestratorInboxItem[];
+
+	/** Get inbox items for a specific plan */
+	getInboxItemsByPlan(planId: string): IOrchestratorInboxItem[];
+
+	/** Get inbox items for a specific worker */
+	getInboxItemsByWorker(workerId: string): IOrchestratorInboxItem[];
+
+	/** Process an inbox item with a response */
+	processInboxItem(itemId: string, response?: string): void;
+
+	/** Defer an inbox item for later handling */
+	deferInboxItem(itemId: string, reason: string): void;
+
 	// Legacy compatibility
 	getWorkers(): Record<string, any>;
 }
@@ -312,6 +329,70 @@ export interface CompleteWorkerOptions {
 	prDescription?: string;
 	/** Base branch for the PR (defaults to task's baseBranch or main/master) */
 	prBaseBranch?: string;
+}
+
+export interface IOrchestratorInboxItem {
+	id: string;
+	message: IOrchestratorQueueMessage;
+	status: 'pending' | 'processed' | 'deferred';
+	requiresUserAction: boolean;
+	createdAt: number;
+	processedAt?: number;
+	response?: string;
+	deferReason?: string;
+}
+
+export class OrchestratorInbox {
+	private _items: IOrchestratorInboxItem[] = [];
+
+	getPendingItems(): IOrchestratorInboxItem[] {
+		return this._items.filter(i => i.status === 'pending');
+	}
+
+	getItemsByPlan(planId: string): IOrchestratorInboxItem[] {
+		return this._items.filter(i => i.message.planId === planId);
+	}
+
+	getItemsByWorker(workerId: string): IOrchestratorInboxItem[] {
+		return this._items.filter(i => i.message.workerId === workerId);
+	}
+
+	getItemsByTask(taskId: string): IOrchestratorInboxItem[] {
+		return this._items.filter(i => i.message.taskId === taskId);
+	}
+
+	getItem(id: string): IOrchestratorInboxItem | undefined {
+		return this._items.find(i => i.id === id);
+	}
+
+	markProcessed(id: string, response?: string): void {
+		const item = this._items.find(i => i.id === id);
+		if (item) {
+			item.status = 'processed';
+			item.processedAt = Date.now();
+			item.response = response;
+		}
+	}
+
+	deferItem(id: string, reason: string): void {
+		const item = this._items.find(i => i.id === id);
+		if (item) {
+			item.status = 'deferred';
+			item.deferReason = reason;
+		}
+	}
+
+	addItem(item: IOrchestratorInboxItem): void {
+		this._items.push(item);
+	}
+
+	getAllItems(): IOrchestratorInboxItem[] {
+		return [...this._items];
+	}
+
+	clearProcessed(): void {
+		this._items = this._items.filter(i => i.status !== 'processed');
+	}
 }
 
 /**
@@ -373,6 +454,8 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 	// Map from worker ID to its scoped tool set
 	private readonly _workerToolSets = new Map<string, WorkerToolSet>();
+
+	private readonly _inbox = new OrchestratorInbox();
 
 	constructor(
 		@IAgentInstructionService private readonly _agentInstructionService: IAgentInstructionService,
@@ -444,23 +527,59 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				}
 				break;
 
+			case 'question':
 			case 'permission_request':
-				await this._handlePermissionRequest(message);
+				// Evaluate permission
+				const action = message.type === 'question' ? 'ask_question' : (message.content as any).permission || 'unknown';
+				const decision = this._permissionService.evaluatePermission(action, message.content as any);
+
+				if (decision === 'auto_approve') {
+					this._autoRespond(message, true);
+				} else if (decision === 'auto_deny') {
+					this._autoRespond(message, false);
+				} else {
+					// Add to inbox
+					this._inbox.addItem({
+						id: generateUuid(),
+						message,
+						status: 'pending',
+						requiresUserAction: true,
+						createdAt: Date.now()
+					});
+					// Notify user (maybe via toast or status bar)
+					vscode.window.showInformationMessage(`Orchestrator: New request from ${message.workerId}`);
+				}
 				break;
+		}
+	}
+
+	private _autoRespond(message: IOrchestratorQueueMessage, approved: boolean): void {
+		const worker = this._workers.get(message.workerId);
+		if (worker) {
+			if (message.type === 'permission_request') {
+				const approvalId = (message.content as any).id;
+				if (approvalId) {
+					worker.handleApproval(approvalId, approved);
+				}
+			} else if (message.type === 'question') {
+				// For questions, auto-response might be generic or context-aware
+				// For now, just acknowledge
+				worker.addAssistantMessage(`[System: Auto-response] ${approved ? 'Approved' : 'Denied'}`);
+			}
 		}
 	}
 
 	private async _handlePermissionRequest(message: IOrchestratorQueueMessage): Promise<void> {
 		const request = message.content as IPermissionRequest;
-		
+
 		// 1. Check if we can auto-approve at Orchestrator level
 		const decision = this._permissionService.evaluatePermission(request.action, request.context);
-		
+
 		if (decision === 'auto_approve') {
 			this._respondToPermissionRequest(request, true, 'orchestrator');
 			return;
 		}
-		
+
 		if (decision === 'auto_deny') {
 			this._respondToPermissionRequest(request, false, 'orchestrator');
 			return;
@@ -474,7 +593,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 	private async _askUserForPermissionWithTimeout(request: IPermissionRequest): Promise<boolean> {
 		// Create a promise for user response
 		const userResponsePromise = this._askUserForPermission(request);
-		
+
 		// Create a timeout promise that applies default action
 		const timeoutPromise = new Promise<boolean>((resolve) => {
 			setTimeout(() => {
@@ -501,7 +620,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 	private _respondToPermissionRequest(request: IPermissionRequest, approved: boolean, respondedBy: 'inherited' | 'parent' | 'orchestrator' | 'user'): void {
 		// Send permission response back through the queue for the requester to receive.
 		// The sub-task or worker can listen for this response to continue execution.
-		
+
 		if (request.requesterType === 'subtask') {
 			// Get the sub-task and update its state based on permission decision
 			const subTask = this._subTaskManager.getSubTask(request.requesterId);
@@ -518,7 +637,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				// If approved, the sub-task can continue (it may be waiting on a promise)
 			}
 		}
-		
+
 		// Enqueue a response message for the requester
 		this._queueService.enqueueMessage({
 			id: generateUuid(),
@@ -1541,6 +1660,57 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 	public getWorkerAgent(workerId: string): string | undefined {
 		const worker = this._workers.get(workerId);
 		return worker?.agentId;
+	}
+
+	// --- Inbox Management ---
+
+	/**
+	 * Get all pending inbox items that require action
+	 */
+	public getInboxPendingItems(): IOrchestratorInboxItem[] {
+		return this._inbox.getPendingItems();
+	}
+
+	/**
+	 * Get inbox items for a specific plan
+	 */
+	public getInboxItemsByPlan(planId: string): IOrchestratorInboxItem[] {
+		return this._inbox.getItemsByPlan(planId);
+	}
+
+	/**
+	 * Get inbox items for a specific worker
+	 */
+	public getInboxItemsByWorker(workerId: string): IOrchestratorInboxItem[] {
+		return this._inbox.getItemsByWorker(workerId);
+	}
+
+	/**
+	 * Process an inbox item with a response
+	 */
+	public processInboxItem(itemId: string, response?: string): void {
+		const item = this._inbox.getItem(itemId);
+		if (!item) {
+			return;
+		}
+
+		this._inbox.markProcessed(itemId, response);
+
+		// If there was a worker waiting, send the response
+		const worker = this._workers.get(item.message.workerId);
+		if (worker && response) {
+			worker.addAssistantMessage(`[Orchestrator Response] ${response}`);
+		}
+
+		this._onDidChangeWorkers.fire();
+	}
+
+	/**
+	 * Defer an inbox item for later handling
+	 */
+	public deferInboxItem(itemId: string, reason: string): void {
+		this._inbox.deferItem(itemId, reason);
+		this._onDidChangeWorkers.fire();
 	}
 
 	/**

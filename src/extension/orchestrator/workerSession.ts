@@ -66,6 +66,28 @@ export interface PendingApproval {
 }
 
 /**
+ * Represents a conversation thread between orchestrator and worker
+ */
+export interface ConversationThread {
+	readonly id: string;
+	readonly startedAt: number;
+	readonly topic: string;
+	readonly messages: ConversationMessage[];
+	status: 'active' | 'resolved' | 'deferred';
+}
+
+/**
+ * A message in a conversation thread
+ */
+export interface ConversationMessage {
+	readonly id: string;
+	readonly timestamp: number;
+	readonly sender: 'worker' | 'orchestrator' | 'user';
+	readonly content: string;
+	readonly metadata?: Record<string, unknown>;
+}
+
+/**
  * Worker status
  * - idle: Worker has finished current task but is still active and accepting messages
  * - running: Worker is actively processing
@@ -130,6 +152,7 @@ export class WorkerSession extends Disposable {
 	private _status: WorkerStatus = 'idle';
 	private _messages: WorkerMessage[] = [];
 	private _pendingApprovals: Map<string, PendingApproval> = new Map();
+	private _conversationThreads: Map<string, ConversationThread> = new Map();
 	private readonly _createdAt: number;
 	private _lastActivityAt: number;
 	private _errorMessage?: string;
@@ -448,6 +471,96 @@ export class WorkerSession extends Disposable {
 			toolCallId,
 		});
 	}
+
+	// #region Conversation Threading
+
+	/**
+	 * Start a new conversation thread with the orchestrator
+	 */
+	public startConversationThread(topic: string): ConversationThread {
+		const thread: ConversationThread = {
+			id: generateUuid(),
+			startedAt: Date.now(),
+			topic,
+			messages: [],
+			status: 'active',
+		};
+		this._conversationThreads.set(thread.id, thread);
+		this._onDidChange.fire();
+		return thread;
+	}
+
+	/**
+	 * Add a message to a conversation thread
+	 */
+	public addThreadMessage(
+		threadId: string,
+		sender: 'worker' | 'orchestrator' | 'user',
+		content: string,
+		metadata?: Record<string, unknown>
+	): ConversationMessage | undefined {
+		const thread = this._conversationThreads.get(threadId);
+		if (!thread || thread.status !== 'active') {
+			return undefined;
+		}
+
+		const message: ConversationMessage = {
+			id: generateUuid(),
+			timestamp: Date.now(),
+			sender,
+			content,
+			metadata,
+		};
+		thread.messages.push(message);
+		this._lastActivityAt = Date.now();
+		this._onDidChange.fire();
+		return message;
+	}
+
+	/**
+	 * Get a conversation thread by ID
+	 */
+	public getConversationThread(threadId: string): ConversationThread | undefined {
+		return this._conversationThreads.get(threadId);
+	}
+
+	/**
+	 * Get all conversation threads
+	 */
+	public getConversationThreads(): readonly ConversationThread[] {
+		return Array.from(this._conversationThreads.values());
+	}
+
+	/**
+	 * Get active conversation threads
+	 */
+	public getActiveConversationThreads(): readonly ConversationThread[] {
+		return Array.from(this._conversationThreads.values()).filter(t => t.status === 'active');
+	}
+
+	/**
+	 * Resolve a conversation thread
+	 */
+	public resolveConversationThread(threadId: string): void {
+		const thread = this._conversationThreads.get(threadId);
+		if (thread) {
+			thread.status = 'resolved';
+			this._onDidChange.fire();
+		}
+	}
+
+	/**
+	 * Defer a conversation thread
+	 */
+	public deferConversationThread(threadId: string): void {
+		const thread = this._conversationThreads.get(threadId);
+		if (thread) {
+			thread.status = 'deferred';
+			this._onDidChange.fire();
+		}
+	}
+
+	// #endregion
 
 	/**
 	 * Request approval for a tool call

@@ -5,6 +5,8 @@
 
 import { CancellationToken, LanguageModelTextPart, LanguageModelToolInvocationOptions, LanguageModelToolInvocationPrepareOptions, LanguageModelToolResult, ProviderResult } from 'vscode';
 import { ILogService } from '../../../platform/log/common/logService';
+import { generateUuid } from '../../../util/vs/base/common/uuid';
+import { IOrchestratorQueueService } from '../../orchestrator/orchestratorQueue';
 import { ISubTask, ISubTaskCreateOptions, ISubTaskManager, ISubTaskResult } from '../../orchestrator/subTaskManager';
 import { IWorkerContext } from '../../orchestrator/workerToolsService';
 import { ToolName } from '../common/toolNames';
@@ -442,7 +444,86 @@ export class A2AAwaitSubTasksTool implements ICopilotTool<AwaitSubTasksParams> {
 	}
 }
 
+/**
+ * Parameters for notifying the orchestrator.
+ */
+interface NotifyOrchestratorParams {
+	/** The type of notification */
+	type: 'status_update' | 'question' | 'completion' | 'error';
+	/** The content of the notification */
+	content: string;
+	/** Optional metadata */
+	metadata?: object;
+	/** Priority of the notification */
+	priority?: 'high' | 'normal' | 'low';
+}
+
+/**
+ * Tool for notifying the orchestrator.
+ * Allows workers to send status updates, questions, or completion signals.
+ */
+export class A2ANotifyOrchestratorTool implements ICopilotTool<NotifyOrchestratorParams> {
+	static readonly toolName = ToolName.A2ANotifyOrchestrator;
+
+	constructor(
+		@IOrchestratorQueueService private readonly _queueService: IOrchestratorQueueService,
+		@IWorkerContext private readonly _workerContext: IWorkerContext,
+		@ILogService private readonly _logService: ILogService,
+	) { }
+
+	get enabled(): boolean {
+		return this._workerContext !== undefined;
+	}
+
+	prepareInvocation(_options: LanguageModelToolInvocationPrepareOptions<NotifyOrchestratorParams>, _token: CancellationToken): ProviderResult<any> {
+		return { presentation: 'hidden' };
+	}
+
+	async invoke(
+		options: LanguageModelToolInvocationOptions<NotifyOrchestratorParams>,
+		_token: CancellationToken
+	): Promise<LanguageModelToolResult> {
+		if (!this._workerContext?.workerId) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(
+					'ERROR: This tool can only be used within a worker context.'
+				),
+			]);
+		}
+
+		const { type, content, metadata, priority = 'normal' } = options.input;
+
+		this._logService.info(`[A2ANotifyOrchestratorTool] Sending ${type} notification to orchestrator`);
+
+		try {
+			this._queueService.enqueueMessage({
+				id: generateUuid(),
+				timestamp: Date.now(),
+				priority,
+				planId: this._workerContext.planId ?? 'standalone',
+				taskId: this._workerContext.taskId ?? this._workerContext.workerId,
+				workerId: this._workerContext.workerId,
+				worktreePath: this._workerContext.worktreePath,
+				type,
+				content: metadata ? { message: content, ...metadata } : content
+			});
+
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart('Notification sent to orchestrator.'),
+			]);
+		} catch (error) {
+			this._logService.error(`[A2ANotifyOrchestratorTool] Failed to send notification:`, error);
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(
+					`ERROR: Failed to send notification: ${error instanceof Error ? error.message : String(error)}`
+				),
+			]);
+		}
+	}
+}
+
 // Register the tools
 ToolRegistry.registerTool(A2ASpawnSubTaskTool);
 ToolRegistry.registerTool(A2ASpawnParallelSubTasksTool);
 ToolRegistry.registerTool(A2AAwaitSubTasksTool);
+ToolRegistry.registerTool(A2ANotifyOrchestratorTool);
