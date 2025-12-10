@@ -26,6 +26,26 @@ export interface IOrchestratorPermissions {
 	};
 }
 
+export interface IPermissionRequest {
+	id: string;
+	requesterId: string;  // worker or sub-task ID
+	requesterType: 'worker' | 'subtask';
+	action: string;
+	resource?: string;
+	context: Record<string, unknown>;
+	escalationPath: string[];  // [subtask, parent, orchestrator]
+	timeout: number;  // ms
+	defaultAction: 'approve' | 'deny';
+	createdAt: number;
+}
+
+export interface IPermissionResponse {
+	requestId: string;
+	approved: boolean;
+	clarification?: string;
+	respondedBy: 'inherited' | 'parent' | 'orchestrator' | 'user';
+}
+
 export type PermissionDecision = 'auto_approve' | 'ask_user' | 'auto_deny';
 
 export interface IOrchestratorPermissionService {

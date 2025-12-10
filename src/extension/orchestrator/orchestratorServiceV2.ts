@@ -13,7 +13,9 @@ import { generateUuid } from '../../util/vs/base/common/uuid';
 import { createDecorator } from '../../util/vs/platform/instantiation/common/instantiation';
 import { IAgentInstructionService } from './agentInstructionService';
 import { IAgentRunner } from './agentRunner';
+import { IOrchestratorPermissionService, IPermissionRequest } from './orchestratorPermissions';
 import { IOrchestratorQueueMessage, IOrchestratorQueueService } from './orchestratorQueue';
+import { ISubTaskManager } from './subTaskManager';
 import { SerializedWorkerState, WorkerResponseStream, WorkerSession, WorkerSessionState } from './workerSession';
 import { IWorkerToolsService, WorkerToolSet } from './workerToolsService';
 
@@ -377,6 +379,8 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		@IAgentRunner private readonly _agentRunner: IAgentRunner,
 		@IWorkerToolsService private readonly _workerToolsService: IWorkerToolsService,
 		@IOrchestratorQueueService private readonly _queueService: IOrchestratorQueueService,
+		@ISubTaskManager private readonly _subTaskManager: ISubTaskManager,
+		@IOrchestratorPermissionService private readonly _permissionService: IOrchestratorPermissionService,
 	) {
 		super();
 		// Register queue handler
@@ -439,7 +443,100 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 					this._onOrchestratorEvent.fire({ type: 'worker.idle', workerId: message.workerId });
 				}
 				break;
+
+			case 'permission_request':
+				await this._handlePermissionRequest(message);
+				break;
 		}
+	}
+
+	private async _handlePermissionRequest(message: IOrchestratorQueueMessage): Promise<void> {
+		const request = message.content as IPermissionRequest;
+		
+		// 1. Check if we can auto-approve at Orchestrator level
+		const decision = this._permissionService.evaluatePermission(request.action, request.context);
+		
+		if (decision === 'auto_approve') {
+			this._respondToPermissionRequest(request, true, 'orchestrator');
+			return;
+		}
+		
+		if (decision === 'auto_deny') {
+			this._respondToPermissionRequest(request, false, 'orchestrator');
+			return;
+		}
+
+		// 2. If not auto-decided, ask user with timeout support
+		const userApproved = await this._askUserForPermissionWithTimeout(request);
+		this._respondToPermissionRequest(request, userApproved, 'user');
+	}
+
+	private async _askUserForPermissionWithTimeout(request: IPermissionRequest): Promise<boolean> {
+		// Create a promise for user response
+		const userResponsePromise = this._askUserForPermission(request);
+		
+		// Create a timeout promise that applies default action
+		const timeoutPromise = new Promise<boolean>((resolve) => {
+			setTimeout(() => {
+				const approved = request.defaultAction === 'approve';
+				// Note: We can't cancel the user dialog, but we'll return the default action
+				resolve(approved);
+			}, request.timeout);
+		});
+
+		// Race between user response and timeout
+		return Promise.race([userResponsePromise, timeoutPromise]);
+	}
+
+	private async _askUserForPermission(request: IPermissionRequest): Promise<boolean> {
+		const selection = await vscode.window.showInformationMessage(
+			`Permission Request: ${request.action} (from ${request.requesterType} ${request.requesterId})`,
+			{ modal: true },
+			'Approve',
+			'Deny'
+		);
+		return selection === 'Approve';
+	}
+
+	private _respondToPermissionRequest(request: IPermissionRequest, approved: boolean, respondedBy: 'inherited' | 'parent' | 'orchestrator' | 'user'): void {
+		// Send permission response back through the queue for the requester to receive.
+		// The sub-task or worker can listen for this response to continue execution.
+		
+		if (request.requesterType === 'subtask') {
+			// Get the sub-task and update its state based on permission decision
+			const subTask = this._subTaskManager.getSubTask(request.requesterId);
+			if (subTask) {
+				// If permission was denied, cancel the sub-task
+				if (!approved) {
+					this._subTaskManager.updateStatus(request.requesterId, 'failed', {
+						taskId: request.requesterId,
+						status: 'failed',
+						output: '',
+						error: `Permission denied for action: ${request.action} (by ${respondedBy})`
+					});
+				}
+				// If approved, the sub-task can continue (it may be waiting on a promise)
+			}
+		}
+		
+		// Enqueue a response message for the requester
+		this._queueService.enqueueMessage({
+			id: generateUuid(),
+			timestamp: Date.now(),
+			priority: 'high',
+			planId: request.context.planId as string || '',
+			taskId: request.context.taskId as string || '',
+			workerId: request.context.workerId as string || '',
+			worktreePath: request.context.worktreePath as string || '',
+			subTaskId: request.requesterType === 'subtask' ? request.requesterId : undefined,
+			type: 'status_update',
+			content: {
+				type: 'permission_response',
+				requestId: request.id,
+				approved,
+				respondedBy
+			}
+		});
 	}
 
 	// --- State Persistence ---

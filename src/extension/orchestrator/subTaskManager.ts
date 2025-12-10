@@ -11,6 +11,7 @@ import { Disposable } from '../../util/vs/base/common/lifecycle';
 import { generateUuid } from '../../util/vs/base/common/uuid';
 import { createDecorator } from '../../util/vs/platform/instantiation/common/instantiation';
 import { IAgentHistoryEntry, IAgentRunner, IAgentRunOptions } from './agentRunner';
+import { IOrchestratorPermissions } from './orchestratorPermissions';
 import {
 	hashPrompt,
 	IEmergencyStopOptions,
@@ -58,6 +59,8 @@ export interface ISubTask {
 	createdAt: number;
 	/** Timestamp when the sub-task completed */
 	completedAt?: number;
+	/** Inherited permissions from parent */
+	inheritedPermissions?: IOrchestratorPermissions;
 }
 
 /**
@@ -106,6 +109,8 @@ export interface ISubTaskCreateOptions {
 	targetFiles?: string[];
 	/** Parent's conversation history for context */
 	parentHistory?: IAgentHistoryEntry[];
+	/** Inherited permissions from parent */
+	inheritedPermissions?: IOrchestratorPermissions;
 }
 
 export const ISubTaskManager = createDecorator<ISubTaskManager>('subTaskManager');
@@ -240,6 +245,14 @@ export interface ISubTaskManager {
 	 * Event fired on emergency stop.
 	 */
 	onEmergencyStop: Event<IEmergencyStopOptions>;
+
+	/**
+	 * Check if a sub-task has permission for an action based on inherited permissions.
+	 * @param subTaskId Sub-task ID
+	 * @param action Action to check
+	 * @returns true if auto-approved by inherited permissions
+	 */
+	checkPermission(subTaskId: string, action: string): boolean;
 }
 
 /**
@@ -281,6 +294,20 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 
 	get onEmergencyStop(): Event<IEmergencyStopOptions> {
 		return this._safetyLimitsService.onEmergencyStop;
+	}
+
+	checkPermission(subTaskId: string, action: string): boolean {
+		const subTask = this._subTasks.get(subTaskId);
+		if (!subTask || !subTask.inheritedPermissions) {
+			return false;
+		}
+
+		// Check inherited permissions
+		if (subTask.inheritedPermissions.auto_approve.includes(action)) {
+			return true;
+		}
+
+		return false;
 	}
 
 	createSubTask(options: ISubTaskCreateOptions): ISubTask {
@@ -365,6 +392,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			status: 'pending',
 			targetFiles: options.targetFiles,
 			createdAt: Date.now(),
+			inheritedPermissions: options.inheritedPermissions,
 		};
 
 		this._subTasks.set(id, subTask);

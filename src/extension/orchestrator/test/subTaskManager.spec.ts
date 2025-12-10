@@ -45,30 +45,32 @@ const createMockWorkerToolsService = () => ({
 const createMockSafetyLimitsService = () => ({
 	_serviceBrand: undefined,
 	config: {
-		maxConcurrentWorkers: 5,
-		maxTasksPerPlan: 50,
-		maxOutputTokensPerTask: 100000,
-		maxTotalTokensPerPlan: 1000000,
-		taskTimeoutMs: 3600000,
-		planTimeoutMs: 86400000,
-		maxDepth: 3,
-		maxEditsPerTask: 100,
-		maxFilesPerTask: 50,
-		emergencyStopEnabled: true,
+		maxSubTaskDepth: 2,
+		maxSubTasksPerWorker: 10,
+		maxParallelSubTasks: 5,
+		subTaskSpawnRateLimit: 20,
 	},
 	onEmergencyStop: vi.fn(() => ({ dispose: () => {} })),
-	checkLimits: vi.fn().mockReturnValue({ allowed: true }),
-	recordUsage: vi.fn(),
-	getUsage: vi.fn().mockReturnValue({
-		currentWorkers: 0,
-		currentTasks: 0,
-		outputTokens: 0,
-		totalTokens: 0,
-		edits: 0,
-		files: 0,
-}),
-	triggerEmergencyStop: vi.fn(),
-	resetUsage: vi.fn(),
+	// Methods required by SubTaskManager.createSubTask
+	enforceDepthLimit: vi.fn(), // Does nothing by default, can be configured to throw
+	checkRateLimit: vi.fn().mockReturnValue(true),
+	checkTotalLimit: vi.fn().mockReturnValue(true),
+	checkParallelLimit: vi.fn().mockReturnValue(true),
+	getAncestryChain: vi.fn().mockReturnValue([]),
+	detectCycle: vi.fn().mockReturnValue(false),
+	registerAncestry: vi.fn(),
+	recordSpawn: vi.fn(),
+	clearAncestry: vi.fn(),
+	// Cost tracking methods
+	trackSubTaskCost: vi.fn(),
+	getTotalCostForWorker: vi.fn().mockReturnValue(0),
+	getSubTaskCost: vi.fn().mockReturnValue(undefined),
+	getCostEntriesForWorker: vi.fn().mockReturnValue([]),
+	// Emergency stop
+	emergencyStop: vi.fn().mockResolvedValue({ subTasksKilled: 0, killedSubTaskIds: [], timestamp: Date.now(), reason: '' }),
+	// Configuration
+	updateConfig: vi.fn(),
+	resetWorkerTracking: vi.fn(),
 });
 
 describe('SubTaskManager', () => {
@@ -141,6 +143,13 @@ describe('SubTaskManager', () => {
 		});
 
 		it('should enforce depth limit', () => {
+			// Configure mock to throw when depth limit is exceeded
+			mockSafetyLimitsService.enforceDepthLimit.mockImplementation((parentDepth: number) => {
+				if (parentDepth >= 2) {
+					throw new Error('Depth limit exceeded: cannot spawn sub-task beyond maximum depth');
+				}
+			});
+
 			const options: ISubTaskCreateOptions = {
 				parentWorkerId: 'worker-1',
 				parentTaskId: 'task-1',
