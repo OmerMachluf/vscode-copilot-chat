@@ -5,6 +5,7 @@
 
 import { CancellationToken, LanguageModelTextPart, LanguageModelToolInvocationOptions, LanguageModelToolInvocationPrepareOptions, LanguageModelToolResult, ProviderResult } from 'vscode';
 import { formatAgentsForPrompt, IAgentDiscoveryService } from '../../orchestrator/agentDiscoveryService';
+import { IOrchestratorPermissionService } from '../../orchestrator/orchestratorPermissions';
 import { CreateTaskOptions, IOrchestratorService } from '../../orchestrator/orchestratorServiceV2';
 import { ToolName } from '../common/toolNames';
 import { ICopilotTool, ToolRegistry } from '../common/toolsRegistry';
@@ -996,3 +997,244 @@ class CompleteTaskTool implements ICopilotTool<ICompleteTaskParams> {
 }
 
 ToolRegistry.registerTool(CompleteTaskTool);
+
+// ============================================================================
+// Reassign Agent Tool
+// ============================================================================
+
+interface IReassignAgentParams {
+	workerId: string;
+	newAgentType: string;
+	reason?: string;
+}
+
+/**
+ * Tool to reassign an agent type to a running worker while preserving context.
+ * This allows the orchestrator to change a worker from @agent to @reviewer, etc.
+ */
+class ReassignAgentTool implements ICopilotTool<IReassignAgentParams> {
+	public static readonly toolName = ToolName.OrchestratorReassignAgent;
+
+	constructor(
+		@IOrchestratorService private readonly _orchestratorService: IOrchestratorService,
+		@IOrchestratorPermissionService private readonly _permissionService: IOrchestratorPermissionService,
+		@IAgentDiscoveryService private readonly _agentDiscoveryService: IAgentDiscoveryService
+	) { }
+
+	prepareInvocation(options: LanguageModelToolInvocationPrepareOptions<IReassignAgentParams>, _token: CancellationToken): ProviderResult<any> {
+		return {
+			confirmationMessages: {
+				title: 'Reassign Agent',
+				message: `Change worker "${options.input.workerId}" to agent "${options.input.newAgentType}"?${options.input.reason ? `\nReason: ${options.input.reason}` : ''}`
+			}
+		};
+	}
+
+	async invoke(options: LanguageModelToolInvocationOptions<IReassignAgentParams>, _token: CancellationToken): Promise<LanguageModelToolResult> {
+		const { workerId, newAgentType, reason } = options.input;
+
+		try {
+			// Check permission for agent reassignment
+			const permission = this._permissionService.evaluatePermission('agent_reassignment');
+			if (permission === 'auto_deny') {
+				return new LanguageModelToolResult([
+					new LanguageModelTextPart(`❌ Agent reassignment is denied by permission policy.`)
+				]);
+			}
+
+			// Validate the new agent type
+			const agents = await this._agentDiscoveryService.getAvailableAgents();
+			const normalizedAgentType = newAgentType.replace(/^@/, '').toLowerCase();
+			const targetAgent = agents.find(a => a.id === normalizedAgentType || a.id === newAgentType);
+
+			if (!targetAgent) {
+				const availableAgents = agents.map(a => `@${a.id}`).join(', ');
+				return new LanguageModelToolResult([
+					new LanguageModelTextPart(`❌ Unknown agent type "${newAgentType}". Available agents: ${availableAgents}`)
+				]);
+			}
+
+			// Get the worker session
+			const workerSession = this._orchestratorService.getWorkerSession(workerId);
+			if (!workerSession) {
+				return new LanguageModelToolResult([
+					new LanguageModelTextPart(`❌ Worker "${workerId}" not found.`)
+				]);
+			}
+
+			const previousAgent = workerSession.agentId ?? 'default';
+
+			// Perform the hot-swap (setWorkerAgent loads instructions via IAgentInstructionService)
+			await this._orchestratorService.setWorkerAgent(workerId, targetAgent.id);
+
+			const lines = [
+				`✅ Agent reassigned successfully`,
+				`   Worker: ${workerId}`,
+				`   Previous agent: ${previousAgent}`,
+				`   New agent: @${targetAgent.id}`,
+			];
+
+			if (reason) {
+				lines.push(`   Reason: ${reason}`);
+			}
+
+			lines.push('', '📝 Context preserved. The agent will continue with the existing conversation.');
+
+			return new LanguageModelToolResult([new LanguageModelTextPart(lines.join('\n'))]);
+		} catch (e: any) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`❌ Failed to reassign agent: ${e.message}`)
+			]);
+		}
+	}
+}
+
+ToolRegistry.registerTool(ReassignAgentTool);
+
+// ============================================================================
+// Change Model Tool
+// ============================================================================
+
+interface IChangeModelParams {
+	workerId: string;
+	newModelId: string;
+	reason?: string;
+}
+
+/**
+ * Known model tiers for permission checking.
+ * Models in higher tiers may require user approval for switching.
+ */
+const MODEL_TIERS: Record<string, 'standard' | 'premium' | 'expensive'> = {
+	// Standard tier - same tier switching is auto-approved
+	'gpt-4o-mini': 'standard',
+	'gpt-3.5-turbo': 'standard',
+	'claude-3-haiku': 'standard',
+	'gemini-1.5-flash': 'standard',
+
+	// Premium tier
+	'gpt-4o': 'premium',
+	'gpt-4-turbo': 'premium',
+	'claude-sonnet-4-20250514': 'premium',
+	'claude-3.5-sonnet': 'premium',
+	'gemini-1.5-pro': 'premium',
+
+	// Expensive tier - requires user approval
+	'gpt-4': 'expensive',
+	'claude-3-opus': 'expensive',
+	'claude-opus-4-20250514': 'expensive',
+	'o1': 'expensive',
+	'o1-preview': 'expensive',
+	'o1-mini': 'expensive',
+};
+
+function getModelTier(modelId: string): 'standard' | 'premium' | 'expensive' | 'unknown' {
+	// Normalize model ID (remove version suffixes, etc.)
+	const normalized = modelId.toLowerCase().replace(/-\d{8}$/, '');
+	return MODEL_TIERS[normalized] ?? MODEL_TIERS[modelId] ?? 'unknown';
+}
+
+function isTierUpgrade(fromTier: string, toTier: string): boolean {
+	const tierOrder = ['standard', 'premium', 'expensive'];
+	const fromIndex = tierOrder.indexOf(fromTier);
+	const toIndex = tierOrder.indexOf(toTier);
+	return toIndex > fromIndex;
+}
+
+/**
+ * Tool to change the AI model for a running worker while preserving context.
+ * This allows the orchestrator to switch models mid-task.
+ */
+class ChangeModelTool implements ICopilotTool<IChangeModelParams> {
+	public static readonly toolName = ToolName.OrchestratorChangeModel;
+
+	constructor(
+		@IOrchestratorService private readonly _orchestratorService: IOrchestratorService,
+		@IOrchestratorPermissionService private readonly _permissionService: IOrchestratorPermissionService
+	) { }
+
+	prepareInvocation(options: LanguageModelToolInvocationPrepareOptions<IChangeModelParams>, _token: CancellationToken): ProviderResult<any> {
+		const { workerId, newModelId, reason } = options.input;
+
+		// Get current model to determine if this is a tier change
+		const workerSession = this._orchestratorService.getWorkerSession(workerId);
+		const currentModelId = workerSession?.modelId ?? 'unknown';
+		const currentTier = getModelTier(currentModelId);
+		const newTier = getModelTier(newModelId);
+
+		const isExpensiveSwitch = newTier === 'expensive' || isTierUpgrade(currentTier, newTier);
+
+		if (isExpensiveSwitch) {
+			return {
+				confirmationMessages: {
+					title: 'Switch to Expensive Model',
+					message: `⚠️ Switching worker "${workerId}" to expensive model "${newModelId}".\nCurrent: ${currentModelId} (${currentTier})\nNew: ${newModelId} (${newTier})${reason ? `\nReason: ${reason}` : ''}`
+				}
+			};
+		}
+
+		return {
+			confirmationMessages: {
+				title: 'Change Model',
+				message: `Change worker "${workerId}" to model "${newModelId}"?${reason ? `\nReason: ${reason}` : ''}`
+			}
+		};
+	}
+
+	async invoke(options: LanguageModelToolInvocationOptions<IChangeModelParams>, _token: CancellationToken): Promise<LanguageModelToolResult> {
+		const { workerId, newModelId, reason } = options.input;
+
+		try {
+			// Get the worker session
+			const workerSession = this._orchestratorService.getWorkerSession(workerId);
+			if (!workerSession) {
+				return new LanguageModelToolResult([
+					new LanguageModelTextPart(`❌ Worker "${workerId}" not found.`)
+				]);
+			}
+
+			const currentModelId = workerSession.modelId ?? 'default';
+			const currentTier = getModelTier(currentModelId);
+			const newTier = getModelTier(newModelId);
+
+			// Check permissions based on tier
+			const isExpensiveSwitch = newTier === 'expensive' || isTierUpgrade(currentTier, newTier);
+			const permissionAction = isExpensiveSwitch ? 'model_switch_expensive' : 'model_switch_same_tier';
+			const permission = this._permissionService.evaluatePermission(permissionAction);
+
+			if (permission === 'auto_deny') {
+				return new LanguageModelToolResult([
+					new LanguageModelTextPart(`❌ Model switch to ${newTier} tier is denied by permission policy.`)
+				]);
+			}
+
+			// Perform the model switch
+			this._orchestratorService.setWorkerModel(workerId, newModelId);
+
+			const lines = [
+				`✅ Model changed successfully`,
+				`   Worker: ${workerId}`,
+				`   Previous model: ${currentModelId} (${currentTier})`,
+				`   New model: ${newModelId} (${newTier})`,
+			];
+
+			if (reason) {
+				lines.push(`   Reason: ${reason}`);
+			}
+
+			if (isExpensiveSwitch) {
+				lines.push('', '⚠️ Note: Switched to a more expensive model tier.');
+			}
+
+			lines.push('', '📝 Context preserved. The model change takes effect on the next iteration.');
+
+			return new LanguageModelToolResult([new LanguageModelTextPart(lines.join('\n'))]);
+		} catch (e: any) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`❌ Failed to change model: ${e.message}`)
+			]);
+		}
+	}
+}
+
+ToolRegistry.registerTool(ChangeModelTool);

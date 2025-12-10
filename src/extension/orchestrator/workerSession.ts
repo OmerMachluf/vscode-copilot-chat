@@ -347,6 +347,128 @@ export class WorkerSession extends Disposable {
 		this._modelId = modelId;
 	}
 
+	/**
+	 * Hot-swap the agent for this worker session while preserving context.
+	 * This is used when the orchestrator wants to change the agent type mid-task.
+	 * @param agentId The new agent ID (e.g., '@reviewer', '@architect')
+	 * @param instructions The new agent instructions
+	 * @param preserveContext Whether to preserve the conversation context
+	 */
+	public hotSwapAgent(agentId: string, instructions: string[], preserveContext: boolean = true): void {
+		const previousAgentId = this._agentId;
+
+		// Update the agent
+		this._agentId = agentId;
+		this._agentInstructions = instructions;
+
+		// Add a system message to mark the transition
+		if (preserveContext) {
+			this._addMessage({
+				role: 'system',
+				content: `🔄 Agent changed from ${previousAgentId ?? 'default'} to ${agentId}. Previous context preserved.`,
+			});
+		} else {
+			// Clear conversation history except for the task context
+			const taskMessage = this._messages.find(m => m.role === 'system' && m.content.includes('Worker initialized'));
+			this._messages = taskMessage ? [taskMessage] : [];
+			this._addMessage({
+				role: 'system',
+				content: `🔄 Agent changed to ${agentId}. Starting fresh context.`,
+			});
+		}
+
+		this._lastActivityAt = Date.now();
+		this._onDidChange.fire();
+	}
+
+	/**
+	 * Hot-swap the model for this worker session while preserving context.
+	 * This is used when the orchestrator wants to change the AI model mid-task.
+	 * @param modelId The new model ID (e.g., 'gpt-4o', 'claude-sonnet-4-20250514')
+	 * @param preserveContext Whether to preserve the conversation context
+	 */
+	public hotSwapModel(modelId: string, preserveContext: boolean = true): void {
+		const previousModelId = this._modelId;
+
+		// Update the model
+		this._modelId = modelId;
+
+		// Add a system message to mark the transition
+		if (preserveContext) {
+			this._addMessage({
+				role: 'system',
+				content: `🔄 Model changed from ${previousModelId ?? 'default'} to ${modelId}. Previous context preserved.`,
+			});
+		} else {
+			// Clear conversation history except for the task context
+			const taskMessage = this._messages.find(m => m.role === 'system' && m.content.includes('Worker initialized'));
+			this._messages = taskMessage ? [taskMessage] : [];
+			this._addMessage({
+				role: 'system',
+				content: `🔄 Model changed to ${modelId}. Starting fresh context.`,
+			});
+		}
+
+		this._lastActivityAt = Date.now();
+		this._onDidChange.fire();
+	}
+
+	/**
+	 * Get a summary of the current context for a new agent.
+	 * This is useful when switching agents and need to provide the new agent
+	 * with a condensed view of what has happened so far.
+	 */
+	public getContextForNewAgent(): string {
+		const lines: string[] = [];
+
+		// Task context
+		lines.push(`## Task: ${this._task}`);
+		lines.push('');
+
+		// Previous agent info
+		if (this._agentId) {
+			lines.push(`Previous agent: ${this._agentId}`);
+		}
+
+		// Summary of key messages
+		const keyMessages = this._messages.filter(m =>
+			m.role === 'user' ||
+			(m.role === 'assistant' && !m.content.startsWith('[')) ||
+			(m.role === 'system' && m.content.includes('Error'))
+		);
+
+		if (keyMessages.length > 0) {
+			lines.push('');
+			lines.push('## Conversation Summary');
+			for (const msg of keyMessages.slice(-10)) { // Last 10 key messages
+				const rolePrefix = msg.role === 'user' ? '👤' :
+					msg.role === 'assistant' ? '🤖' : '⚙️';
+				// Truncate long messages
+				const content = msg.content.length > 200
+					? msg.content.substring(0, 200) + '...'
+					: msg.content;
+				lines.push(`${rolePrefix} ${content}`);
+			}
+		}
+
+		// Pending approvals
+		if (this._pendingApprovals.size > 0) {
+			lines.push('');
+			lines.push('## Pending Approvals');
+			for (const approval of this._pendingApprovals.values()) {
+				lines.push(`- ${approval.toolName}: ${approval.description}`);
+			}
+		}
+
+		// Error state
+		if (this._errorMessage) {
+			lines.push('');
+			lines.push(`## Last Error: ${this._errorMessage}`);
+		}
+
+		return lines.join('\n');
+	}
+
 	public get status(): WorkerStatus {
 		return this._status;
 	}

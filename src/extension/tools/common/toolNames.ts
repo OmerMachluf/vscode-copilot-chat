@@ -83,6 +83,8 @@ export enum ToolName {
 	OrchestratorCancelTask = 'orchestrator_cancelTask',
 	OrchestratorRetryTask = 'orchestrator_retryTask',
 	OrchestratorCompleteTask = 'orchestrator_completeTask',
+	OrchestratorReassignAgent = 'orchestrator_reassignAgent',
+	OrchestratorChangeModel = 'orchestrator_changeModel',
 	// Agent-to-Agent (A2A) tools for sub-task spawning
 	A2ASpawnSubTask = 'a2a_spawn_subtask',
 	A2ASpawnParallelSubTasks = 'a2a_spawn_parallel_subtasks',
@@ -146,6 +148,8 @@ export enum ContributedToolName {
 	OrchestratorCancelTask = 'copilot_orchestratorCancelTask',
 	OrchestratorRetryTask = 'copilot_orchestratorRetryTask',
 	OrchestratorCompleteTask = 'copilot_orchestratorCompleteTask',
+	OrchestratorReassignAgent = 'copilot_orchestratorReassignAgent',
+	OrchestratorChangeModel = 'copilot_orchestratorChangeModel',
 	// Agent-to-Agent (A2A) tools
 	A2ASpawnSubTask = 'copilot_a2aSpawnSubTask',
 	A2ASpawnParallelSubTasks = 'copilot_a2aSpawnParallelSubTasks',
@@ -277,6 +281,8 @@ export const toolCategories: Record<ToolName, ToolCategory> = {
 	[ToolName.OrchestratorCancelTask]: ToolCategory.Core,
 	[ToolName.OrchestratorRetryTask]: ToolCategory.Core,
 	[ToolName.OrchestratorCompleteTask]: ToolCategory.Core,
+	[ToolName.OrchestratorReassignAgent]: ToolCategory.Core,
+	[ToolName.OrchestratorChangeModel]: ToolCategory.Core,
 	// Agent-to-Agent (A2A) tools
 	[ToolName.A2ASpawnSubTask]: ToolCategory.Core,
 	[ToolName.A2ASpawnParallelSubTasks]: ToolCategory.Core,

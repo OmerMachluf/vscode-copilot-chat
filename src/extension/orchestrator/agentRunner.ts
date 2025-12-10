@@ -114,6 +114,20 @@ export interface IAgentRunner {
 	 * Returns the result of the agent execution.
 	 */
 	run(options: IAgentRunOptions, stream: vscode.ChatResponseStream): Promise<IAgentRunResult>;
+
+	/**
+	 * Summarize conversation context for a model switch.
+	 * This is useful when switching to a model with a smaller context window.
+	 * @param currentHistory The current conversation history
+	 * @param targetModel The model being switched to
+	 * @param currentModel The current model to use for summarization
+	 * @returns A condensed summary of the conversation context
+	 */
+	summarizeContextForModelSwitch(
+		currentHistory: IAgentHistoryEntry[],
+		targetModel: string,
+		currentModel: vscode.LanguageModelChat
+	): Promise<string>;
 }
 
 /**
@@ -374,5 +388,80 @@ Do NOT use paths relative to any other workspace folder.`);
 			isParticipantDetected: false,
 			toolInvocationToken: undefined as never,
 		} as unknown as vscode.ChatRequest;
+	}
+
+	/**
+	 * Summarize conversation context for a model switch.
+	 * Uses the current model to generate a summary that can be passed to a new model.
+	 * This is particularly useful when switching to a model with a smaller context window.
+	 */
+	async summarizeContextForModelSwitch(
+		currentHistory: IAgentHistoryEntry[],
+		targetModel: string,
+		currentModel: vscode.LanguageModelChat
+	): Promise<string> {
+		if (currentHistory.length === 0) {
+			return '';
+		}
+
+		// Build a summary prompt
+		const historyText = currentHistory.map(entry => {
+			const role = entry.role === 'user' ? 'User' : 'Assistant';
+			return `${role}: ${entry.content}`;
+		}).join('\n\n');
+
+		const summaryPrompt = `You are helping to summarize a conversation for a model switch.
+The conversation will continue with a different AI model (${targetModel}).
+Please provide a concise summary of the key points from this conversation:
+
+1. What was the original task/request?
+2. What has been accomplished so far?
+3. What is the current state?
+4. What are the next steps or pending items?
+
+Here is the conversation history:
+
+${historyText}
+
+Please provide a clear, structured summary that preserves the essential context needed to continue the task.`;
+
+		try {
+			// Use the current model to generate the summary
+			const messages = [
+				vscode.LanguageModelChatMessage.User(summaryPrompt)
+			];
+
+			const response = await currentModel.sendRequest(messages, {});
+
+			// Collect the response
+			let summary = '';
+			for await (const chunk of response.text) {
+				summary += chunk;
+			}
+
+			return summary.trim();
+		} catch (error) {
+			// If summarization fails, return a basic summary
+			const fallbackSummary: string[] = [
+				'## Context Summary (auto-generated)',
+				'',
+				`Previous messages: ${currentHistory.length}`,
+			];
+
+			// Extract key info from history
+			const userMessages = currentHistory.filter(e => e.role === 'user');
+			if (userMessages.length > 0) {
+				fallbackSummary.push('');
+				fallbackSummary.push('### Recent User Requests');
+				for (const msg of userMessages.slice(-3)) {
+					const truncated = msg.content.length > 200
+						? msg.content.substring(0, 200) + '...'
+						: msg.content;
+					fallbackSummary.push(`- ${truncated}`);
+				}
+			}
+
+			return fallbackSummary.join('\n');
+		}
 	}
 }
