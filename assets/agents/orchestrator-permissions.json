@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Default orchestrator permission configuration for sub-task safety limits",
+  "version": 1,
+
+  "auto_approve": [
+    "file_edits_in_worktree",
+    "file_creation_in_worktree",
+    "subtask_spawning",
+    "agent_reassignment",
+    "model_switch_same_tier"
+  ],
+
+  "ask_user": [
+    "pr_creation",
+    "branch_merge",
+    "model_switch_expensive",
+    "worktree_cleanup"
+  ],
+
+  "auto_deny": [
+    "edits_outside_worktree",
+    "delete_main_branch",
+    "force_push"
+  ],
+
+  "limits": {
+    "max_subtask_depth": 2,
+    "max_subtasks_per_worker": 10,
+    "max_parallel_subtasks": 5,
+    "subtask_spawn_rate_limit": 20
+  },
+
+  "cost_limits": {
+    "max_cost_per_subtask_usd": 1.0,
+    "max_cost_per_worker_usd": 10.0,
+    "warn_threshold_percent": 80
+  }
+}

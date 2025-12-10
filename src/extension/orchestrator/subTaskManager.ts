@@ -11,6 +11,16 @@ import { Disposable } from '../../util/vs/base/common/lifecycle';
 import { generateUuid } from '../../util/vs/base/common/uuid';
 import { createDecorator } from '../../util/vs/platform/instantiation/common/instantiation';
 import { IAgentHistoryEntry, IAgentRunner, IAgentRunOptions } from './agentRunner';
+import {
+	hashPrompt,
+	IEmergencyStopOptions,
+	IEmergencyStopResult,
+	ISafetyLimitsConfig,
+	ISafetyLimitsService,
+	ISubTaskAncestry,
+	ISubTaskCost,
+	ITokenUsage,
+} from './safetyLimits';
 import { IWorkerToolsService } from './workerToolsService';
 
 /**
@@ -76,6 +86,8 @@ export interface ISubTaskCreateOptions {
 	parentWorkerId: string;
 	/** ID of the parent task */
 	parentTaskId: string;
+	/** ID of the parent sub-task (if this is a nested sub-task) */
+	parentSubTaskId?: string;
 	/** Plan ID */
 	planId: string;
 	/** Worktree path (inherited from parent) */
@@ -111,10 +123,19 @@ export interface ISubTaskManager {
 	readonly maxDepth: number;
 
 	/**
+	 * Get current safety limits configuration.
+	 */
+	readonly safetyLimits: ISafetyLimitsConfig;
+
+	/**
 	 * Create a new sub-task.
 	 * @param options Sub-task creation options
 	 * @returns The created sub-task
 	 * @throws Error if depth limit would be exceeded
+	 * @throws Error if rate limit exceeded
+	 * @throws Error if total sub-task limit exceeded
+	 * @throws Error if parallel sub-task limit exceeded
+	 * @throws Error if cycle detected
 	 */
 	createSubTask(options: ISubTaskCreateOptions): ISubTask;
 
@@ -132,6 +153,16 @@ export interface ISubTaskManager {
 	 * Get all sub-tasks for a specific parent task.
 	 */
 	getSubTasksForParentTask(parentTaskId: string): ISubTask[];
+
+	/**
+	 * Get running sub-tasks count for a worker.
+	 */
+	getRunningSubTasksCount(workerId: string): number;
+
+	/**
+	 * Get total sub-tasks count for a worker.
+	 */
+	getTotalSubTasksCount(workerId: string): number;
 
 	/**
 	 * Update the status of a sub-task.
@@ -166,6 +197,36 @@ export interface ISubTaskManager {
 	getTaskDepth(taskId: string): number;
 
 	/**
+	 * Track cost for a sub-task execution.
+	 */
+	trackSubTaskCost(subTaskId: string, usage: ITokenUsage, model: string): void;
+
+	/**
+	 * Get total cost for all sub-tasks of a worker.
+	 */
+	getTotalCostForWorker(workerId: string): number;
+
+	/**
+	 * Get cost details for a specific sub-task.
+	 */
+	getSubTaskCost(subTaskId: string): ISubTaskCost | undefined;
+
+	/**
+	 * Emergency stop to kill all sub-tasks in scope.
+	 */
+	emergencyStop(options: IEmergencyStopOptions): Promise<IEmergencyStopResult>;
+
+	/**
+	 * Update safety limits configuration.
+	 */
+	updateSafetyLimits(config: Partial<ISafetyLimitsConfig>): void;
+
+	/**
+	 * Reset all tracking for a worker (on worker completion/disposal).
+	 */
+	resetWorkerTracking(workerId: string): void;
+
+	/**
 	 * Event fired when a sub-task status changes.
 	 */
 	onDidChangeSubTask: Event<ISubTask>;
@@ -174,6 +235,11 @@ export interface ISubTaskManager {
 	 * Event fired when a sub-task completes.
 	 */
 	onDidCompleteSubTask: Event<ISubTask>;
+
+	/**
+	 * Event fired on emergency stop.
+	 */
+	onEmergencyStop: Event<IEmergencyStopOptions>;
 }
 
 /**
@@ -199,23 +265,91 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 		@IAgentRunner private readonly _agentRunner: IAgentRunner,
 		@IWorkerToolsService private readonly _workerToolsService: IWorkerToolsService,
 		@ILogService private readonly _logService: ILogService,
+		@ISafetyLimitsService private readonly _safetyLimitsService: ISafetyLimitsService,
 	) {
 		super();
+
+		// Listen to emergency stop events
+		this._register(this._safetyLimitsService.onEmergencyStop(options => {
+			this._handleEmergencyStop(options);
+		}));
+	}
+
+	get safetyLimits(): ISafetyLimitsConfig {
+		return this._safetyLimitsService.config;
+	}
+
+	get onEmergencyStop(): Event<IEmergencyStopOptions> {
+		return this._safetyLimitsService.onEmergencyStop;
 	}
 
 	createSubTask(options: ISubTaskCreateOptions): ISubTask {
 		const newDepth = options.currentDepth + 1;
+		const workerId = options.parentWorkerId;
 
-		// Enforce depth limit
-		if (newDepth > this.maxDepth) {
+		// 1. Enforce depth limit
+		this._safetyLimitsService.enforceDepthLimit(options.currentDepth);
+
+		// 2. Check rate limit
+		if (!this._safetyLimitsService.checkRateLimit(workerId)) {
 			throw new Error(
-				`Sub-task depth limit exceeded. Maximum depth is ${this.maxDepth} ` +
-				`(current: ${options.currentDepth}, requested: ${newDepth}). ` +
-				`Consider restructuring your task to reduce nesting.`
+				`Rate limit exceeded for worker ${workerId}. ` +
+				`Maximum ${this._safetyLimitsService.config.subTaskSpawnRateLimit} spawns per minute. ` +
+				`Please wait before spawning more sub-tasks.`
 			);
 		}
 
+		// 3. Check total sub-task limit
+		const totalCount = this.getTotalSubTasksCount(workerId);
+		if (!this._safetyLimitsService.checkTotalLimit(workerId, totalCount)) {
+			throw new Error(
+				`Total sub-task limit exceeded for worker ${workerId}. ` +
+				`Maximum ${this._safetyLimitsService.config.maxSubTasksPerWorker} sub-tasks per worker. ` +
+				`Consider completing existing sub-tasks first.`
+			);
+		}
+
+		// 4. Check parallel sub-task limit
+		const runningCount = this.getRunningSubTasksCount(workerId);
+		if (!this._safetyLimitsService.checkParallelLimit(workerId, runningCount)) {
+			throw new Error(
+				`Parallel sub-task limit exceeded for worker ${workerId}. ` +
+				`Maximum ${this._safetyLimitsService.config.maxParallelSubTasks} parallel sub-tasks. ` +
+				`Wait for some sub-tasks to complete before spawning more.`
+			);
+		}
+
+		// Generate the ID first for ancestry registration
 		const id = `subtask-${generateUuid().substring(0, 8)}`;
+
+		// 5. Build ancestry and check for cycles
+		const ancestry: ISubTaskAncestry = {
+			subTaskId: id,
+			parentSubTaskId: options.parentSubTaskId,
+			workerId: options.parentWorkerId,
+			planId: options.planId,
+			agentType: options.agentType,
+			promptHash: hashPrompt(options.prompt),
+		};
+
+		// Get existing ancestry chain and add new entry
+		const ancestryChain = options.parentSubTaskId
+			? [...this._safetyLimitsService.getAncestryChain(options.parentSubTaskId), ancestry]
+			: [ancestry];
+
+		if (this._safetyLimitsService.detectCycle(id, ancestryChain)) {
+			throw new Error(
+				`Cycle detected in sub-task chain. ` +
+				`Cannot spawn sub-task that would create a loop. ` +
+				`Agent type: ${options.agentType}, similar task already exists in chain.`
+			);
+		}
+
+		// Register ancestry for future cycle detection
+		this._safetyLimitsService.registerAncestry(ancestry);
+
+		// Record the spawn for rate limiting
+		this._safetyLimitsService.recordSpawn(workerId);
 
 		const subTask: ISubTask = {
 			id,
@@ -254,6 +388,18 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			.filter(st => st.parentTaskId === parentTaskId);
 	}
 
+	getRunningSubTasksCount(workerId: string): number {
+		return Array.from(this._subTasks.values())
+			.filter(st => st.parentWorkerId === workerId && st.status === 'running')
+			.length;
+	}
+
+	getTotalSubTasksCount(workerId: string): number {
+		return Array.from(this._subTasks.values())
+			.filter(st => st.parentWorkerId === workerId)
+			.length;
+	}
+
 	updateStatus(id: string, status: ISubTask['status'], result?: ISubTaskResult): void {
 		const subTask = this._subTasks.get(id);
 		if (!subTask) {
@@ -274,6 +420,9 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 
 		if (['completed', 'failed', 'cancelled'].includes(status)) {
 			this._onDidCompleteSubTask.fire(updatedTask);
+
+			// Clear ancestry when sub-task completes
+			this._safetyLimitsService.clearAncestry(id);
 		}
 	}
 
@@ -476,6 +625,102 @@ Do not spawn additional sub-tasks unless absolutely necessary.`,
 		}
 		// If not a sub-task, it's a main task at depth 0
 		return 0;
+	}
+
+	// ========================================================================
+	// Cost Tracking (delegated to SafetyLimitsService)
+	// ========================================================================
+
+	trackSubTaskCost(subTaskId: string, usage: ITokenUsage, model: string): void {
+		this._safetyLimitsService.trackSubTaskCost(subTaskId, usage, model);
+	}
+
+	getTotalCostForWorker(workerId: string): number {
+		return this._safetyLimitsService.getTotalCostForWorker(workerId);
+	}
+
+	getSubTaskCost(subTaskId: string): ISubTaskCost | undefined {
+		return this._safetyLimitsService.getSubTaskCost(subTaskId);
+	}
+
+	// ========================================================================
+	// Emergency Stop
+	// ========================================================================
+
+	async emergencyStop(options: IEmergencyStopOptions): Promise<IEmergencyStopResult> {
+		return this._safetyLimitsService.emergencyStop(options);
+	}
+
+	private _handleEmergencyStop(options: IEmergencyStopOptions): void {
+		this._logService.warn(`[SubTaskManager] Handling emergency stop: ${options.scope} - ${options.reason}`);
+
+		const subTasksToCancel: string[] = [];
+
+		switch (options.scope) {
+			case 'subtask': {
+				if (options.targetId) {
+					subTasksToCancel.push(options.targetId);
+				}
+				break;
+			}
+
+			case 'worker': {
+				if (options.targetId) {
+					for (const [id, subTask] of this._subTasks) {
+						if (subTask.parentWorkerId === options.targetId) {
+							subTasksToCancel.push(id);
+						}
+					}
+				}
+				break;
+			}
+
+			case 'plan': {
+				if (options.targetId) {
+					for (const [id, subTask] of this._subTasks) {
+						if (subTask.planId === options.targetId) {
+							subTasksToCancel.push(id);
+						}
+					}
+				}
+				break;
+			}
+
+			case 'global': {
+				for (const id of this._subTasks.keys()) {
+					subTasksToCancel.push(id);
+				}
+				break;
+			}
+		}
+
+		// Cancel all identified sub-tasks
+		for (const id of subTasksToCancel) {
+			this.cancelSubTask(id);
+		}
+
+		this._logService.warn(`[SubTaskManager] Emergency stop: cancelled ${subTasksToCancel.length} sub-tasks`);
+	}
+
+	// ========================================================================
+	// Configuration & Cleanup
+	// ========================================================================
+
+	updateSafetyLimits(config: Partial<ISafetyLimitsConfig>): void {
+		this._safetyLimitsService.updateConfig(config);
+	}
+
+	resetWorkerTracking(workerId: string): void {
+		this._safetyLimitsService.resetWorkerTracking(workerId);
+
+		// Also clean up any sub-tasks for this worker
+		for (const [id, subTask] of this._subTasks) {
+			if (subTask.parentWorkerId === workerId) {
+				this._subTasks.delete(id);
+				this._cancellationSources.delete(id);
+				this._runningSubTasks.delete(id);
+			}
+		}
 	}
 
 	override dispose(): void {
