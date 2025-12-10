@@ -7,12 +7,23 @@ import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { ILogService } from '../../platform/log/common/logService';
 import { Emitter, Event } from '../../util/vs/base/common/event';
 import { Disposable } from '../../util/vs/base/common/lifecycle';
 import { generateUuid } from '../../util/vs/base/common/uuid';
 import { createDecorator } from '../../util/vs/platform/instantiation/common/instantiation';
 import { IAgentInstructionService } from './agentInstructionService';
 import { IAgentRunner } from './agentRunner';
+import {
+	CompletionManager,
+	ICompletionOptions,
+	ICompletionResult,
+	ICompletionSummary,
+	IMergeOptions,
+	IMergeResult,
+	IPullRequestOptions,
+	IPullRequestResult,
+} from './completionManager';
 import { IOrchestratorPermissionService, IPermissionRequest } from './orchestratorPermissions';
 import { IOrchestratorQueueMessage, IOrchestratorQueueService } from './orchestratorQueue';
 import { ISubTaskManager } from './subTaskManager';
@@ -313,6 +324,20 @@ export interface IOrchestratorService {
 	/** Defer an inbox item for later handling */
 	deferInboxItem(itemId: string, reason: string): void;
 
+	// --- Completion Management ---
+
+	/** Generate a completion summary for a worker */
+	generateCompletionSummary(workerId: string): Promise<ICompletionSummary>;
+
+	/** Handle worker completion with a specific action */
+	handleWorkerCompletion(workerId: string, action: ICompletionOptions, feedback?: string): Promise<ICompletionResult>;
+
+	/** Create a pull request for a worker's changes */
+	createPullRequest(options: IPullRequestOptions): Promise<IPullRequestResult>;
+
+	/** Merge a worker's branch into the target branch */
+	mergeWorkerBranch(options: IMergeOptions): Promise<IMergeResult>;
+
 	// Legacy compatibility
 	getWorkers(): Record<string, any>;
 }
@@ -457,6 +482,8 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 	private readonly _inbox = new OrchestratorInbox();
 
+	private readonly _completionManager: CompletionManager;
+
 	constructor(
 		@IAgentInstructionService private readonly _agentInstructionService: IAgentInstructionService,
 		@IAgentRunner private readonly _agentRunner: IAgentRunner,
@@ -464,8 +491,11 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		@IOrchestratorQueueService private readonly _queueService: IOrchestratorQueueService,
 		@ISubTaskManager private readonly _subTaskManager: ISubTaskManager,
 		@IOrchestratorPermissionService private readonly _permissionService: IOrchestratorPermissionService,
+		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
+		// Initialize completion manager
+		this._completionManager = new CompletionManager(this._permissionService, this._logService);
 		// Register queue handler
 		this._register(this._queueService.registerHandler(this._handleQueueMessage.bind(this)));
 		// Restore state on initialization
@@ -1449,6 +1479,59 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		} catch (error) {
 			throw new Error(`Failed to complete worker: ${error}`);
 		}
+	}
+
+	// --- Completion Management Methods ---
+
+	/**
+	 * Generate a completion summary for a worker
+	 */
+	public async generateCompletionSummary(workerId: string): Promise<ICompletionSummary> {
+		const worker = this._workers.get(workerId);
+		if (!worker) {
+			throw new Error(`Worker ${workerId} not found`);
+		}
+		return this._completionManager.generateCompletionSummary(worker);
+	}
+
+	/**
+	 * Handle worker completion with a specific action
+	 */
+	public async handleWorkerCompletion(
+		workerId: string,
+		action: ICompletionOptions,
+		feedback?: string
+	): Promise<ICompletionResult> {
+		const worker = this._workers.get(workerId);
+		if (!worker) {
+			throw new Error(`Worker ${workerId} not found`);
+		}
+
+		const result = await this._completionManager.handleCompletion(worker, action, feedback);
+
+		// If the action was successful and it was approve_and_merge, clean up the worker
+		if (result.success && action === 'approve_and_merge' && result.merged) {
+			worker.dispose();
+			this._workers.delete(workerId);
+			this._onDidChangeWorkers.fire();
+			this._saveState();
+		}
+
+		return result;
+	}
+
+	/**
+	 * Create a pull request for a worker's changes
+	 */
+	public async createPullRequest(options: IPullRequestOptions): Promise<IPullRequestResult> {
+		return this._completionManager.createPullRequest(options);
+	}
+
+	/**
+	 * Merge a worker's branch into the target branch
+	 */
+	public async mergeWorkerBranch(options: IMergeOptions): Promise<IMergeResult> {
+		return this._completionManager.mergeWorkerBranch(options);
 	}
 
 	/**
