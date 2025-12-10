@@ -2985,6 +2985,38 @@
 						"default": true,
 						"markdownDescription": "%github.copilot.config.codeGeneration.useInstructionFiles%"
 					},
+					"github.copilot.orchestrator.permissions": {
+						"type": "object",
+						"default": {},
+						"description": "Configuration for Orchestrator agent permissions and limits.",
+						"properties": {
+							"auto_approve": {
+								"type": "array",
+								"items": { "type": "string" },
+								"description": "List of actions that are automatically approved."
+							},
+							"ask_user": {
+								"type": "array",
+								"items": { "type": "string" },
+								"description": "List of actions that require user confirmation."
+							},
+							"auto_deny": {
+								"type": "array",
+								"items": { "type": "string" },
+								"description": "List of actions that are automatically denied."
+							},
+							"limits": {
+								"type": "object",
+								"description": "Operational limits for the Orchestrator.",
+								"properties": {
+									"max_subtask_depth": { "type": "number", "default": 2 },
+									"max_subtasks_per_worker": { "type": "number", "default": 10 },
+									"max_parallel_subtasks": { "type": "number", "default": 5 },
+									"subtask_spawn_rate_limit": { "type": "number", "default": 20 }
+								}
+							}
+						}
+					},
 					"github.copilot.editor.enableCodeActions": {
 						"type": "boolean",
 						"default": true,
@@ -4325,6 +4357,10 @@
 							"advanced",
 							"experimental"
 						]
+					},
+					"copilot.orchestrator.permissions": {
+						"type": "object",
+						"description": "Override orchestrator permissions"
 					},
 					"github.copilot.chat.summarizeAgentConversationHistoryThreshold": {
 						"type": [
