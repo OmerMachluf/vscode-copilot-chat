@@ -22,6 +22,41 @@ import { IToolsService, IToolValidationResult } from '../tools/common/toolsServi
 export const IWorkerToolsService = createServiceIdentifier<IWorkerToolsService>('IWorkerToolsService');
 
 /**
+ * Context information about the current worker execution.
+ * This is available to tools running within a worker's scoped instantiation service.
+ */
+export const IWorkerContext = createServiceIdentifier<IWorkerContext>('IWorkerContext');
+
+export interface IWorkerContext {
+	readonly _serviceBrand: undefined;
+	/** The worker's unique ID */
+	readonly workerId: string;
+	/** Path to the worker's worktree */
+	readonly worktreePath: string;
+	/** The plan ID if this worker is part of a plan */
+	readonly planId?: string;
+	/** The task ID if this worker is executing a specific task */
+	readonly taskId?: string;
+	/** The current depth level (0=main task, 1=sub-task, etc.) */
+	readonly depth: number;
+}
+
+/**
+ * Implementation of worker context.
+ */
+class WorkerContextImpl implements IWorkerContext {
+	readonly _serviceBrand: undefined;
+
+	constructor(
+		readonly workerId: string,
+		readonly worktreePath: string,
+		readonly planId?: string,
+		readonly taskId?: string,
+		readonly depth: number = 0,
+	) { }
+}
+
+/**
  * Service for managing per-worker tool sets.
  * Each worker gets its own set of tools scoped to its worktree.
  */
@@ -32,9 +67,12 @@ export interface IWorkerToolsService {
 	 * Create a new tool set for a worker.
 	 * @param workerId Unique identifier for the worker
 	 * @param worktreePath Path to the worktree folder for this worker
+	 * @param planId Optional plan ID if this worker is part of a plan
+	 * @param taskId Optional task ID if this worker is executing a specific task
+	 * @param depth The depth level (0=main task, 1=sub-task, etc.)
 	 * @returns The created WorkerToolSet
 	 */
-	createWorkerToolSet(workerId: string, worktreePath: string): WorkerToolSet;
+	createWorkerToolSet(workerId: string, worktreePath: string, planId?: string, taskId?: string, depth?: number): WorkerToolSet;
 
 	/**
 	 * Get an existing tool set for a worker.
@@ -207,6 +245,7 @@ export class WorkerToolSet extends Disposable implements IToolsService {
 	private readonly _toolExtensions: Map<ToolName, ICopilotToolExtension<any>>;
 	private readonly _enabledTools: Set<ToolName>;
 	private readonly _disabledTools: Set<ToolName>;
+	private readonly _workerContext: IWorkerContext;
 
 	private readonly _onWillInvokeTool = this._register(new Emitter<{ toolName: string }>());
 	public readonly onWillInvokeTool = this._onWillInvokeTool.event;
@@ -223,6 +262,9 @@ export class WorkerToolSet extends Disposable implements IToolsService {
 		public readonly workerId: string,
 		public readonly worktreePath: string,
 		parentInstantiationService: IInstantiationService,
+		planId: string | undefined,
+		taskId: string | undefined,
+		depth: number,
 		@IWorkspaceService workspaceService: IWorkspaceService,
 		@ILogService private readonly _logService: ILogService,
 	) {
@@ -231,9 +273,15 @@ export class WorkerToolSet extends Disposable implements IToolsService {
 		// Create scoped workspace service for this worktree
 		const scopedWorkspaceService = new ScopedWorkspaceService(workspaceService, worktreePath);
 
-		// Create child instantiation service with scoped workspace
+		// Create worker context for this worker
+		this._workerContext = new WorkerContextImpl(workerId, worktreePath, planId, taskId, depth);
+
+		// Create child instantiation service with scoped workspace and worker context
 		this._scopedInstantiationService = parentInstantiationService.createChild(
-			new ServiceCollection([IWorkspaceService, scopedWorkspaceService])
+			new ServiceCollection(
+				[IWorkspaceService, scopedWorkspaceService],
+				[IWorkerContext, this._workerContext]
+			)
 		);
 
 		// Initialize tool collections
@@ -276,6 +324,13 @@ export class WorkerToolSet extends Disposable implements IToolsService {
 	 */
 	get scopedInstantiationService(): IInstantiationService {
 		return this._scopedInstantiationService;
+	}
+
+	/**
+	 * Get the worker context for this tool set.
+	 */
+	get workerContext(): IWorkerContext {
+		return this._workerContext;
 	}
 
 	/**
@@ -527,15 +582,18 @@ export class WorkerToolsService extends Disposable implements IWorkerToolsServic
 		super();
 	}
 
-	createWorkerToolSet(workerId: string, worktreePath: string): WorkerToolSet {
+	createWorkerToolSet(workerId: string, worktreePath: string, planId?: string, taskId?: string, depth: number = 0): WorkerToolSet {
 		// Dispose existing tool set if present
 		this.disposeWorkerToolSet(workerId);
 
-		// Create new tool set
+		// Create new tool set with context
 		const toolSet = new WorkerToolSet(
 			workerId,
 			worktreePath,
 			this._instantiationService,
+			planId,
+			taskId,
+			depth,
 			this._workspaceService,
 			this._logService,
 		);
@@ -543,7 +601,7 @@ export class WorkerToolsService extends Disposable implements IWorkerToolsServic
 		this._workerToolSets.set(workerId, toolSet);
 		this._onDidCreateToolSet.fire({ workerId, toolSet });
 
-		this._logService.debug(`[WorkerToolsService] Created tool set for worker ${workerId}`);
+		this._logService.debug(`[WorkerToolsService] Created tool set for worker ${workerId} (plan: ${planId}, task: ${taskId}, depth: ${depth})`);
 
 		return toolSet;
 	}

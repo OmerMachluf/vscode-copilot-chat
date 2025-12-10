@@ -94,6 +94,7 @@ import { AgentDiscoveryService, IAgentDiscoveryService } from '../../orchestrato
 import { AgentInstructionService, IAgentInstructionService } from '../../orchestrator/agentInstructionService';
 import { AgentRunnerService, IAgentRunner } from '../../orchestrator/agentRunner';
 import { IOrchestratorService, OrchestratorService } from '../../orchestrator/orchestratorServiceV2';
+import { ISubTaskManager, SubTaskManager } from '../../orchestrator/subTaskManager';
 import { IWorkerToolsService, WorkerToolsService } from '../../orchestrator/workerToolsService';
 import { ChatMLFetcherImpl } from '../../prompt/node/chatMLFetcher';
 import { IFeedbackReporter } from '../../prompt/node/feedbackReporter';
@@ -177,6 +178,7 @@ export function registerServices(builder: IInstantiationServiceBuilder, extensio
 	builder.define(IAgentDiscoveryService, new SyncDescriptor(AgentDiscoveryService));
 	builder.define(IAgentRunner, new SyncDescriptor(AgentRunnerService));
 	builder.define(IWorkerToolsService, new SyncDescriptor(WorkerToolsService));
+	builder.define(ISubTaskManager, new SyncDescriptor(SubTaskManager));
 	builder.define(IOrchestratorService, new SyncDescriptor(OrchestratorService));
 	builder.define(IParserService, new SyncDescriptor(ParserServiceImpl, [/*useWorker*/ true]));
 	builder.define(IIntentService, new SyncDescriptor(IntentService));
