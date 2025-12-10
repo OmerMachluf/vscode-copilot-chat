@@ -1,0 +1,11 @@
+{
+  "stuck_no_progress": {
+    "redirectPrompt": "You appear to be stuck. Let's take a step back and reassess the current situation. What have you accomplished so far? What is blocking progress?"
+  },
+  "looping_same_tool": {
+    "redirectPrompt": "You're repeatedly calling the same tool. This suggests the approach isn't working. Try a different strategy or ask for help."
+  },
+  "high_error_rate": {
+    "redirectPrompt": "Multiple errors have occurred. Stop and analyze the root cause before proceeding. Check your assumptions and the current state of the files."
+  }
+}

@@ -1238,3 +1238,137 @@ class ChangeModelTool implements ICopilotTool<IChangeModelParams> {
 }
 
 ToolRegistry.registerTool(ChangeModelTool);
+
+// ============================================================================
+// Reinitialize Worker Tool
+// ============================================================================
+
+interface IReinitializeWorkerParams {
+	workerId: string;
+	newInstructions?: string;
+	clearHistory?: boolean;
+}
+
+/**
+ * Tool to reinitialize a stuck or malfunctioning worker.
+ * This resets the worker's state and restarts from a clean state.
+ */
+class ReinitializeWorkerTool implements ICopilotTool<IReinitializeWorkerParams> {
+	public static readonly toolName = ToolName.OrchestratorReinitializeWorker;
+
+	constructor(
+		@IOrchestratorService private readonly _orchestratorService: IOrchestratorService
+	) { }
+
+	prepareInvocation(options: LanguageModelToolInvocationPrepareOptions<IReinitializeWorkerParams>, _token: CancellationToken): ProviderResult<any> {
+		const { workerId, clearHistory = true } = options.input;
+		return {
+			confirmationMessages: {
+				title: 'Reinitialize Worker',
+				message: `Reinitialize worker "${workerId}"?${clearHistory ? ' Conversation history will be cleared.' : ' Conversation history will be preserved.'}`
+			}
+		};
+	}
+
+	async invoke(options: LanguageModelToolInvocationOptions<IReinitializeWorkerParams>, _token: CancellationToken): Promise<LanguageModelToolResult> {
+		const { workerId, newInstructions, clearHistory = true } = options.input;
+
+		try {
+			const result = await this._orchestratorService.reinitializeWorker(workerId, {
+				newInstructions,
+				clearHistory,
+			});
+
+			if (result.success) {
+				const lines = [
+					`✅ Worker "${workerId}" reinitialized successfully`,
+					`   History: ${clearHistory ? 'cleared' : 'preserved'}`,
+				];
+
+				if (newInstructions) {
+					lines.push(`   New instructions: ${newInstructions.substring(0, 100)}${newInstructions.length > 100 ? '...' : ''}`);
+				}
+
+				lines.push('', '🔄 Worker is now running with a fresh state.');
+
+				return new LanguageModelToolResult([new LanguageModelTextPart(lines.join('\n'))]);
+			} else {
+				return new LanguageModelToolResult([
+					new LanguageModelTextPart(`❌ ${result.message}`)
+				]);
+			}
+		} catch (e: any) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`❌ Failed to reinitialize worker: ${e.message}`)
+			]);
+		}
+	}
+}
+
+ToolRegistry.registerTool(ReinitializeWorkerTool);
+
+// ============================================================================
+// Redirect Worker Tool
+// ============================================================================
+
+interface IRedirectWorkerParams {
+	workerId: string;
+	redirectPrompt: string;
+	preserveHistory?: boolean;
+}
+
+/**
+ * Tool to redirect a worker that is stuck or off-track.
+ * This injects a high-priority message to change the worker's direction.
+ */
+class RedirectWorkerTool implements ICopilotTool<IRedirectWorkerParams> {
+	public static readonly toolName = ToolName.OrchestratorRedirectWorker;
+
+	constructor(
+		@IOrchestratorService private readonly _orchestratorService: IOrchestratorService
+	) { }
+
+	prepareInvocation(options: LanguageModelToolInvocationPrepareOptions<IRedirectWorkerParams>, _token: CancellationToken): ProviderResult<any> {
+		const { workerId } = options.input;
+		return {
+			confirmationMessages: {
+				title: 'Redirect Worker',
+				message: `Redirect worker "${workerId}" with new instructions?`
+			}
+		};
+	}
+
+	async invoke(options: LanguageModelToolInvocationOptions<IRedirectWorkerParams>, _token: CancellationToken): Promise<LanguageModelToolResult> {
+		const { workerId, redirectPrompt, preserveHistory = true } = options.input;
+
+		try {
+			const result = await this._orchestratorService.redirectWorker(workerId, {
+				redirectPrompt,
+				preserveHistory,
+			});
+
+			if (result.success) {
+				const lines = [
+					`✅ Worker "${workerId}" redirected successfully`,
+					`   History: ${preserveHistory ? 'preserved' : 'cleared'}`,
+					`   Redirect prompt: ${redirectPrompt.substring(0, 100)}${redirectPrompt.length > 100 ? '...' : ''}`,
+					'',
+					'🔄 Worker is now processing the redirect instructions.',
+				];
+
+				return new LanguageModelToolResult([new LanguageModelTextPart(lines.join('\n'))]);
+			} else {
+				return new LanguageModelToolResult([
+					new LanguageModelTextPart(`❌ ${result.message}`)
+				]);
+			}
+		} catch (e: any) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`❌ Failed to redirect worker: ${e.message}`)
+			]);
+		}
+	}
+}
+
+ToolRegistry.registerTool(RedirectWorkerTool);
+

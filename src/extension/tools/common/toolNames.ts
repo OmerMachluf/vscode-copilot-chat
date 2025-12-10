@@ -85,6 +85,8 @@ export enum ToolName {
 	OrchestratorCompleteTask = 'orchestrator_completeTask',
 	OrchestratorReassignAgent = 'orchestrator_reassignAgent',
 	OrchestratorChangeModel = 'orchestrator_changeModel',
+	OrchestratorReinitializeWorker = 'orchestrator_reinitializeWorker',
+	OrchestratorRedirectWorker = 'orchestrator_redirectWorker',
 	// Agent-to-Agent (A2A) tools for sub-task spawning
 	A2ASpawnSubTask = 'a2a_spawn_subtask',
 	A2ASpawnParallelSubTasks = 'a2a_spawn_parallel_subtasks',
@@ -150,6 +152,8 @@ export enum ContributedToolName {
 	OrchestratorCompleteTask = 'copilot_orchestratorCompleteTask',
 	OrchestratorReassignAgent = 'copilot_orchestratorReassignAgent',
 	OrchestratorChangeModel = 'copilot_orchestratorChangeModel',
+	OrchestratorReinitializeWorker = 'copilot_orchestratorReinitializeWorker',
+	OrchestratorRedirectWorker = 'copilot_orchestratorRedirectWorker',
 	// Agent-to-Agent (A2A) tools
 	A2ASpawnSubTask = 'copilot_a2aSpawnSubTask',
 	A2ASpawnParallelSubTasks = 'copilot_a2aSpawnParallelSubTasks',
@@ -283,6 +287,8 @@ export const toolCategories: Record<ToolName, ToolCategory> = {
 	[ToolName.OrchestratorCompleteTask]: ToolCategory.Core,
 	[ToolName.OrchestratorReassignAgent]: ToolCategory.Core,
 	[ToolName.OrchestratorChangeModel]: ToolCategory.Core,
+	[ToolName.OrchestratorReinitializeWorker]: ToolCategory.Core,
+	[ToolName.OrchestratorRedirectWorker]: ToolCategory.Core,
 	// Agent-to-Agent (A2A) tools
 	[ToolName.A2ASpawnSubTask]: ToolCategory.Core,
 	[ToolName.A2ASpawnParallelSubTasks]: ToolCategory.Core,

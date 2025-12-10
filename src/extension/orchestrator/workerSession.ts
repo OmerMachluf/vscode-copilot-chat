@@ -335,6 +335,25 @@ export class WorkerSession extends Disposable {
 		this._agentInstructions = instructions;
 	}
 
+	/**
+	 * Update the instructions for this worker session.
+	 * The new instructions take effect on the next agent iteration.
+	 */
+	public setInstructions(instructions: string[]): void {
+		this._agentInstructions = instructions;
+	}
+
+	/**
+	 * Clear the conversation history, keeping only the initial system message.
+	 */
+	public clearHistory(): void {
+		const taskMessage = this._messages.find(m => m.role === 'system' && m.content.includes('Worker initialized'));
+		this._messages = taskMessage ? [taskMessage] : [];
+		this._pendingApprovals.clear();
+		this._conversationThreads.clear();
+		this._onDidChange.fire();
+	}
+
 	public get modelId(): string | undefined {
 		return this._modelId;
 	}

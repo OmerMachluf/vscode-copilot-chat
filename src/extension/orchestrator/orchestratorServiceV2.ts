@@ -14,6 +14,7 @@ import { generateUuid } from '../../util/vs/base/common/uuid';
 import { createDecorator } from '../../util/vs/platform/instantiation/common/instantiation';
 import { IAgentInstructionService } from './agentInstructionService';
 import { IAgentRunner } from './agentRunner';
+import { CircuitBreaker } from './circuitBreaker';
 import {
 	CompletionManager,
 	ICompletionOptions,
@@ -27,6 +28,7 @@ import {
 import { IOrchestratorPermissionService, IPermissionRequest } from './orchestratorPermissions';
 import { IOrchestratorQueueMessage, IOrchestratorQueueService } from './orchestratorQueue';
 import { ISubTaskManager } from './subTaskManager';
+import { WorkerHealthMonitor } from './workerHealthMonitor';
 import { SerializedWorkerState, WorkerResponseStream, WorkerSession, WorkerSessionState } from './workerSession';
 import { IWorkerToolsService, WorkerToolSet } from './workerToolsService';
 
@@ -338,6 +340,14 @@ export interface IOrchestratorService {
 	/** Merge a worker's branch into the target branch */
 	mergeWorkerBranch(options: IMergeOptions): Promise<IMergeResult>;
 
+	// --- Worker Health & Recovery ---
+
+	/** Reinitialize a worker: stop, clear history, restart with new instructions */
+	reinitializeWorker(workerId: string, options?: ReinitializeWorkerOptions): Promise<ReinitializeWorkerResult>;
+
+	/** Redirect a worker: inject a high-priority message to change direction */
+	redirectWorker(workerId: string, options: RedirectWorkerOptions): Promise<RedirectWorkerResult>;
+
 	// Legacy compatibility
 	getWorkers(): Record<string, any>;
 }
@@ -453,6 +463,42 @@ export interface CompleteWorkerResult {
 }
 
 /**
+ * Options for reinitializing a worker
+ */
+export interface ReinitializeWorkerOptions {
+	/** New instructions to inject (replaces agent instructions) */
+	newInstructions?: string;
+	/** Whether to clear the conversation history (default: true) */
+	clearHistory?: boolean;
+}
+
+/**
+ * Result of reinitializing a worker
+ */
+export interface ReinitializeWorkerResult {
+	success: boolean;
+	message: string;
+}
+
+/**
+ * Options for redirecting a worker
+ */
+export interface RedirectWorkerOptions {
+	/** The redirect prompt to inject as a high-priority message */
+	redirectPrompt: string;
+	/** Whether to preserve conversation history (default: true) */
+	preserveHistory?: boolean;
+}
+
+/**
+ * Result of redirecting a worker
+ */
+export interface RedirectWorkerResult {
+	success: boolean;
+	message: string;
+}
+
+/**
  * Orchestrator service implementation
  * Manages multiple worker sessions running in parallel across multiple plans
  */
@@ -479,6 +525,10 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 	// Map from worker ID to its scoped tool set
 	private readonly _workerToolSets = new Map<string, WorkerToolSet>();
+
+	// Health monitoring
+	private readonly _healthMonitor = new WorkerHealthMonitor();
+	private readonly _circuitBreakers = new Map<string, CircuitBreaker>();
 
 	private readonly _inbox = new OrchestratorInbox();
 
@@ -1401,6 +1451,8 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 	public concludeWorker(workerId: string): void {
 		const worker = this._workers.get(workerId);
 		if (worker) {
+			this._healthMonitor.stopMonitoring(workerId);
+			this._circuitBreakers.delete(workerId);
 			worker.dispose();
 			this._workers.delete(workerId);
 			this._onDidChangeWorkers.fire();
@@ -1547,6 +1599,10 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 		const worktreePath = worker.worktreePath;
 		const linkedTask = this._tasks.find(t => t.workerId === workerId);
+
+		// Stop monitoring
+		this._healthMonitor.stopMonitoring(workerId);
+		this._circuitBreakers.delete(workerId);
 
 		// Dispose the worker first (stops the conversation loop)
 		worker.dispose();
@@ -1743,6 +1799,101 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 	public getWorkerAgent(workerId: string): string | undefined {
 		const worker = this._workers.get(workerId);
 		return worker?.agentId;
+	}
+
+	// --- Worker Health & Recovery ---
+
+	/**
+	 * Reinitialize a worker: stop current execution, optionally clear history, restart
+	 */
+	public async reinitializeWorker(workerId: string, options: ReinitializeWorkerOptions = {}): Promise<ReinitializeWorkerResult> {
+		const { newInstructions, clearHistory = true } = options;
+
+		const worker = this._workers.get(workerId);
+		if (!worker) {
+			return { success: false, message: `Worker ${workerId} not found` };
+		}
+
+		try {
+			// Interrupt current execution
+			worker.interrupt();
+
+			// Reset health monitoring for this worker
+			this._healthMonitor.stopMonitoring(workerId);
+			this._healthMonitor.startMonitoring(workerId);
+
+			// Reset circuit breaker
+			const circuitBreaker = this._circuitBreakers.get(workerId);
+			if (circuitBreaker) {
+				circuitBreaker.reset();
+			}
+
+			// Clear history if requested
+			if (clearHistory) {
+				worker.clearHistory();
+			}
+
+			// Update instructions if provided
+			if (newInstructions) {
+				worker.setInstructions([newInstructions]);
+			}
+
+			// Add system message indicating reinitialization
+			worker.addAssistantMessage('[System: Worker has been reinitialized. Starting fresh with current state.]');
+
+			// Resume the worker
+			worker.start();
+
+			this._onDidChangeWorkers.fire();
+			this._saveState();
+
+			return { success: true, message: `Worker ${workerId} reinitialized successfully` };
+		} catch (error) {
+			return { success: false, message: `Failed to reinitialize worker: ${error}` };
+		}
+	}
+
+	/**
+	 * Redirect a worker: inject a high-priority message without stopping execution
+	 */
+	public async redirectWorker(workerId: string, options: RedirectWorkerOptions): Promise<RedirectWorkerResult> {
+		const { redirectPrompt, preserveHistory = true } = options;
+
+		const worker = this._workers.get(workerId);
+		if (!worker) {
+			return { success: false, message: `Worker ${workerId} not found` };
+		}
+
+		try {
+			// Interrupt to get attention
+			worker.interrupt();
+
+			// Clear history if requested
+			if (!preserveHistory) {
+				worker.clearHistory();
+			}
+
+			// Reset loop detection since we're changing direction
+			const health = this._healthMonitor.getHealth(workerId);
+			if (health) {
+				health.recentToolCalls = [];
+				health.consecutiveLoops = 0;
+				health.isLooping = false;
+			}
+
+			// Inject the redirect prompt as a user message
+			worker.addUserMessage(`[System Redirect] ${redirectPrompt}`);
+
+			// Resume the worker with the new direction
+			worker.start();
+
+			this._onDidChangeWorkers.fire();
+			this._saveState();
+
+			return { success: true, message: `Worker ${workerId} redirected successfully` };
+		} catch (error) {
+			return { success: false, message: `Failed to redirect worker: ${error}` };
+		}
 	}
 
 	// --- Inbox Management ---
@@ -2008,6 +2159,15 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 	private async _runWorkerTask(worker: WorkerSession, task: WorkerTask): Promise<void> {
 		worker.start();
 
+		// Start health monitoring
+		this._healthMonitor.startMonitoring(worker.id);
+
+		// Initialize circuit breaker if not exists
+		if (!this._circuitBreakers.has(worker.id)) {
+			this._circuitBreakers.set(worker.id, new CircuitBreaker());
+		}
+		const circuitBreaker = this._circuitBreakers.get(worker.id)!;
+
 		let currentPrompt = task.description;
 		if (task.context?.additionalInstructions) {
 			currentPrompt = `${task.context.additionalInstructions}\n\n${currentPrompt}`;
@@ -2020,6 +2180,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		let model = await this._selectModel(modelOverride ?? task.modelId);
 		if (!model) {
 			worker.error('No language model available');
+			this._healthMonitor.stopMonitoring(worker.id);
 			return;
 		}
 
@@ -2040,6 +2201,19 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 		while (worker.isActive) {
 			try {
+				// Check circuit breaker
+				if (!circuitBreaker.canExecute()) {
+					const waitTime = Math.ceil((30000 - (Date.now() - (circuitBreaker.lastFailureTime || 0))) / 1000);
+					if (waitTime > 0) {
+						worker.addAssistantMessage(`[System: Circuit breaker open. Waiting ${waitTime}s before retrying...]`);
+						await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
+						// Check again after wait
+						if (!circuitBreaker.canExecute()) {
+							continue;
+						}
+					}
+				}
+
 				// Check for model override before each iteration
 				const modelOverride = this._workerModelOverrides.get(worker.id);
 				if (modelOverride) {
@@ -2063,6 +2237,9 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				// This gives the agent context of previous exchanges in this session
 				const history = this._buildConversationHistory(worker, currentPrompt);
 
+				// Record activity start
+				this._healthMonitor.recordActivity(worker.id, 'message');
+
 				// Run the agent using the proper IAgentRunner service
 				// Use the worker's cancellation token so interrupt() can stop it
 				const result = await this._agentRunner.run(
@@ -2085,6 +2262,10 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				stream.flush();
 
 				if (!result.success && result.error) {
+					// Record failure
+					this._healthMonitor.recordActivity(worker.id, 'error');
+					circuitBreaker.recordFailure();
+
 					// Check if this was a cancellation from interrupt
 					const isCancellation = result.error.includes('Canceled') ||
 						result.error.includes('cancelled') ||
@@ -2121,6 +2302,10 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 					break;
 				}
 
+				// Record success
+				this._healthMonitor.recordActivity(worker.id, 'success');
+				circuitBreaker.recordSuccess();
+
 				// Reset failure counter on success
 				consecutiveFailures = 0;
 
@@ -2139,6 +2324,10 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				worker.start();
 
 			} catch (error) {
+				// Record failure
+				this._healthMonitor.recordActivity(worker.id, 'error');
+				circuitBreaker.recordFailure();
+
 				// Check if this was an interrupt (user clicked interrupt button)
 				// We check worker status because interrupt() sets it to 'idle' and creates a fresh token
 				const errorMessage = String(error);
@@ -2180,6 +2369,9 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				break;
 			}
 		}
+
+		// Stop monitoring when worker loop ends
+		this._healthMonitor.stopMonitoring(worker.id);
 	}
 
 	/**
