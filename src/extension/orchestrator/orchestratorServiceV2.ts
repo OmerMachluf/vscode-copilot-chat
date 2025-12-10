@@ -13,6 +13,7 @@ import { generateUuid } from '../../util/vs/base/common/uuid';
 import { createDecorator } from '../../util/vs/platform/instantiation/common/instantiation';
 import { IAgentInstructionService } from './agentInstructionService';
 import { IAgentRunner } from './agentRunner';
+import { IOrchestratorQueueMessage, IOrchestratorQueueService } from './orchestratorQueue';
 import { SerializedWorkerState, WorkerResponseStream, WorkerSession, WorkerSessionState } from './workerSession';
 import { IWorkerToolsService, WorkerToolSet } from './workerToolsService';
 
@@ -375,12 +376,70 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		@IAgentInstructionService private readonly _agentInstructionService: IAgentInstructionService,
 		@IAgentRunner private readonly _agentRunner: IAgentRunner,
 		@IWorkerToolsService private readonly _workerToolsService: IWorkerToolsService,
+		@IOrchestratorQueueService private readonly _queueService: IOrchestratorQueueService,
 	) {
 		super();
+		// Register queue handler
+		this._register(this._queueService.registerHandler(this._handleQueueMessage.bind(this)));
 		// Restore state on initialization
 		this._restoreState();
 		// Detect default branch
 		this._detectDefaultBranch();
+	}
+
+	// --- Queue Handling ---
+
+	private async _handleQueueMessage(message: IOrchestratorQueueMessage): Promise<void> {
+		const task = this._tasks.find(t => t.id === message.taskId);
+		if (!task) {
+			return;
+		}
+
+		switch (message.type) {
+			case 'completion':
+				task.status = 'completed';
+				task.completedAt = Date.now();
+				this._onOrchestratorEvent.fire({
+					type: 'task.completed',
+					planId: task.planId,
+					taskId: task.id,
+					workerId: message.workerId,
+					sessionUri: (message.content as any)?.sessionUri,
+				});
+
+				// Trigger deployment of dependent tasks
+				if (task.planId) {
+					this._deployReadyTasks(task.planId).catch((err: Error) => {
+						console.error('Failed to deploy ready tasks:', err);
+					});
+				}
+				this._saveState();
+				break;
+
+			case 'error':
+				task.status = 'failed';
+				task.error = String(message.content);
+				this._onOrchestratorEvent.fire({
+					type: 'task.failed',
+					planId: task.planId,
+					taskId: task.id,
+					error: String(message.content),
+				});
+
+				// Check for blocked tasks and plan failure
+				if (task.planId) {
+					this._checkBlockedTasks(task.planId);
+					this._checkPlanCompletion(task.planId);
+				}
+				this._saveState();
+				break;
+
+			case 'status_update':
+				if (message.content === 'idle') {
+					this._onOrchestratorEvent.fire({ type: 'worker.idle', workerId: message.workerId });
+				}
+				break;
+		}
 	}
 
 	// --- State Persistence ---
@@ -969,32 +1028,32 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 				// Check for idle state
 				if (worker.status === 'idle') {
-					this._onOrchestratorEvent.fire({ type: 'worker.idle', workerId: worker.id });
+					this._queueService.enqueueMessage({
+						id: generateUuid(),
+						timestamp: Date.now(),
+						priority: 'low',
+						planId: task.planId || '',
+						taskId: task.id,
+						workerId: worker.id,
+						worktreePath: worker.worktreePath,
+						type: 'status_update',
+						content: 'idle'
+					});
 				}
 			}));
 
 			this._register(worker.onDidComplete(() => {
-				// Update task status when worker completes
-				const linkedTask = this._tasks.find(t => t.workerId === worker.id);
-				if (linkedTask) {
-					linkedTask.status = 'completed';
-					linkedTask.completedAt = Date.now();
-					this._onOrchestratorEvent.fire({
-						type: 'task.completed',
-						planId: linkedTask.planId,
-						taskId: linkedTask.id,
-						workerId: worker.id,
-						sessionUri: linkedTask.sessionUri,
-					});
-
-					// Trigger deployment of dependent tasks
-					if (linkedTask.planId) {
-						this._deployReadyTasks(linkedTask.planId).catch((err: Error) => {
-							console.error('Failed to deploy ready tasks:', err);
-						});
-					}
-				}
-				this._saveState();
+				this._queueService.enqueueMessage({
+					id: generateUuid(),
+					timestamp: Date.now(),
+					priority: 'normal',
+					planId: task.planId || '',
+					taskId: task.id,
+					workerId: worker.id,
+					worktreePath: worker.worktreePath,
+					type: 'completion',
+					content: { sessionUri: task.sessionUri }
+				});
 			}));
 
 			this._onDidChangeWorkers.fire();
@@ -1002,21 +1061,17 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 			// Start the worker task asynchronously
 			this._runWorkerTask(worker, task).catch(error => {
-				// Update task status on error
-				task.status = 'failed';
-				task.error = String(error);
-				this._onOrchestratorEvent.fire({
-					type: 'task.failed',
-					planId: task.planId,
+				this._queueService.enqueueMessage({
+					id: generateUuid(),
+					timestamp: Date.now(),
+					priority: 'high',
+					planId: task.planId || '',
 					taskId: task.id,
-					error: String(error),
+					workerId: worker.id,
+					worktreePath: worker.worktreePath,
+					type: 'error',
+					content: String(error)
 				});
-
-				// Check for blocked tasks and plan failure
-				if (task.planId) {
-					this._checkBlockedTasks(task.planId);
-					this._checkPlanCompletion(task.planId);
-				}
 
 				worker.error(String(error));
 			});

@@ -1,0 +1,95 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { DisposableStore } from '../../../util/vs/base/common/lifecycle';
+import { ISubTaskCreateOptions, ISubTaskResult, SubTaskManager } from '../subTaskManager';
+
+// Mock services
+const createMockLogService = () => ({
+_serviceBrand: undefined,
+debug: vi.fn(),
+info: vi.fn(),
+warn: vi.fn(),
+error: vi.fn(),
+trace: vi.fn(),
+});
+
+const createMockAgentRunner = () => ({
+_serviceBrand: undefined,
+run: vi.fn().mockResolvedValue({
+success: true,
+response: 'Sub-task completed successfully',
+metadata: {},
+}),
+});
+
+const createMockWorkerToolsService = () => ({
+_serviceBrand: undefined,
+createWorkerToolSet: vi.fn().mockReturnValue({
+scopedInstantiationService: {},
+worktreePath: '/test/worktree',
+dispose: vi.fn(),
+}),
+getWorkerToolSet: vi.fn(),
+disposeWorkerToolSet: vi.fn(),
+getWorktreeForPath: vi.fn(),
+getActiveWorktrees: vi.fn().mockReturnValue([]),
+onDidCreateToolSet: { event: vi.fn() },
+onDidDisposeToolSet: { event: vi.fn() },
+});
+
+const createMockSafetyLimitsService = () => ({
+_serviceBrand: undefined,
+config: {
+maxConcurrentWorkers: 5,
+maxTasksPerPlan: 50,
+maxOutputTokensPerTask: 100000,
+maxTotalTokensPerPlan: 1000000,
+taskTimeoutMs: 3600000,
+planTimeoutMs: 86400000,
+maxDepth: 3,
+maxEditsPerTask: 100,
+maxFilesPerTask: 50,
+emergencyStopEnabled: true,
+},
+onEmergencyStop: { event: vi.fn(() => ({ dispose: () => {} })) },
+checkLimits: vi.fn().mockReturnValue({ allowed: true }),
+recordUsage: vi.fn(),
+getUsage: vi.fn().mockReturnValue({
+currentWorkers: 0,
+currentTasks: 0,
+outputTokens: 0,
+totalTokens: 0,
+edits: 0,
+files: 0,
+}),
+triggerEmergencyStop: vi.fn(),
+resetUsage: vi.fn(),
+});
+
+describe('SubTaskManager', () => {
+let disposables: DisposableStore;
+let subTaskManager: SubTaskManager;
+let mockAgentRunner: ReturnType<typeof createMockAgentRunner>;
+let mockWorkerToolsService: ReturnType<typeof createMockWorkerToolsService>;
+let mockLogService: ReturnType<typeof createMockLogService>;
+let mockSafetyLimitsService: ReturnType<typeof createMockSafetyLimitsService>;
+
+beforeEach(() => {
+disposables = new DisposableStore();
+mockAgentRunner = createMockAgentRunner();
+mockWorkerToolsService = createMockWorkerToolsService();
+mockLogService = createMockLogService();
+mockSafetyLimitsService = createMockSafetyLimitsService();
+
+subTaskManager = new SubTaskManager(
+mockAgentRunner as any,
+mockWorkerToolsService as any,
+mockLogService as any,
+mockSafetyLimitsService as any,
+);
+disposables.add(subTaskManager);
+});

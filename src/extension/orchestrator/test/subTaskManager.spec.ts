@@ -41,23 +41,56 @@ const createMockWorkerToolsService = () => ({
 	onDidDisposeToolSet: { event: vi.fn() },
 });
 
+
+const createMockSafetyLimitsService = () => ({
+	_serviceBrand: undefined,
+	config: {
+		maxConcurrentWorkers: 5,
+		maxTasksPerPlan: 50,
+		maxOutputTokensPerTask: 100000,
+		maxTotalTokensPerPlan: 1000000,
+		taskTimeoutMs: 3600000,
+		planTimeoutMs: 86400000,
+		maxDepth: 3,
+		maxEditsPerTask: 100,
+		maxFilesPerTask: 50,
+		emergencyStopEnabled: true,
+	},
+	onEmergencyStop: vi.fn(() => ({ dispose: () => {} })),
+	checkLimits: vi.fn().mockReturnValue({ allowed: true }),
+	recordUsage: vi.fn(),
+	getUsage: vi.fn().mockReturnValue({
+		currentWorkers: 0,
+		currentTasks: 0,
+		outputTokens: 0,
+		totalTokens: 0,
+		edits: 0,
+		files: 0,
+}),
+	triggerEmergencyStop: vi.fn(),
+	resetUsage: vi.fn(),
+});
+
 describe('SubTaskManager', () => {
 	let disposables: DisposableStore;
 	let subTaskManager: SubTaskManager;
 	let mockAgentRunner: ReturnType<typeof createMockAgentRunner>;
 	let mockWorkerToolsService: ReturnType<typeof createMockWorkerToolsService>;
 	let mockLogService: ReturnType<typeof createMockLogService>;
+	let mockSafetyLimitsService: ReturnType<typeof createMockSafetyLimitsService>;
 
 	beforeEach(() => {
 		disposables = new DisposableStore();
 		mockAgentRunner = createMockAgentRunner();
 		mockWorkerToolsService = createMockWorkerToolsService();
 		mockLogService = createMockLogService();
+		mockSafetyLimitsService = createMockSafetyLimitsService();
 
 		subTaskManager = new SubTaskManager(
 			mockAgentRunner as any,
 			mockWorkerToolsService as any,
 			mockLogService as any,
+			mockSafetyLimitsService as any,
 		);
 		disposables.add(subTaskManager);
 	});
