@@ -954,3 +954,45 @@ class RetryTaskTool implements ICopilotTool<IRetryTaskParams> {
 ToolRegistry.registerTool(KillWorkerTool);
 ToolRegistry.registerTool(CancelTaskTool);
 ToolRegistry.registerTool(RetryTaskTool);
+
+// ============================================================================
+// Complete Task Tool
+// ============================================================================
+
+interface ICompleteTaskParams {
+	taskId: string;
+}
+
+class CompleteTaskTool implements ICopilotTool<ICompleteTaskParams> {
+	public static readonly toolName = ToolName.OrchestratorCompleteTask;
+
+	constructor(
+		@IOrchestratorService private readonly _orchestratorService: IOrchestratorService
+	) { }
+
+	prepareInvocation(options: LanguageModelToolInvocationPrepareOptions<ICompleteTaskParams>, _token: CancellationToken): ProviderResult<any> {
+		return {
+			confirmationMessages: {
+				title: 'Complete Task',
+				message: `Mark task "${options.input.taskId}" as completed? This will remove the worker and trigger deployment of dependent tasks.`
+			}
+		};
+	}
+
+	async invoke(options: LanguageModelToolInvocationOptions<ICompleteTaskParams>, _token: CancellationToken): Promise<LanguageModelToolResult> {
+		const { taskId } = options.input;
+
+		try {
+			await this._orchestratorService.completeTask(taskId);
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`✅ Task "${taskId}" marked as completed. Worker removed and dependent tasks will be deployed.`)
+			]);
+		} catch (e: any) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`❌ Failed to complete task: ${e.message}`)
+			]);
+		}
+	}
+}
+
+ToolRegistry.registerTool(CompleteTaskTool);

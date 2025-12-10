@@ -83,6 +83,7 @@ export class AskAgentIntent implements IIntent {
 			chatTelemetry,
 			this.getIntentHandlerOptions(request),
 			onPaused,
+			agentName,
 		);
 		return await actual.getResult();
 	}

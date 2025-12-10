@@ -85,6 +85,7 @@ export class DefaultIntentRequestHandler {
 		private readonly chatTelemetryBuilder: ChatTelemetryBuilder,
 		private readonly handlerOptions: IDefaultIntentRequestHandlerOptions = { maxToolCallIterations: 15 },
 		private readonly onPaused: Event<boolean>, // todo: use a PauseController instead
+		private readonly agentName: string = 'agent',
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@IConversationOptions private readonly options: IConversationOptions,
 		@ITelemetryService private readonly _telemetryService: ITelemetryService,
@@ -304,6 +305,7 @@ export class DefaultIntentRequestHandler {
 				overrideRequestLocation: this.handlerOptions.overrideRequestLocation,
 				interactionContext: this.documentContext?.document.uri,
 				responseProcessor: typeof intentInvocation.processResponse === 'function' ? intentInvocation as IResponseProcessor : undefined,
+				agentName: this.agentName,
 			},
 			this.chatTelemetryBuilder,
 		));

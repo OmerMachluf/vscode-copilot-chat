@@ -53,6 +53,11 @@ export interface IBuildPromptContext {
 	readonly history: readonly Turn[];
 	readonly chatVariables: ChatVariablesCollection;
 	readonly workingSet?: IWorkingSet;
+	/**
+	 * The name of the agent handling this request (e.g., 'default', 'workflowPlanner', 'orchestrator').
+	 * Used to load agent-specific instructions from .github/agents/{agentName}/.
+	 */
+	readonly agentName?: string;
 	readonly tools?: {
 		readonly toolReferences: readonly InternalToolReference[];
 		readonly toolInvocationToken: vscode.ChatParticipantToolToken;

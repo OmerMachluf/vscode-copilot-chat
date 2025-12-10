@@ -1651,6 +1651,25 @@
 					},
 					"required": ["taskId"]
 				}
+			},
+			{
+				"name": "copilot_orchestratorCompleteTask",
+				"toolReferenceName": "orchestrator_completeTask",
+				"displayName": "Complete Task",
+				"modelDescription": "Marks a task as completed: updates task status to 'completed', removes the worker from the active workers list, and triggers deployment of dependent tasks. Call this after successfully merging the worker's changes to the main branch.",
+				"userDescription": "Mark a task as completed",
+				"icon": "$(check)",
+				"tags": ["vscode_codesearch"],
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"taskId": {
+							"type": "string",
+							"description": "The ID of the task to mark as completed."
+						}
+					},
+					"required": ["taskId"]
+				}
 			}
 		],
 		"languageModelToolSets": [
@@ -1719,7 +1738,8 @@
 					"orchestrator_deploy",
 					"orchestrator_killWorker",
 					"orchestrator_cancelTask",
-					"orchestrator_retryTask"
+					"orchestrator_retryTask",
+					"orchestrator_completeTask"
 				]
 			},
 			{

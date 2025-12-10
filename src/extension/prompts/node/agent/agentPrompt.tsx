@@ -166,10 +166,13 @@ export class AgentPrompt extends PromptElement<AgentPromptProps> {
 	private async getAgentCustomInstructions() {
 		const putCustomInstructionsInSystemMessage = this.configurationService.getConfig(ConfigKey.CustomInstructionsInSystemMessage);
 		const customInstructionsBodyParts: PromptPiece[] = [];
+		// Use modeInstructions.name (from package.json chatAgents) if available, otherwise fall back to promptContext.agentName
+		const agentId = this.props.promptContext.modeInstructions?.name ?? this.props.promptContext.agentName;
 		customInstructionsBodyParts.push(
 			<CustomInstructions
 				languageId={undefined}
 				chatVariables={this.props.promptContext.chatVariables}
+				agentId={agentId}
 				includeSystemMessageConflictWarning={!putCustomInstructionsInSystemMessage}
 				customIntroduction={putCustomInstructionsInSystemMessage ? '' : undefined} // If in system message, skip the "follow these user-provided coding instructions" intro
 			/>

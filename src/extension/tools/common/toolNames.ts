@@ -82,6 +82,7 @@ export enum ToolName {
 	OrchestratorKillWorker = 'orchestrator_killWorker',
 	OrchestratorCancelTask = 'orchestrator_cancelTask',
 	OrchestratorRetryTask = 'orchestrator_retryTask',
+	OrchestratorCompleteTask = 'orchestrator_completeTask',
 }
 
 export enum ContributedToolName {
@@ -139,6 +140,7 @@ export enum ContributedToolName {
 	OrchestratorKillWorker = 'copilot_orchestratorKillWorker',
 	OrchestratorCancelTask = 'copilot_orchestratorCancelTask',
 	OrchestratorRetryTask = 'copilot_orchestratorRetryTask',
+	OrchestratorCompleteTask = 'copilot_orchestratorCompleteTask',
 }
 
 export const byokEditToolNamesToToolNames = {
@@ -264,6 +266,7 @@ export const toolCategories: Record<ToolName, ToolCategory> = {
 	[ToolName.OrchestratorKillWorker]: ToolCategory.Core,
 	[ToolName.OrchestratorCancelTask]: ToolCategory.Core,
 	[ToolName.OrchestratorRetryTask]: ToolCategory.Core,
+	[ToolName.OrchestratorCompleteTask]: ToolCategory.Core,
 } as const;
 
 

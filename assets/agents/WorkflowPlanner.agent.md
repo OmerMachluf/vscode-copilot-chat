@@ -47,13 +47,16 @@ The **Architect** agent designs technical implementation. The **Orchestrator** c
 ### Architecture/Design Stage
 - Agent: `@architect`
 - Purpose: Design the technical solution, identify files to change
-- Output: Implementation plan with file changes and parallelization opportunities
+- Output: `plans/ArchitecturePlan.md` - the canonical architecture document
 - **Important**: The Architect's output is consumed by the Orchestrator to create implementation tasks
 
 ### Implementation Stage
 - Agent: `@agent`
-- Purpose: Execute the implementation (kept as ONE high-level stage)
-- **Note**: Do NOT break this into file-level tasks. The Orchestrator + Architect handle that.
+- Purpose: Execute the implementation (kept as ONE high-level stage initially)
+- **Note**: This is a PLACEHOLDER. After Architect completes, the Orchestrator will:
+  1. Remove this generic "implement" task
+  2. Create specific implementation tasks from ArchitecturePlan.md
+  3. Provide each worker with full context (ArchitecturePlan.md + their specific assignment)
 
 ### Review Stage
 - Agent: `@reviewer`
@@ -75,19 +78,19 @@ plan:
     - id: investigate
       name: Investigate Issue
       agent: "@investigation"  # or @agent if not available
-      description: "Reproduce the issue, gather logs, identify root cause"
+      description: "Investigate and reproduce the issue: {ORIGINAL USER REQUEST}. Gather logs, identify root cause."
       dependencies: []
 
     - id: design
       name: Design Fix
       agent: "@architect"
-      description: "Design the fix approach, identify files to modify"
+      description: "Design the implementation for: {ORIGINAL USER REQUEST}. Create a detailed architecture plan identifying files to modify, changes needed, and test strategy."
       dependencies: [investigate]
 
     - id: implement
       name: Implement Fix
       agent: "@agent"
-      description: "Implement the fix as designed by Architect"
+      description: "Implement the fix as designed by Architect for: {ORIGINAL USER REQUEST}"
       dependencies: [design]
 
     - id: review
@@ -106,19 +109,19 @@ plan:
     - id: requirements
       name: Clarify Requirements
       agent: "@agent"
-      description: "Clarify scope, acceptance criteria, edge cases"
+      description: "Clarify requirements for: {ORIGINAL USER REQUEST}. Define scope, acceptance criteria, edge cases."
       dependencies: []
 
     - id: architecture
       name: Design Architecture
       agent: "@architect"
-      description: "Design the feature, plan file changes and structure"
+      description: "Design the implementation for: {ORIGINAL USER REQUEST}. Create a detailed architecture plan identifying files to modify, changes needed, and test strategy."
       dependencies: [requirements]
 
     - id: implement
       name: Implement Feature
       agent: "@agent"
-      description: "Implement the feature as designed"
+      description: "Implement the feature as designed for: {ORIGINAL USER REQUEST}"
       dependencies: [architecture]
 
     - id: review
@@ -146,12 +149,14 @@ plan:
 
 ## Guidelines
 
-1. **Keep stages high-level** - An "Implement" stage is ONE task, not multiple file-level tasks
+1. **Keep stages high-level** - An "Implement" stage is ONE placeholder task that Orchestrator will expand
 2. **Always use @architect for design** - Never skip the design phase for non-trivial changes
 3. **Discover agents first** - Use `orchestrator_listAgents` before creating plans
 4. **Check repo processes** - Look for custom instructions that mandate specific stages
-5. **Let Orchestrator parallelize** - Don't try to manually parallelize implementation; the Architect + Orchestrator handle that
+5. **Let Orchestrator handle details** - The Architect designs, Orchestrator creates specific tasks
 6. **Ask questions if unclear** - Better to clarify than create wrong workflow
+7. **Expect task evolution** - Your "implement" task will likely be replaced after Architect completes
+8. **CRITICAL: Include full user request** - Every task description MUST include the original user request so agents understand the full context. Use `{ORIGINAL USER REQUEST}` as a placeholder in templates and replace it with the actual request.
 
 ## Anti-Patterns (Avoid)
 

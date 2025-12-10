@@ -12,7 +12,7 @@ import { generateUuid } from '../../util/vs/base/common/uuid';
 import { createDecorator, IInstantiationService } from '../../util/vs/platform/instantiation/common/instantiation';
 import { Intent } from '../common/constants';
 import { IIntentService } from '../intents/node/intentService';
-import { Conversation, Turn } from '../prompt/common/conversation';
+import { Conversation, Turn, TurnStatus } from '../prompt/common/conversation';
 import { ChatTelemetryBuilder } from '../prompt/node/chatParticipantTelemetry';
 import { DefaultIntentRequestHandler, IDefaultIntentRequestHandlerOptions } from '../prompt/node/defaultIntentRequestHandler';
 import { getContributedToolName } from '../tools/common/toolNames';
@@ -20,6 +20,16 @@ import { IToolsService } from '../tools/common/toolsService';
 import { WorkerToolSet } from './workerToolsService';
 
 export const IAgentRunner = createDecorator<IAgentRunner>('agentRunner');
+
+/**
+ * A simplified history entry for passing conversation context to the agent
+ */
+export interface IAgentHistoryEntry {
+	/** The role of this message */
+	role: 'user' | 'assistant';
+	/** The message content */
+	content: string;
+}
 
 /**
  * Options for running an agent task programmatically
@@ -65,6 +75,13 @@ export interface IAgentRunOptions {
 
 	/** Callback invoked when a message is added to the conversation */
 	onMessageAdded?: (message: { role: 'user' | 'assistant' | 'tool'; content: string }) => void;
+
+	/**
+	 * Previous conversation history to provide context.
+	 * These are prior user/assistant exchanges that help the agent understand
+	 * the full conversation context.
+	 */
+	history?: IAgentHistoryEntry[];
 }
 
 /**
@@ -125,6 +142,7 @@ export class AgentRunnerService extends Disposable implements IAgentRunner {
 			maxToolCallIterations = 200,
 			workerToolSet,
 			worktreePath,
+			history,
 		} = options;
 
 		// Determine the effective worktree path (from workerToolSet or legacy option)
@@ -171,10 +189,53 @@ Do NOT use paths relative to any other workspace folder.`);
 				};
 			}
 
-			// Create conversation with a single turn
+			// Build turns from history + current request
+			const turns: Turn[] = [];
+
+			// Add history turns if provided
+			if (history && history.length > 0) {
+				// Process history in pairs (user message followed by assistant response)
+				let i = 0;
+				while (i < history.length) {
+					const entry = history[i];
+					if (entry.role === 'user') {
+						// Create a turn for this user message
+						const historyTurnId = generateUuid();
+						const historyRequest = this._createRequest(entry.content, model, toolsService, undefined, effectiveWorktreePath);
+						const historyTurn = Turn.fromRequest(historyTurnId, historyRequest);
+
+						// Look for the following assistant response
+						if (i + 1 < history.length && history[i + 1].role === 'assistant') {
+							const assistantContent = history[i + 1].content;
+							historyTurn.setResponse(
+								TurnStatus.Success,
+								{ type: 'model', message: assistantContent },
+								generateUuid(),
+								{ metadata: {} }
+							);
+							i += 2; // Skip both user and assistant
+						} else {
+							// User message without response, still include it
+							i++;
+						}
+						turns.push(historyTurn);
+					} else {
+						// Skip orphan assistant messages (shouldn't happen in well-formed history)
+						i++;
+					}
+				}
+			}
+
+			// Create the current turn from the request
 			const turnId = generateUuid();
 			const turn = Turn.fromRequest(turnId, request);
-			const conversation = new Conversation(sessionId, [turn]);
+			turns.push(turn);
+
+			// Create conversation with all turns (history + current)
+			const conversation = new Conversation(sessionId, turns);
+
+			// Determine if this is the first turn (for telemetry)
+			const isFirstTurn = turns.length === 1;
 
 			// Create telemetry builder using the (possibly scoped) instantiation service
 			const chatTelemetry = instantiationService.createInstance(
@@ -182,7 +243,7 @@ Do NOT use paths relative to any other workspace folder.`);
 				Date.now(),
 				sessionId,
 				undefined, // documentContext
-				true, // isFirstTurn
+				isFirstTurn,
 				request
 			);
 
@@ -222,7 +283,8 @@ Do NOT use paths relative to any other workspace folder.`);
 					ChatLocation.Agent,
 					chatTelemetry,
 					handlerOptions,
-					onPaused
+					onPaused,
+					'copilot', // agentName - orchestrator agents use 'copilot' as the agent name
 				);
 				result = await handler.getResult();
 			}

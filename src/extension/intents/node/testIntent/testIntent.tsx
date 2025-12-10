@@ -58,7 +58,7 @@ export class TestsIntent implements IIntent {
 	) { }
 
 	handleRequest(conversation: Conversation, request: ChatRequest, stream: ChatResponseStream, token: CancellationToken, documentContext: IDocumentContext | undefined, agentName: string, location: ChatLocation, chatTelemetry: ChatTelemetryBuilder, onPaused: Event<boolean>): Promise<ChatResult> {
-		return this.instantiationService.createInstance(RequestHandler, this, conversation, request, stream, token, documentContext, location, chatTelemetry, onPaused).getResult();
+		return this.instantiationService.createInstance(RequestHandler, this, conversation, request, stream, token, documentContext, agentName, location, chatTelemetry, onPaused).getResult();
 	}
 
 	async invoke(invocationContext: IIntentInvocationContext): Promise<IIntentInvocation> {
@@ -227,6 +227,7 @@ class RequestHandler extends DefaultIntentRequestHandler {
 		stream: ChatResponseStream,
 		token: CancellationToken,
 		documentContext: IDocumentContext | undefined,
+		agentName: string,
 		location: ChatLocation,
 		chatTelemetry: ChatTelemetryBuilder,
 		onPaused: Event<boolean>,
@@ -241,7 +242,7 @@ class RequestHandler extends DefaultIntentRequestHandler {
 		@IAuthenticationService authenticationService: IAuthenticationService,
 		@IEndpointProvider endpointProvider: IEndpointProvider,
 	) {
-		super(intent, conversation, request, stream, token, documentContext, location, chatTelemetry, undefined, onPaused, instantiationService, conversationOptions, telemetryService, logService, surveyService, requestLogger, editSurvivalTrackerService, authenticationService, endpointProvider);
+		super(intent, conversation, request, stream, token, documentContext, location, chatTelemetry, undefined, onPaused, agentName, instantiationService, conversationOptions, telemetryService, logService, surveyService, requestLogger, editSurvivalTrackerService, authenticationService, endpointProvider);
 	}
 
 	/**

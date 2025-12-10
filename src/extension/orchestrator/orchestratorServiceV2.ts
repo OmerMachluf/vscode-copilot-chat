@@ -264,6 +264,9 @@ export interface IOrchestratorService {
 	/** Cancel a task: stop if running, reset to pending or remove */
 	cancelTask(taskId: string, remove?: boolean): Promise<void>;
 
+	/** Complete a task: mark as completed, remove worker, trigger dependent tasks */
+	completeTask(taskId: string): Promise<void>;
+
 	/** Retry a failed task: reset status and re-deploy */
 	retryTask(taskId: string, options?: DeployOptions): Promise<WorkerSession>;
 
@@ -1289,6 +1292,48 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 	}
 
 	/**
+	 * Complete a task: mark as completed, remove worker, trigger dependent tasks
+	 */
+	public async completeTask(taskId: string): Promise<void> {
+		const task = this._tasks.find(t => t.id === taskId);
+		if (!task) {
+			throw new Error(`Task ${taskId} not found`);
+		}
+
+		// If task has a worker, remove it
+		if (task.workerId) {
+			const worker = this._workers.get(task.workerId);
+			if (worker) {
+				// Conclude the worker (stop gracefully without push since we already merged)
+				this.concludeWorker(task.workerId);
+			}
+		}
+
+		// Mark task as completed
+		task.status = 'completed';
+		task.completedAt = Date.now();
+		task.workerId = undefined;
+
+		// Fire completion event
+		this._onOrchestratorEvent.fire({
+			type: 'task.completed',
+			planId: task.planId,
+			taskId: task.id,
+			workerId: task.workerId ?? '',
+			sessionUri: task.sessionUri,
+		});
+
+		this._onDidChangeWorkers.fire();
+		this._saveState();
+
+		// Trigger deployment of dependent tasks
+		if (task.planId) {
+			await this._deployReadyTasks(task.planId);
+			this._checkPlanCompletion(task.planId);
+		}
+	}
+
+	/**
 	 * Model override storage per worker
 	 */
 	private readonly _workerModelOverrides = new Map<string, string>();
@@ -1609,6 +1654,10 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				// Get the worker's scoped tool set for proper worktree isolation
 				const workerToolSet = this._workerToolSets.get(worker.id);
 
+				// Build conversation history from worker's messages (excluding current prompt)
+				// This gives the agent context of previous exchanges in this session
+				const history = this._buildConversationHistory(worker, currentPrompt);
+
 				// Run the agent using the proper IAgentRunner service
 				// Use the worker's cancellation token so interrupt() can stop it
 				const result = await this._agentRunner.run(
@@ -1623,6 +1672,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 						maxToolCallIterations: 200,
 						workerToolSet,
 						worktreePath: worker.worktreePath, // Kept for prompt context
+						history, // Pass conversation history for context
 					},
 					stream as unknown as vscode.ChatResponseStream
 				);
@@ -1725,6 +1775,37 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				break;
 			}
 		}
+	}
+
+	/**
+	 * Build conversation history from the worker's messages for passing to the agent.
+	 * Excludes the current prompt since that will be added as the new request.
+	 * Only includes user/assistant message pairs, excluding system and tool messages.
+	 */
+	private _buildConversationHistory(worker: WorkerSession, currentPrompt: string): Array<{ role: 'user' | 'assistant'; content: string }> {
+		const history: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+		const messages = worker.state.messages;
+
+		for (const msg of messages) {
+			// Skip system messages and tool messages - they're not part of conversational history
+			if (msg.role === 'system' || msg.role === 'tool') {
+				continue;
+			}
+
+			// Skip the current prompt (it will be added as the new request)
+			if (msg.role === 'user' && msg.content === currentPrompt) {
+				continue;
+			}
+
+			if (msg.role === 'user' || msg.role === 'assistant') {
+				history.push({
+					role: msg.role,
+					content: msg.content,
+				});
+			}
+		}
+
+		return history;
 	}
 
 	private async _selectModel(preferredModelId?: string): Promise<vscode.LanguageModelChat | undefined> {

@@ -170,7 +170,7 @@ export class EditCodeIntent implements IIntent {
 		}
 
 		({ conversation, request } = await this._handleCodesearch(conversation, request, location, stream, token, documentContext, chatTelemetry));
-		return this.instantiationService.createInstance(EditIntentRequestHandler, this, conversation, request, stream, token, documentContext, location, chatTelemetry, this.getIntentHandlerOptions(request), onPaused).getResult();
+		return this.instantiationService.createInstance(EditIntentRequestHandler, this, conversation, request, stream, token, documentContext, agentName, location, chatTelemetry, this.getIntentHandlerOptions(request), onPaused).getResult();
 	}
 
 	protected getIntentHandlerOptions(_request: vscode.ChatRequest): IDefaultIntentRequestHandlerOptions | undefined {
@@ -201,6 +201,7 @@ class EditIntentRequestHandler {
 		private readonly stream: vscode.ChatResponseStream,
 		private readonly token: vscode.CancellationToken,
 		private readonly documentContext: IDocumentContext | undefined,
+		private readonly agentName: string,
 		private readonly location: ChatLocation,
 		private readonly chatTelemetry: ChatTelemetryBuilder,
 		private readonly handlerOptions: IDefaultIntentRequestHandlerOptions | undefined,
@@ -223,6 +224,7 @@ class EditIntentRequestHandler {
 			this.chatTelemetry,
 			this.handlerOptions,
 			this.onPaused,
+			this.agentName,
 		);
 		const result = await actual.getResult();
 

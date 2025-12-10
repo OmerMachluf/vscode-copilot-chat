@@ -49,8 +49,11 @@ export interface IAgentInstructionService {
 	 * Load and compose all instructions for an agent.
 	 * Instructions are loaded in order (later overrides earlier):
 	 * 1. Built-in default (assets/agents/{agent}.agent.md)
-	 * 2. Global workspace instructions (.github/instructions/*.md)
-	 * 3. Agent-specific workspace instructions (.github/agents/{agent}/*.md)
+	 * 2. Global workspace instructions (.github/instructions/*instructions*.md)
+	 * 3. Agent-specific workspace instructions (.github/agents/{agent}/*instructions*.md)
+	 *
+	 * Note: Only files with 'instructions' in their name are loaded automatically.
+	 * Other files (skills, knowledge bases) can be referenced and read on-demand.
 	 */
 	loadInstructions(agentId: string): Promise<ComposedInstructions>;
 
@@ -62,7 +65,9 @@ export interface IAgentInstructionService {
 
 	/**
 	 * Get agent-specific instructions from the workspace.
-	 * Loads from .github/agents/{agentId}/*.md
+	 * Loads from .github/agents/{agentId}/*instructions*.md
+	 * Only files with 'instructions' in their name are loaded automatically.
+	 * Other files in the agent folder can be read on-demand by other instructions.
 	 */
 	getAgentInstructions(agentId: string): Promise<string[]>;
 
@@ -238,7 +243,7 @@ export class AgentInstructionService implements IAgentInstructionService {
 		try {
 			const entries = await this.fileSystemService.readDirectory(dirUri);
 			const mdFiles = entries
-				.filter(([name, type]) => type === FileType.File && name.endsWith('.md'))
+				.filter(([name, type]) => type === FileType.File && name.endsWith('.md') && name.includes('instructions'))
 				.sort(([a], [b]) => a.localeCompare(b)); // Sort alphabetically for consistent ordering
 
 			const contents: string[] = [];

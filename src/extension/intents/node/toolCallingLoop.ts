@@ -71,6 +71,11 @@ export interface IToolCallingLoopOptions {
 	 * The current chat request
 	 */
 	request: ChatRequest;
+	/**
+	 * The name of the agent handling this request.
+	 * Used to load agent-specific instructions.
+	 */
+	agentName?: string;
 }
 
 export interface IToolCallingResponseEvent {
@@ -149,6 +154,7 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 			stream: outputStream,
 			conversation: this.options.conversation,
 			chatVariables,
+			agentName: this.options.agentName,
 			tools: {
 				toolReferences: request.toolReferences.map(InternalToolReference.from),
 				toolInvocationToken: request.toolInvocationToken,
