@@ -18,6 +18,9 @@ import { DefaultIntentRequestHandler, IDefaultIntentRequestHandlerOptions } from
 import { getContributedToolName } from '../tools/common/toolNames';
 import { IToolsService } from '../tools/common/toolsService';
 import { WorkerToolSet } from './workerToolsService';
+import { injectSubTaskResultsIntoContext } from './injectSubTaskResults';
+import { SubTaskResultAggregator } from './subTaskAggregator';
+import { ISubTaskManager } from './subTaskManager';
 
 export const IAgentRunner = createDecorator<IAgentRunner>('agentRunner');
 
@@ -301,6 +304,18 @@ Do NOT use paths relative to any other workspace folder.`);
 					'copilot', // agentName - orchestrator agents use 'copilot' as the agent name
 				);
 				result = await handler.getResult();
+			}
+
+			// Inject sub-task results if applicable
+			if (result.metadata && Array.isArray((result.metadata as any).subTaskIds)) {
+				try {
+					const aggregator = new SubTaskResultAggregator();
+					const subTaskManager = this._instantiationService.invokeFunction(accessor => accessor.get(ISubTaskManager));
+					await injectSubTaskResultsIntoContext(result.metadata, (result.metadata as any).subTaskIds, subTaskManager, aggregator);
+				} catch (e) {
+					// eslint-disable-next-line no-console
+					console.warn('Failed to inject sub-task results:', e);
+				}
 			}
 
 			return {

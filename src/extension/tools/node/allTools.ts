@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import './a2aTools';
+import './a2aSubTaskCompleteTool';
 import './applyPatchTool';
 import './codebaseTool';
 import './createDirectoryTool';
