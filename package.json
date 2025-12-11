@@ -23,7 +23,7 @@
 	"icon": "assets/copilot.png",
 	"pricing": "Trial",
 	"engines": {
-		"vscode": "^1.108.0",
+		"vscode": "^1.107.0",
 		"npm": ">=9.0.0",
 		"node": ">=22.14.0"
 	},
@@ -1670,6 +1670,184 @@
 					},
 					"required": ["taskId"]
 				}
+			},
+			{
+				"name": "copilot_a2aSpawnSubTask",
+				"toolReferenceName": "a2a_spawnSubTask",
+				"displayName": "Spawn Sub-Task",
+				"modelDescription": "Spawn a single sub-task to be executed by a specialized agent.",
+				"userDescription": "Spawn a sub-task",
+				"icon": "$(split-horizontal)",
+				"tags": ["vscode_codesearch"],
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"agentType": { "type": "string", "description": "The type of agent to execute the sub-task (e.g., '@architect', '@reviewer', '@agent')" },
+						"prompt": { "type": "string", "description": "The prompt/instruction for the sub-task" },
+						"expectedOutput": { "type": "string", "description": "Description of what output is expected" },
+						"model": { "type": "string", "description": "Optional model override" },
+						"targetFiles": { "type": "array", "items": { "type": "string" }, "description": "Files this task intends to modify" }
+					},
+					"required": ["agentType", "prompt", "expectedOutput"]
+				}
+			},
+			{
+				"name": "copilot_a2aSpawnParallelSubTasks",
+				"toolReferenceName": "a2a_spawnParallelSubTasks",
+				"displayName": "Spawn Parallel Sub-Tasks",
+				"modelDescription": "Spawn multiple sub-tasks to run in parallel.",
+				"userDescription": "Spawn parallel sub-tasks",
+				"icon": "$(split-horizontal)",
+				"tags": ["vscode_codesearch"],
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"subtasks": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"properties": {
+									"agentType": { "type": "string" },
+									"prompt": { "type": "string" },
+									"expectedOutput": { "type": "string" },
+									"model": { "type": "string" },
+									"targetFiles": { "type": "array", "items": { "type": "string" } }
+								},
+								"required": ["agentType", "prompt", "expectedOutput"]
+							}
+						}
+					},
+					"required": ["subtasks"]
+				}
+			},
+			{
+				"name": "copilot_a2aAwaitSubTasks",
+				"toolReferenceName": "a2a_awaitSubTasks",
+				"displayName": "Await Sub-Tasks",
+				"modelDescription": "Wait for specific sub-tasks to complete.",
+				"userDescription": "Await sub-tasks",
+				"icon": "$(clock)",
+				"tags": ["vscode_codesearch"],
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"subTaskIds": { "type": "array", "items": { "type": "string" } },
+						"timeout": { "type": "number" }
+					},
+					"required": ["subTaskIds"]
+				}
+			},
+			{
+				"name": "copilot_a2aNotifyOrchestrator",
+				"toolReferenceName": "a2a_notifyOrchestrator",
+				"displayName": "Notify Orchestrator",
+				"modelDescription": "Send a notification to the orchestrator.",
+				"userDescription": "Notify orchestrator",
+				"icon": "$(bell)",
+				"tags": ["vscode_codesearch"],
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"type": { "type": "string", "enum": ["status_update", "question", "completion", "error"] },
+						"content": { "type": "string" },
+						"metadata": { "type": "object" },
+						"priority": { "type": "string", "enum": ["high", "normal", "low"] }
+					},
+					"required": ["type", "content"]
+				}
+			},
+			{
+				"name": "a2a_subtask_complete",
+				"toolReferenceName": "a2a_subtask_complete",
+				"displayName": "Complete Sub-Task",
+				"modelDescription": "Mark a sub-task as completed and report results.",
+				"userDescription": "Complete sub-task",
+				"icon": "$(check)",
+				"tags": ["vscode_codesearch"],
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"subTaskId": { "type": "string" },
+						"status": { "type": "string", "enum": ["success", "partial", "failed"] },
+						"output": { "type": "string" },
+						"outputFile": { "type": "string" },
+						"metadata": { "type": "object" },
+						"error": { "type": "string" }
+					},
+					"required": ["subTaskId", "status", "output"]
+				}
+			},
+			{
+				"name": "copilot_orchestratorReassignAgent",
+				"toolReferenceName": "orchestrator_reassignAgent",
+				"displayName": "Reassign Agent",
+				"modelDescription": "Reassign a worker to a different agent type.",
+				"userDescription": "Reassign agent",
+				"icon": "$(person)",
+				"tags": ["vscode_codesearch"],
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"workerId": { "type": "string" },
+						"newAgentType": { "type": "string" },
+						"reason": { "type": "string" }
+					},
+					"required": ["workerId", "newAgentType"]
+				}
+			},
+			{
+				"name": "copilot_orchestratorChangeModel",
+				"toolReferenceName": "orchestrator_changeModel",
+				"displayName": "Change Model",
+				"modelDescription": "Change the AI model for a worker.",
+				"userDescription": "Change model",
+				"icon": "$(server)",
+				"tags": ["vscode_codesearch"],
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"workerId": { "type": "string" },
+						"newModelId": { "type": "string" },
+						"reason": { "type": "string" }
+					},
+					"required": ["workerId", "newModelId"]
+				}
+			},
+			{
+				"name": "copilot_orchestratorReinitializeWorker",
+				"toolReferenceName": "orchestrator_reinitializeWorker",
+				"displayName": "Reinitialize Worker",
+				"modelDescription": "Reinitialize a worker to a clean state.",
+				"userDescription": "Reinitialize worker",
+				"icon": "$(refresh)",
+				"tags": ["vscode_codesearch"],
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"workerId": { "type": "string" },
+						"newInstructions": { "type": "string" },
+						"clearHistory": { "type": "boolean" }
+					},
+					"required": ["workerId"]
+				}
+			},
+			{
+				"name": "copilot_orchestratorRedirectWorker",
+				"toolReferenceName": "orchestrator_redirectWorker",
+				"displayName": "Redirect Worker",
+				"modelDescription": "Redirect a worker with new instructions.",
+				"userDescription": "Redirect worker",
+				"icon": "$(arrow-right)",
+				"tags": ["vscode_codesearch"],
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"workerId": { "type": "string" },
+						"redirectPrompt": { "type": "string" },
+						"preserveHistory": { "type": "boolean" }
+					},
+					"required": ["workerId", "redirectPrompt"]
+				}
 			}
 		],
 		"languageModelToolSets": [
@@ -1740,6 +1918,18 @@
 					"orchestrator_cancelTask",
 					"orchestrator_retryTask",
 					"orchestrator_completeTask"
+				]
+			},
+			{
+				"name": "agentToAgent",
+				"description": "Agent-to-Agent communication and sub-task management tools",
+				"icon": "$(organization)",
+				"tools": [
+					"a2a_spawnSubTask",
+					"a2a_spawnParallelSubTasks",
+					"a2a_awaitSubTasks",
+					"a2a_notifyOrchestrator",
+					"a2a_subtask_complete"
 				]
 			},
 			{
@@ -2265,6 +2455,16 @@
 				],
 				"modes": [
 					"ask"
+				]
+			},
+			{
+				"id": "claude-code",
+				"name": "claude-code",
+				"fullName": "Claude Code",
+				"description": "Claude Code integration",
+				"isDefault": false,
+				"locations": [
+					"panel"
 				]
 			}
 		],

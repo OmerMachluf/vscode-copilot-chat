@@ -9,9 +9,7 @@ import { CancellationToken, CancellationTokenSource } from '../../util/vs/base/c
 import { Emitter, Event } from '../../util/vs/base/common/event';
 import { Disposable } from '../../util/vs/base/common/lifecycle';
 import { generateUuid } from '../../util/vs/base/common/uuid';
-import { createDecorator } from '../../util/vs/platform/instantiation/common/instantiation';
-import { IAgentHistoryEntry, IAgentRunner, IAgentRunOptions } from './agentRunner';
-import { IOrchestratorPermissions } from './orchestratorPermissions';
+import { IAgentRunner, IAgentRunOptions, ISubTask, ISubTaskCreateOptions, ISubTaskManager, ISubTaskResult } from './orchestratorInterfaces';
 import {
 	hashPrompt,
 	IEmergencyStopOptions,
@@ -23,237 +21,27 @@ import {
 	ITokenUsage,
 } from './safetyLimits';
 import { IWorkerToolsService } from './workerToolsService';
+export { ISubTask, ISubTaskCreateOptions, ISubTaskManager, ISubTaskResult };
 
 /**
  * Represents a sub-task spawned by a parent agent.
  * Sub-tasks execute within the parent's worktree context.
  */
-export interface ISubTask {
-	/** Unique identifier for this sub-task */
-	id: string;
-	/** ID of the parent worker that spawned this sub-task */
-	parentWorkerId: string;
-	/** ID of the parent task (for tracking hierarchy) */
-	parentTaskId: string;
-	/** Plan ID this sub-task belongs to */
-	planId: string;
-	/** Path to the worktree (inherited from parent) */
-	worktreePath: string;
-	/** Agent type to use (e.g., '@architect', '@reviewer') */
-	agentType: string;
-	/** The prompt/instruction for the sub-task */
-	prompt: string;
-	/** Description of what output is expected */
-	expectedOutput: string;
-	/** Optional model override */
-	model?: string;
-	/** Depth level: 0=main task, 1=sub-task, 2=sub-sub-task */
-	depth: number;
-	/** Current status of the sub-task */
-	status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
-	/** Result of the sub-task execution */
-	result?: ISubTaskResult;
-	/** Files this task intends to modify (for conflict detection) */
-	targetFiles?: string[];
-	/** Timestamp when the sub-task was created */
-	createdAt: number;
-	/** Timestamp when the sub-task completed */
-	completedAt?: number;
-	/** Inherited permissions from parent */
-	inheritedPermissions?: IOrchestratorPermissions;
-}
 
 /**
  * Result from a sub-task execution.
  */
-export interface ISubTaskResult {
-	/** ID of the sub-task this result belongs to */
-	taskId: string;
-	/** Status of the execution */
-	status: 'success' | 'partial' | 'failed' | 'timeout';
-	/** The output/response from the sub-task */
-	output: string;
-	/** Optional file containing detailed output */
-	outputFile?: string;
-	/** Additional metadata from the execution */
-	metadata?: Record<string, unknown>;
-	/** Error message if failed */
-	error?: string;
-}
 
 /**
  * Options for creating a new sub-task.
  */
-export interface ISubTaskCreateOptions {
-	/** ID of the parent worker */
-	parentWorkerId: string;
-	/** ID of the parent task */
-	parentTaskId: string;
-	/** ID of the parent sub-task (if this is a nested sub-task) */
-	parentSubTaskId?: string;
-	/** Plan ID */
-	planId: string;
-	/** Worktree path (inherited from parent) */
-	worktreePath: string;
-	/** Agent type to execute the sub-task */
-	agentType: string;
-	/** The prompt/instruction */
-	prompt: string;
-	/** Expected output description */
-	expectedOutput: string;
-	/** Optional model override */
-	model?: string;
-	/** Current depth (will be incremented for sub-task) */
-	currentDepth: number;
-	/** Files this task intends to modify */
-	targetFiles?: string[];
-	/** Parent's conversation history for context */
-	parentHistory?: IAgentHistoryEntry[];
-	/** Inherited permissions from parent */
-	inheritedPermissions?: IOrchestratorPermissions;
-}
 
-export const ISubTaskManager = createDecorator<ISubTaskManager>('subTaskManager');
+
 
 /**
  * Service for managing sub-task spawning, execution, and lifecycle.
  */
-export interface ISubTaskManager {
-	readonly _serviceBrand: undefined;
 
-	/**
-	 * Maximum depth allowed for sub-tasks.
-	 * depth 0 = main task, depth 1 = sub-task, depth 2 = sub-sub-task
-	 */
-	readonly maxDepth: number;
-
-	/**
-	 * Get current safety limits configuration.
-	 */
-	readonly safetyLimits: ISafetyLimitsConfig;
-
-	/**
-	 * Create a new sub-task.
-	 * @param options Sub-task creation options
-	 * @returns The created sub-task
-	 * @throws Error if depth limit would be exceeded
-	 * @throws Error if rate limit exceeded
-	 * @throws Error if total sub-task limit exceeded
-	 * @throws Error if parallel sub-task limit exceeded
-	 * @throws Error if cycle detected
-	 */
-	createSubTask(options: ISubTaskCreateOptions): ISubTask;
-
-	/**
-	 * Get a sub-task by ID.
-	 */
-	getSubTask(id: string): ISubTask | undefined;
-
-	/**
-	 * Get all sub-tasks for a specific worker.
-	 */
-	getSubTasksForWorker(workerId: string): ISubTask[];
-
-	/**
-	 * Get all sub-tasks for a specific parent task.
-	 */
-	getSubTasksForParentTask(parentTaskId: string): ISubTask[];
-
-	/**
-	 * Get running sub-tasks count for a worker.
-	 */
-	getRunningSubTasksCount(workerId: string): number;
-
-	/**
-	 * Get total sub-tasks count for a worker.
-	 */
-	getTotalSubTasksCount(workerId: string): number;
-
-	/**
-	 * Update the status of a sub-task.
-	 */
-	updateStatus(id: string, status: ISubTask['status'], result?: ISubTaskResult): void;
-
-	/**
-	 * Execute a sub-task.
-	 * @param id Sub-task ID
-	 * @param token Cancellation token
-	 * @returns The result of the execution
-	 */
-	executeSubTask(id: string, token: CancellationToken): Promise<ISubTaskResult>;
-
-	/**
-	 * Cancel a running sub-task.
-	 */
-	cancelSubTask(id: string): void;
-
-	/**
-	 * Check if files have conflicts with running sub-tasks.
-	 * @param targetFiles Files to check
-	 * @param excludeTaskId Task ID to exclude from check (for self-check)
-	 * @returns Array of conflicting task IDs
-	 */
-	checkFileConflicts(targetFiles: string[], excludeTaskId?: string): string[];
-
-	/**
-	 * Get the current depth for a worker.
-	 * Returns 0 if the worker is a main task, or the depth of its sub-task chain.
-	 */
-	getTaskDepth(taskId: string): number;
-
-	/**
-	 * Track cost for a sub-task execution.
-	 */
-	trackSubTaskCost(subTaskId: string, usage: ITokenUsage, model: string): void;
-
-	/**
-	 * Get total cost for all sub-tasks of a worker.
-	 */
-	getTotalCostForWorker(workerId: string): number;
-
-	/**
-	 * Get cost details for a specific sub-task.
-	 */
-	getSubTaskCost(subTaskId: string): ISubTaskCost | undefined;
-
-	/**
-	 * Emergency stop to kill all sub-tasks in scope.
-	 */
-	emergencyStop(options: IEmergencyStopOptions): Promise<IEmergencyStopResult>;
-
-	/**
-	 * Update safety limits configuration.
-	 */
-	updateSafetyLimits(config: Partial<ISafetyLimitsConfig>): void;
-
-	/**
-	 * Reset all tracking for a worker (on worker completion/disposal).
-	 */
-	resetWorkerTracking(workerId: string): void;
-
-	/**
-	 * Event fired when a sub-task status changes.
-	 */
-	onDidChangeSubTask: Event<ISubTask>;
-
-	/**
-	 * Event fired when a sub-task completes.
-	 */
-	onDidCompleteSubTask: Event<ISubTask>;
-
-	/**
-	 * Event fired on emergency stop.
-	 */
-	onEmergencyStop: Event<IEmergencyStopOptions>;
-
-	/**
-	 * Check if a sub-task has permission for an action based on inherited permissions.
-	 * @param subTaskId Sub-task ID
-	 * @param action Action to check
-	 * @returns true if auto-approved by inherited permissions
-	 */
-	checkPermission(subTaskId: string, action: string): boolean;
-}
 
 /**
  * Implementation of the sub-task manager service.
@@ -557,6 +345,9 @@ Do not spawn additional sub-tasks unless absolutely necessary.`,
 		// Execute the agent
 		const result = await this._agentRunner.run(runOptions, streamCollector);
 
+		// Apply any buffered edits
+		await streamCollector.applyBufferedEdits();
+
 		return {
 			taskId: subTask.id,
 			status: result.success ? 'success' : 'failed',
@@ -768,9 +559,40 @@ Do not spawn additional sub-tasks unless absolutely necessary.`,
 class SubTaskStreamCollector implements vscode.ChatResponseStream {
 	private _content = '';
 	private _parts: string[] = [];
+	private _bufferedEdits = new Map<string, vscode.TextEdit[]>();
+	private _bufferedNotebookEdits = new Map<string, vscode.NotebookEdit[]>();
 
 	getContent(): string {
 		return this._content || this._parts.join('\n');
+	}
+
+	async applyBufferedEdits(): Promise<void> {
+		if (this._bufferedEdits.size === 0 && this._bufferedNotebookEdits.size === 0) {
+			return;
+		}
+
+		const workspaceEdit = new vscode.WorkspaceEdit();
+
+		for (const [uriStr, edits] of this._bufferedEdits) {
+			const uri = vscode.Uri.parse(uriStr);
+			// Ensure file exists
+			workspaceEdit.createFile(uri, { ignoreIfExists: true });
+			workspaceEdit.set(uri, edits);
+		}
+
+		for (const [uriStr, edits] of this._bufferedNotebookEdits) {
+			const uri = vscode.Uri.parse(uriStr);
+			workspaceEdit.set(uri, edits);
+		}
+
+		try {
+			const success = await vscode.workspace.applyEdit(workspaceEdit);
+			if (!success) {
+				console.error('[SubTaskStreamCollector] Failed to apply buffered edits');
+			}
+		} catch (err) {
+			console.error('[SubTaskStreamCollector] Error applying buffered edits:', err);
+		}
 	}
 
 	markdown(value: string | vscode.MarkdownString): void {
@@ -817,12 +639,26 @@ class SubTaskStreamCollector implements vscode.ChatResponseStream {
 		// Not collected for sub-tasks
 	}
 
-	textEdit(_target: vscode.Uri, _edits: any): void {
-		// Not collected for sub-tasks
+	textEdit(target: vscode.Uri, edits: vscode.TextEdit | vscode.TextEdit[]): void {
+		const uriStr = target.toString();
+		let existing = this._bufferedEdits.get(uriStr) || [];
+		if (Array.isArray(edits)) {
+			existing.push(...edits);
+		} else {
+			existing.push(edits);
+		}
+		this._bufferedEdits.set(uriStr, existing);
 	}
 
-	notebookEdit(_target: vscode.Uri, _edits: any): void {
-		// Not collected for sub-tasks
+	notebookEdit(target: vscode.Uri, edits: vscode.NotebookEdit | vscode.NotebookEdit[]): void {
+		const uriStr = target.toString();
+		let existing = this._bufferedNotebookEdits.get(uriStr) || [];
+		if (Array.isArray(edits)) {
+			existing.push(...edits);
+		} else {
+			existing.push(edits);
+		}
+		this._bufferedNotebookEdits.set(uriStr, existing);
 	}
 
 	externalEdit<T>(_target: vscode.Uri | vscode.Uri[], callback: () => Thenable<T>): Thenable<T> {

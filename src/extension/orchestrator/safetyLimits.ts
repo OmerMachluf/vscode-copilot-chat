@@ -213,9 +213,9 @@ export interface ISafetyLimitsService {
  */
 const DEFAULT_SAFETY_LIMITS: ISafetyLimitsConfig = {
 	maxSubTaskDepth: 2,
-	maxSubTasksPerWorker: 10,
-	maxParallelSubTasks: 5,
-	subTaskSpawnRateLimit: 20,
+	maxSubTasksPerWorker: 100,
+	maxParallelSubTasks: 20,
+	subTaskSpawnRateLimit: 100,
 };
 
 /**

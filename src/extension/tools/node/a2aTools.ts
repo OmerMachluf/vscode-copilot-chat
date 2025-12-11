@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { CancellationToken, LanguageModelTextPart, LanguageModelToolInvocationOptions, LanguageModelToolInvocationPrepareOptions, LanguageModelToolResult, ProviderResult } from 'vscode';
+import { CancellationToken, LanguageModelTextPart, LanguageModelToolInvocationOptions, LanguageModelToolInvocationPrepareOptions, LanguageModelToolResult, ProviderResult, workspace } from 'vscode';
 import { ILogService } from '../../../platform/log/common/logService';
 import { generateUuid } from '../../../util/vs/base/common/uuid';
 import { IOrchestratorQueueService } from '../../orchestrator/orchestratorQueue';
@@ -60,8 +60,8 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 	) { }
 
 	get enabled(): boolean {
-		// Only enabled when running within a worker context
-		return this._workerContext !== undefined;
+		// Always enabled to allow top-level usage
+		return true;
 	}
 
 	prepareInvocation(_options: LanguageModelToolInvocationPrepareOptions<SpawnSubTaskParams>, _token: CancellationToken): ProviderResult<any> {
@@ -72,20 +72,19 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 		options: LanguageModelToolInvocationOptions<SpawnSubTaskParams>,
 		token: CancellationToken
 	): Promise<LanguageModelToolResult> {
-		// Validate we have worker context
-		if (!this._workerContext?.workerId) {
-			return new LanguageModelToolResult([
-				new LanguageModelTextPart(
-					'ERROR: This tool can only be used within a worker context. ' +
-					'Sub-tasks must be spawned from an agent running as part of a plan.'
-				),
-			]);
+		// Use worker context if available, otherwise default to user session
+		let workerId = this._workerContext?.workerId;
+		if (!workerId) {
+			workerId = 'user-session-v3';
 		}
+		const taskId = this._workerContext?.taskId ?? 'user-task';
+		const planId = this._workerContext?.planId ?? 'user-plan';
+		const worktreePath = this._workerContext?.worktreePath ?? workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+		const currentDepth = this._workerContext?.depth ?? 0;
 
 		const { agentType, prompt, expectedOutput, model, targetFiles } = options.input;
 
 		// Check depth limit before creating
-		const currentDepth = this._workerContext.depth ?? 0;
 		if (currentDepth >= this._subTaskManager.maxDepth) {
 			return new LanguageModelToolResult([
 				new LanguageModelTextPart(
@@ -114,10 +113,10 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 		try {
 			// Create sub-task options
 			const createOptions: ISubTaskCreateOptions = {
-				parentWorkerId: this._workerContext.workerId,
-				parentTaskId: this._workerContext.taskId ?? this._workerContext.workerId,
-				planId: this._workerContext.planId ?? 'standalone',
-				worktreePath: this._workerContext.worktreePath,
+				parentWorkerId: workerId,
+				parentTaskId: taskId,
+				planId: planId,
+				worktreePath: worktreePath,
 				agentType,
 				prompt,
 				expectedOutput,
@@ -180,7 +179,7 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 	) { }
 
 	get enabled(): boolean {
-		return this._workerContext !== undefined;
+		return true;
 	}
 
 	prepareInvocation(_options: LanguageModelToolInvocationPrepareOptions<SpawnParallelSubTasksParams>, _token: CancellationToken): ProviderResult<any> {
@@ -191,13 +190,15 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 		options: LanguageModelToolInvocationOptions<SpawnParallelSubTasksParams>,
 		token: CancellationToken
 	): Promise<LanguageModelToolResult> {
-		if (!this._workerContext?.workerId) {
-			return new LanguageModelToolResult([
-				new LanguageModelTextPart(
-					'ERROR: This tool can only be used within a worker context.'
-				),
-			]);
+		// Use worker context if available, otherwise default to user session
+		let workerId = this._workerContext?.workerId;
+		if (!workerId) {
+			workerId = 'user-session-v3';
 		}
+		const taskId = this._workerContext?.taskId ?? 'user-task';
+		const planId = this._workerContext?.planId ?? 'user-plan';
+		const worktreePath = this._workerContext?.worktreePath ?? workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+		const currentDepth = this._workerContext?.depth ?? 0;
 
 		const { subtasks } = options.input;
 
@@ -206,8 +207,6 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 				new LanguageModelTextPart('ERROR: No subtasks provided.'),
 			]);
 		}
-
-		const currentDepth = this._workerContext.depth ?? 0;
 
 		// Validate depth limit
 		if (currentDepth >= this._subTaskManager.maxDepth) {
@@ -261,10 +260,10 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 			const createdTasks: ISubTask[] = [];
 			for (const taskConfig of subtasks) {
 				const createOptions: ISubTaskCreateOptions = {
-					parentWorkerId: this._workerContext.workerId,
-					parentTaskId: this._workerContext.taskId ?? this._workerContext.workerId,
-					planId: this._workerContext.planId ?? 'standalone',
-					worktreePath: this._workerContext.worktreePath,
+					parentWorkerId: workerId,
+					parentTaskId: taskId,
+					planId: planId,
+					worktreePath: worktreePath,
 					agentType: taskConfig.agentType,
 					prompt: taskConfig.prompt,
 					expectedOutput: taskConfig.expectedOutput,

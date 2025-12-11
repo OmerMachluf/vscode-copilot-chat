@@ -4,7 +4,6 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { BasePromptElementProps, PromptElement, PromptReference, PromptSizing, TextChunk } from '@vscode/prompt-tsx';
-import type { ChatLanguageModelToolReference } from 'vscode';
 import { ConfigKey } from '../../../../platform/configuration/common/configurationService';
 import { CustomInstructionsKind, ICustomInstructions, ICustomInstructionsService } from '../../../../platform/customInstructions/common/customInstructionsService';
 import { IFileSystemService } from '../../../../platform/filesystem/common/fileSystemService';
@@ -143,6 +142,7 @@ export class CustomInstructions extends PromptElement<CustomInstructionsProps> {
 			for (const uri of agentInstructionUris) {
 				instructionFiles.add(uri);
 			}
+			const hasSeen = new ResourceSet();
 
 			for (const instructionFile of instructionFiles) {
 				if (!hasSeen.has(instructionFile)) {
@@ -318,9 +318,6 @@ export class CustomInstructions extends PromptElement<CustomInstructionsProps> {
 				<references value={[new CustomInstructionPromptReference(instructions, instructions.content.map(instruction => instruction.instruction))]} />
 				{instructions.content.map(instruction => <TextChunk>{instruction.instruction}</TextChunk>)}
 			</Tag>;
-		} catch (e) {
-			this.logService.debug(`Instruction file not found: ${fileUri.toString()}`);
-			return undefined;
 		}
 	}
 

@@ -90,7 +90,6 @@ class ChatAgents implements IDisposable {
 		this._disposables.add(this.registerStepPlannerAgent());
 		this._disposables.add(this.registerArchitectAgent());
 		this._disposables.add(this.registerReviewerAgent());
-		this._disposables.add(this.registerEditorDefaultAgent());
 		this._disposables.add(this.registerNotebookEditorDefaultAgent());
 		this._disposables.add(this.registerNotebookDefaultAgent());
 		this._disposables.add(this.registerWorkspaceAgent());

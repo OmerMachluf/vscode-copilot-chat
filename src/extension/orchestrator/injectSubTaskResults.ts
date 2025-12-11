@@ -3,8 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { SubTaskResultAggregator, IAggregatedResults } from '../subTaskAggregator';
-import { ISubTaskManager, ISubTaskResult } from '../subTaskManager';
+import { ISubTaskManager } from './orchestratorInterfaces';
+import { IAggregatedResults, SubTaskResultAggregator } from './subTaskAggregator';
 
 export async function injectSubTaskResultsIntoContext(
 	parentAgentContext: any,

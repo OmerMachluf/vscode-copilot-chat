@@ -75,6 +75,8 @@ import { IWorkspaceFileIndex, WorkspaceFileIndex } from '../../../platform/works
 import { IInstantiationServiceBuilder } from '../../../util/common/services';
 import { SyncDescriptor } from '../../../util/vs/platform/instantiation/common/descriptors';
 import { CommandServiceImpl, ICommandService } from '../../commands/node/commandService';
+import { ICopilotInlineCompletionItemProviderService } from '../../completions/common/copilotInlineCompletionItemProviderService';
+import { CopilotInlineCompletionItemProviderService } from '../../completions/vscode-node/copilotInlineCompletionItemProviderService';
 import { ApiEmbeddingsIndex, IApiEmbeddingsIndex } from '../../context/node/resolvers/extensionApi';
 import { IPromptWorkspaceLabels, PromptWorkspaceLabels } from '../../context/node/resolvers/promptWorkspaceLabels';
 import { ChatAgentService } from '../../conversation/vscode-node/chatParticipants';
@@ -93,9 +95,11 @@ import { ILanguageToolsProvider, LanguageToolsProvider } from '../../onboardDebu
 import { AgentDiscoveryService, IAgentDiscoveryService } from '../../orchestrator/agentDiscoveryService';
 import { AgentInstructionService, IAgentInstructionService } from '../../orchestrator/agentInstructionService';
 import { AgentRunnerService, IAgentRunner } from '../../orchestrator/agentRunner';
+import { IOrchestratorQueueService, OrchestratorQueueService } from '../../orchestrator/orchestratorQueue';
 import { IOrchestratorService, OrchestratorService } from '../../orchestrator/orchestratorServiceV2';
+import { ISafetyLimitsService, SafetyLimitsService } from '../../orchestrator/safetyLimits';
 import { ISubTaskManager, SubTaskManager } from '../../orchestrator/subTaskManager';
-import { IWorkerToolsService, WorkerToolsService } from '../../orchestrator/workerToolsService';
+import { GlobalWorkerContext, IWorkerContext, IWorkerToolsService, WorkerToolsService } from '../../orchestrator/workerToolsService';
 import { ChatMLFetcherImpl } from '../../prompt/node/chatMLFetcher';
 import { IFeedbackReporter } from '../../prompt/node/feedbackReporter';
 import { IPromptVariablesService } from '../../prompt/node/promptVariablesService';
@@ -117,8 +121,6 @@ import { LanguageContextServiceImpl } from '../../typescriptContext/vscode-node/
 import { IWorkspaceListenerService } from '../../workspaceRecorder/common/workspaceListenerService';
 import { WorkspacListenerService } from '../../workspaceRecorder/vscode-node/workspaceListenerService';
 import { registerServices as registerCommonServices } from '../vscode/services';
-import { ICopilotInlineCompletionItemProviderService } from '../../completions/common/copilotInlineCompletionItemProviderService';
-import { CopilotInlineCompletionItemProviderService } from '../../completions/vscode-node/copilotInlineCompletionItemProviderService';
 
 // ###########################################################################################
 // ###                                                                                     ###
@@ -178,7 +180,10 @@ export function registerServices(builder: IInstantiationServiceBuilder, extensio
 	builder.define(IAgentDiscoveryService, new SyncDescriptor(AgentDiscoveryService));
 	builder.define(IAgentRunner, new SyncDescriptor(AgentRunnerService));
 	builder.define(IWorkerToolsService, new SyncDescriptor(WorkerToolsService));
+	builder.define(IWorkerContext, new SyncDescriptor(GlobalWorkerContext));
+	builder.define(ISafetyLimitsService, new SyncDescriptor(SafetyLimitsService));
 	builder.define(ISubTaskManager, new SyncDescriptor(SubTaskManager));
+	builder.define(IOrchestratorQueueService, new SyncDescriptor(OrchestratorQueueService));
 	builder.define(IOrchestratorService, new SyncDescriptor(OrchestratorService));
 	builder.define(IParserService, new SyncDescriptor(ParserServiceImpl, [/*useWorker*/ true]));
 	builder.define(IIntentService, new SyncDescriptor(IntentService));

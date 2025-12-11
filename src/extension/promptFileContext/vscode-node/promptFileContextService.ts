@@ -217,7 +217,7 @@ export class PromptFileContextContribution extends Disposable {
 	}
 	/// TODO OMERM TEST THIS
 	private getToolNames(): string[] {
-		return ['execute', 'read', 'edit', 'search', 'web', 'agent', 'todo', 'orchestrator'];
+		return ['execute', 'read', 'edit', 'search', 'web', 'agent', 'todo', 'orchestrator', 'agentToAgent'];
 		// return ['edit', 'runNotebooks', 'search', 'new', 'runCommands', 'runTasks', 'orchestrator', 'runSubagent', 'usages', 'vscodeAPI', 'problems', 'changes', 'testFailure', 'openSimpleBrowser', 'fetch', 'githubRepo', 'extensions', 'todos'];
 	}
 

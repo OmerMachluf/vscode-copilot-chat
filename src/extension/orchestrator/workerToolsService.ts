@@ -56,6 +56,13 @@ class WorkerContextImpl implements IWorkerContext {
 	) { }
 }
 
+export class GlobalWorkerContext implements IWorkerContext {
+	readonly _serviceBrand: undefined;
+	readonly workerId = '';
+	readonly worktreePath = '';
+	readonly depth = 0;
+}
+
 /**
  * Service for managing per-worker tool sets.
  * Each worker gets its own set of tools scoped to its worktree.
@@ -492,7 +499,8 @@ export class WorkerToolSet extends Disposable implements IToolsService {
 					return true;
 				}
 
-				return false;
+				// Default to enabled if not explicitly disabled
+				return true;
 			});
 	}
 
