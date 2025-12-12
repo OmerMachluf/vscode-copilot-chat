@@ -619,6 +619,8 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			case 'status_update':
 				if (message.content === 'idle') {
 					this._onOrchestratorEvent.fire({ type: 'worker.idle', workerId: message.workerId });
+					// Notify orchestrator that worker has completed (similar to A2A subtask completion)
+					this._notifyOrchestratorOfWorkerCompletion(message);
 				}
 				break;
 
@@ -692,6 +694,85 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				worker.addAssistantMessage(`[System: Auto-response] ${approved ? 'Approved' : 'Denied'}`);
 			}
 		}
+	}
+
+	/**
+	 * Notify the orchestrator that a worker has completed (gone idle).
+	 * This adds a notification to the inbox similar to A2A subtask completion.
+	 */
+	private _notifyOrchestratorOfWorkerCompletion(message: IOrchestratorQueueMessage): void {
+		const worker = this._workers.get(message.workerId);
+		const task = this._tasks.find(t => t.workerId === message.workerId);
+
+		if (!worker || !task) {
+			return;
+		}
+
+		// Build notification content with guidance for the orchestrator
+		const workerState = worker.state;
+		const worktreePath = workerState.worktreePath;
+		// Branch name is derived from the worker/task name
+		const branchName = workerState.name || task.name;
+
+		const notificationContent = {
+			type: 'worker_completion',
+			workerId: message.workerId,
+			taskId: task.id,
+			taskName: task.name,
+			planId: task.planId,
+			branchName,
+			worktreePath,
+			status: workerState.errorMessage ? 'failed' : 'success',
+			error: workerState.errorMessage,
+			// Include last few messages as summary
+			summary: workerState.messages?.slice(-3).map((m: { content: string }) => m.content).join('\n') || 'Worker completed.',
+			guidance: this._buildOrchestratorGuidance(task, branchName, workerState)
+		};
+
+		// Add to inbox for orchestrator to process
+		this._inbox.addItem({
+			id: generateUuid(),
+			message: {
+				...message,
+				type: 'completion',
+				content: notificationContent
+			},
+			status: 'pending',
+			requiresUserAction: false, // Orchestrator agent can handle this
+			createdAt: Date.now()
+		});
+
+		// Also show a VS Code notification
+		vscode.window.showInformationMessage(
+			`Worker ${message.workerId} completed task "${task.name}". Review in Orchestrator Dashboard.`
+		);
+	}
+
+	/**
+	 * Build guidance text for the orchestrator on what to do with the completed worker.
+	 */
+	private _buildOrchestratorGuidance(task: WorkerTask, branchName: string, workerState: WorkerSessionState): string {
+		const lines: string[] = [];
+		lines.push('**YOUR NEXT STEP:** As the Orchestrator, you must decide what to do:');
+		lines.push('');
+
+		if (workerState.errorMessage) {
+			lines.push(`⚠️ Worker encountered an error: ${workerState.errorMessage}`);
+			lines.push('');
+			lines.push('Options:');
+			lines.push(`- **Retry**: Use \`orchestrator_retryTask\` with taskId "${task.id}" to restart`);
+			lines.push(`- **Send guidance**: Use \`orchestrator_sendMessage\` to give the worker more instructions`);
+			lines.push(`- **Cancel**: Use \`orchestrator_cancelTask\` to abort this task`);
+		} else {
+			lines.push('✅ Worker completed successfully.');
+			lines.push('');
+			lines.push('Options:');
+			lines.push(`1. **Review the work**: Check the worker's changes in branch "${branchName}"`);
+			lines.push(`2. **Merge and complete**: Run \`git merge\` to merge the branch, then call \`orchestrator_completeTask\` with taskId "${task.id}"`);
+			lines.push(`3. **Request changes**: Use \`orchestrator_sendMessage\` to give the worker additional instructions`);
+		}
+
+		return lines.join('\n');
 	}
 
 	private async _handlePermissionRequest(message: IOrchestratorQueueMessage): Promise<void> {

@@ -1762,19 +1762,22 @@
 				"name": "copilot_a2aSubTaskComplete",
 				"toolReferenceName": "a2a_subtask_complete",
 				"displayName": "Complete Sub-Task",
-				"modelDescription": "Mark a sub-task as completed and report results.",
+				"modelDescription": "Mark a sub-task as completed and report results. If commitMessage is provided and running in a worktree, commits changes, merges to parent branch, cleans up worktree, and reports status with files changed count or merge conflict errors.",
 				"userDescription": "Complete sub-task",
 				"icon": "$(check)",
 				"tags": ["vscode_codesearch"],
 				"inputSchema": {
 					"type": "object",
 					"properties": {
-						"subTaskId": { "type": "string" },
-						"status": { "type": "string", "enum": ["success", "partial", "failed"] },
-						"output": { "type": "string" },
-						"outputFile": { "type": "string" },
-						"metadata": { "type": "object" },
-						"error": { "type": "string" }
+						"subTaskId": { "type": "string", "description": "The ID of the sub-task being completed" },
+						"status": { "type": "string", "enum": ["success", "partial", "failed"], "description": "Completion status" },
+						"output": { "type": "string", "description": "Summary of the work completed" },
+						"outputFile": { "type": "string", "description": "Optional file containing detailed output" },
+						"metadata": { "type": "object", "description": "Additional metadata about the completion" },
+						"error": { "type": "string", "description": "Error message if status is failed" },
+						"commitMessage": { "type": "string", "description": "If provided, commits and merges changes before completing. Only works in worktree." },
+						"mergeStrategy": { "type": "string", "enum": ["merge", "squash", "rebase"], "description": "Merge strategy when commitMessage provided (default: squash)" },
+						"deleteBranchAfterMerge": { "type": "boolean", "description": "Delete source branch after merge (default: true)" }
 					},
 					"required": ["subTaskId", "status", "output"]
 				}

@@ -376,8 +376,32 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			this._logService.info(`[SubTaskManager] ========== executeSubTask COMPLETED for ${id} ==========`);
 			return result;
 		} catch (error) {
-			// Fallback to headless execution if orchestrator fails
-			this._logService.warn(`[SubTaskManager] Orchestrator UI execution FAILED with error: ${error instanceof Error ? error.message : String(error)}`);
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			this._logService.warn(`[SubTaskManager] Orchestrator UI execution FAILED with error: ${errorMessage}`);
+
+			// Check if this is an infrastructure error that should fail immediately
+			// (worktree creation, git errors, etc.) rather than falling back to headless
+			const isInfrastructureError =
+				errorMessage.includes('uncommitted changes') ||
+				errorMessage.includes('Cannot create worktree') ||
+				errorMessage.includes('worktree') ||
+				errorMessage.includes('No workspace folder') ||
+				errorMessage.includes('git') ||
+				errorMessage.includes('branch');
+
+			if (isInfrastructureError) {
+				this._logService.error(`[SubTaskManager] Infrastructure error detected - failing immediately without fallback: ${errorMessage}`);
+				result = {
+					taskId: id,
+					status: 'failed',
+					output: '',
+					error: `Infrastructure error: ${errorMessage}. Please resolve this issue before spawning sub-tasks.`,
+				};
+				this.updateStatus(id, 'failed', result);
+				return result;
+			}
+
+			// For other errors, try fallback to headless execution
 			this._logService.info(`[SubTaskManager] Falling back to headless execution...`);
 			try {
 				result = await this._executeSubTaskHeadless(subTask, cts.token);
@@ -838,13 +862,12 @@ ${subTask.targetFiles?.length ? `- **Target Files:** ${subTask.targetFiles.join(
 
 ## COMMUNICATION WITH PARENT
 - Use \`a2a_notify_orchestrator\` to send status updates, questions, or progress reports to your parent.
-- Use \`a2a_subtask_complete\` when you finish to report your results back to the parent.
-- Your parent is WAITING for your completion - they will receive and process your result.
+- When you complete your work, simply stop. Your parent will be notified automatically.
 - **DO NOT** try to communicate with the user directly - route everything through your parent.
 
 ## YOUR RESPONSIBILITIES
 1. Complete the specific task assigned to you.
-2. Report completion (success OR failure) using \`a2a_subtask_complete\`.
+2. When done, simply finish. Your parent is responsible for deciding what happens next.
 3. Any file changes you make in the worktree will be visible to your parent.
 4. Your parent is responsible for merging/integrating your changes.
 
@@ -903,7 +926,7 @@ Focus on your assigned task and provide a clear, actionable result.`,
 		parts.push(`## Expected Deliverable`);
 		parts.push(subTask.expectedOutput);
 		parts.push('');
-		parts.push(`When complete, use \`a2a_subtask_complete\` to report your results to your parent.`);
+		parts.push(`When complete, simply finish your work. Your parent will be notified automatically and will decide next steps.`);
 
 		return parts.join('\n');
 	}

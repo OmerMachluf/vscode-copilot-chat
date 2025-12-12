@@ -240,6 +240,14 @@ export class ParentCompletionService extends Disposable implements IParentComple
 			lines.push(statsLine);
 		}
 
+		// Add guidance for parent on what to do next
+		lines.push('');
+		lines.push('---');
+		lines.push('**YOUR NEXT STEP:** As the parent, you must decide what to do:');
+		lines.push('- If the work is complete and ready to merge: Call `a2a_subtask_complete` with a `commitMessage` to commit and merge the changes');
+		lines.push('- If more work is needed: Use `orchestrator_sendMessage` to give the worker additional instructions');
+		lines.push('- If the task failed: You can retry, take over, or report failure to your own parent');
+
 		return lines.join('\n');
 	}
 
