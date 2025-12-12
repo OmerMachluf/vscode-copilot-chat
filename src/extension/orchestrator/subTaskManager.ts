@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import * as cp from 'child_process';
 import * as vscode from 'vscode';
 import { ILogService } from '../../platform/log/common/logService';
 import { CancellationToken, CancellationTokenSource } from '../../util/vs/base/common/cancellation';
@@ -730,6 +731,8 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 		// Inherit spawn context from parent - if parent was from orchestrator, children are too
 		const inheritedSpawnContext = parentToolSet?.workerContext?.spawnContext ?? 'agent';
 
+		this._logService.debug(`[SubTaskManager] Subtask ${subTask.id} starting (parentWorkerId=${subTask.parentWorkerId}, depth=${subTask.depth}, spawnContext=${inheritedSpawnContext}, worktreePath=${subTask.worktreePath})`);
+
 		// Get or create worker tool set for this subtask
 		let toolSet = this._workerToolsService.getWorkerToolSet(`${subTask.parentWorkerId}-subtask-${subTask.id}`);
 		if (!toolSet) {
@@ -760,6 +763,9 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			'gemini-2.0-pro',       // Gemini 2.0 Pro
 			'gemini-pro',           // Any Gemini Pro
 			// GPT models (reliable)
+			'gpt-5.2',              // GPT-5.2 (Preview)
+			'gpt-5',                // GPT-5 family
+			'gpt-4.5',              // GPT-4.5 family
 			'gpt-4.1',              // GPT 4.1
 			'gpt-4o',               // GPT-4o
 			'o3',                   // O3 models
@@ -767,29 +773,32 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 		];
 
 		let model: vscode.LanguageModelChat | undefined;
-		this._logService.info(`[SubTaskManager] Selecting model for subtask ${subTask.id}, requested: ${subTask.model || 'none'}`);
+		let modelSelectionReason: string = 'unknown';
+		this._logService.debug(`[SubTaskManager] Selecting model for subtask ${subTask.id}, requested: ${subTask.model || 'none'}`);
 
 		if (subTask.model) {
 			// Try by exact ID first (e.g., 'claude-sonnet-4-20250514')
 			const byId = await vscode.lm.selectChatModels({ id: subTask.model });
 			if (byId.length > 0) {
 				model = byId[0];
-				this._logService.info(`[SubTaskManager] Found model by ID: ${model.id} (vendor: ${model.vendor}, family: ${model.family})`);
+				modelSelectionReason = `requested-id:${subTask.model}`;
+				this._logService.debug(`[SubTaskManager] Found model by ID: ${model.id} (vendor: ${model.vendor}, family: ${model.family})`);
 			} else {
 				// Try by family with copilot vendor (e.g., 'claude-opus-4.5')
 				const byFamily = await vscode.lm.selectChatModels({ vendor: 'copilot', family: subTask.model });
 				if (byFamily.length > 0) {
 					model = byFamily[0];
-					this._logService.info(`[SubTaskManager] Found model by family: ${model.id} (vendor: ${model.vendor}, family: ${model.family})`);
+					modelSelectionReason = `requested-family:${subTask.model}`;
+					this._logService.debug(`[SubTaskManager] Found model by family: ${model.id} (vendor: ${model.vendor}, family: ${model.family})`);
 				}
 			}
 		}
 
 		// Fallback to preferred premium models (in priority order)
 		if (!model) {
-			this._logService.info(`[SubTaskManager] No specific model found, trying preferred premium models...`);
+			this._logService.debug(`[SubTaskManager] No specific model found, trying preferred premium models...`);
 			const copilotModels = await vscode.lm.selectChatModels({ vendor: 'copilot' });
-			this._logService.info(`[SubTaskManager] Available copilot models: ${copilotModels.map(m => `${m.id} (${m.family})`).join(', ')}`);
+			this._logService.debug(`[SubTaskManager] Copilot models available: ${copilotModels.length}`);
 
 			// Try each preferred model pattern in order
 			for (const preferredPattern of PREFERRED_MODEL_PATTERNS) {
@@ -799,7 +808,8 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 				);
 				if (match) {
 					model = match;
-					this._logService.info(`[SubTaskManager] Selected preferred model: ${model.id} (vendor: ${model.vendor}, family: ${model.family})`);
+					modelSelectionReason = `preferred-pattern:${preferredPattern}`;
+					this._logService.debug(`[SubTaskManager] Selected preferred model: ${model.id} (vendor: ${model.vendor}, family: ${model.family})`);
 					break;
 				}
 			}
@@ -807,6 +817,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			// If no preferred model found, use any copilot model
 			if (!model && copilotModels.length > 0) {
 				model = copilotModels[0];
+				modelSelectionReason = 'fallback:any-copilot';
 				this._logService.warn(`[SubTaskManager] No preferred model found, falling back to: ${model.id} (vendor: ${model.vendor}, family: ${model.family})`);
 			}
 		}
@@ -816,6 +827,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			const allModels = await vscode.lm.selectChatModels();
 			if (allModels.length > 0) {
 				model = allModels[0];
+				modelSelectionReason = 'fallback:any-provider';
 				this._logService.warn(`[SubTaskManager] FALLBACK to non-copilot model: ${model.id} (vendor: ${model.vendor}) - this may cause rate limiting!`);
 			}
 		}
@@ -828,6 +840,8 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 				error: 'No suitable model available',
 			};
 		}
+
+		this._logService.info(`[SubTaskManager] Subtask ${subTask.id} model selected: ${model.id} (vendor=${model.vendor}, family=${model.family || 'n/a'}, reason=${modelSelectionReason})`);
 
 		// Build the prompt with sub-task context
 		const contextPrompt = this._buildSubTaskPrompt(subTask);
@@ -892,15 +906,30 @@ Focus on your assigned task and provide a clear, actionable result.`,
 		// Execute the agent
 		const result = await this._agentRunner.run(runOptions, streamCollector);
 
-		// Apply any buffered edits
-		await streamCollector.applyBufferedEdits();
+		// Apply any buffered edits (don't hard-fail — just log for visibility)
+		const applyEditsResult = await streamCollector.applyBufferedEdits();
+		if (!applyEditsResult.success) {
+			this._logService.debug(`[SubTaskManager] Buffered edits failed for subtask ${subTask.id}: ${applyEditsResult.error || 'unknown'} (editCount=${applyEditsResult.editCount}, editTargets=${applyEditsResult.editTargets})`);
+		} else if (applyEditsResult.editCount > 0) {
+			this._logService.debug(`[SubTaskManager] Applied ${applyEditsResult.editCount} buffered edits to ${applyEditsResult.editTargets} files for subtask ${subTask.id}`);
+		}
+
+		const changeSummary = await getWorktreeChangeSummary(subTask.worktreePath);
+
+		// Report facts in logs - let parent/orchestrator decide if zero changes is acceptable
+		this._logService.debug(`[SubTaskManager] Subtask ${subTask.id} finished: model=${model.id}, success=${result.success}, bufferedEdits=${applyEditsResult.success ? applyEditsResult.editCount : 'FAILED'}, changedFiles=${changeSummary.changedFiles.length}`);
 
 		return {
 			taskId: subTask.id,
 			status: result.success ? 'success' : 'failed',
 			output: result.response ?? streamCollector.getContent(),
 			error: result.error,
-			metadata: result.metadata,
+			metadata: {
+				...result.metadata,
+				model: { id: model.id, vendor: model.vendor, family: model.family, reason: modelSelectionReason },
+				bufferedEdits: applyEditsResult,
+				worktreeChanges: changeSummary,
+			},
 		};
 	}
 
@@ -1123,9 +1152,18 @@ class SubTaskStreamCollector implements vscode.ChatResponseStream {
 		return this._content || this._parts.join('\n');
 	}
 
-	async applyBufferedEdits(): Promise<void> {
+	async applyBufferedEdits(): Promise<{ success: boolean; error?: string; editCount: number; editTargets: number }> {
 		if (this._bufferedEdits.size === 0 && this._bufferedNotebookEdits.size === 0) {
-			return;
+			return { success: true, editCount: 0, editTargets: 0 };
+		}
+
+		const totalTargets = this._bufferedEdits.size + this._bufferedNotebookEdits.size;
+		let totalEdits = 0;
+		for (const edits of this._bufferedEdits.values()) {
+			totalEdits += edits.length;
+		}
+		for (const edits of this._bufferedNotebookEdits.values()) {
+			totalEdits += edits.length;
 		}
 
 		const workspaceEdit = new vscode.WorkspaceEdit();
@@ -1145,10 +1183,15 @@ class SubTaskStreamCollector implements vscode.ChatResponseStream {
 		try {
 			const success = await vscode.workspace.applyEdit(workspaceEdit);
 			if (!success) {
-				console.error('[SubTaskStreamCollector] Failed to apply buffered edits');
+				const msg = 'vscode.workspace.applyEdit returned false';
+				console.error(`[SubTaskStreamCollector] ${msg}`);
+				return { success: false, error: msg, editCount: totalEdits, editTargets: totalTargets };
 			}
+			return { success: true, editCount: totalEdits, editTargets: totalTargets };
 		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
 			console.error('[SubTaskStreamCollector] Error applying buffered edits:', err);
+			return { success: false, error: msg, editCount: totalEdits, editTargets: totalTargets };
 		}
 	}
 
@@ -1260,5 +1303,35 @@ class SubTaskStreamCollector implements vscode.ChatResponseStream {
 
 	clearToPreviousToolInvocation(_reason: any): void {
 		// Not supported in sub-tasks
+	}
+}
+
+
+/**
+ * Helper to retrieve worktree change summary from git status.
+ */
+async function getWorktreeChangeSummary(worktreePath: string): Promise<{ changedFiles: string[] }> {
+	try {
+		const status = await new Promise<string>((resolve, reject) => {
+			cp.exec('git status --porcelain', { cwd: worktreePath, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+				if (err) {
+					reject(new Error(stderr || err.message));
+					return;
+				}
+				resolve(stdout);
+			});
+		});
+
+		const files = new Set<string>();
+		for (const line of status.split(/\r?\n/).map(l => l.trim()).filter(Boolean)) {
+			const file = line.slice(3).trim();
+			if (file) {
+				files.add(file);
+			}
+		}
+
+		return { changedFiles: [...files.values()] };
+	} catch {
+		return { changedFiles: [] };
 	}
 }
