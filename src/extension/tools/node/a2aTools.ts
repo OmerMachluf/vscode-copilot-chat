@@ -4,10 +4,12 @@
  *--------------------------------------------------------------------------------------------*/
 
 import type * as vscode from 'vscode';
-import { CancellationToken, LanguageModelTextPart, LanguageModelToolInvocationOptions, LanguageModelToolInvocationPrepareOptions, LanguageModelToolResult, ProviderResult, workspace } from 'vscode';
 import { ILogService } from '../../../platform/log/common/logService';
+import { IWorkspaceService } from '../../../platform/workspace/common/workspaceService';
+import { CancellationToken } from '../../../util/vs/base/common/cancellation';
 import { IDisposable } from '../../../util/vs/base/common/lifecycle';
 import { generateUuid } from '../../../util/vs/base/common/uuid';
+import { LanguageModelTextPart, LanguageModelToolResult } from '../../../vscodeTypes';
 import { IOrchestratorQueueMessage, IOrchestratorQueueService } from '../../orchestrator/orchestratorQueue';
 import { ISubTask, ISubTaskCreateOptions, ISubTaskManager, ISubTaskResult } from '../../orchestrator/subTaskManager';
 import { ISubtaskProgressService, ParallelSubtaskProgressRenderer } from '../../orchestrator/subtaskProgressService';
@@ -78,6 +80,7 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 		@IOrchestratorQueueService private readonly _queueService: IOrchestratorQueueService,
 		@ISubtaskProgressService private readonly _progressService: ISubtaskProgressService,
 		@ILogService private readonly _logService: ILogService,
+		@IWorkspaceService private readonly _workspaceService: IWorkspaceService,
 	) { }
 
 	get enabled(): boolean {
@@ -85,12 +88,12 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 		return true;
 	}
 
-	prepareInvocation(_options: LanguageModelToolInvocationPrepareOptions<SpawnSubTaskParams>, _token: CancellationToken): ProviderResult<any> {
+	prepareInvocation(_options: vscode.LanguageModelToolInvocationPrepareOptions<SpawnSubTaskParams>, _token: CancellationToken): vscode.ProviderResult<vscode.PreparedToolInvocation> {
 		return { presentation: 'hidden' };
 	}
 
 	async invoke(
-		options: LanguageModelToolInvocationOptions<SpawnSubTaskParams>,
+		options: vscode.LanguageModelToolInvocationOptions<SpawnSubTaskParams>,
 		token: CancellationToken
 	): Promise<LanguageModelToolResult> {
 		// Use worker context if available, otherwise default to user session
@@ -100,7 +103,7 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 		}
 		const taskId = this._workerContext?.taskId ?? 'user-task';
 		const planId = this._workerContext?.planId ?? 'user-plan';
-		const worktreePath = this._workerContext?.worktreePath ?? workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+		const worktreePath = this._workerContext?.worktreePath ?? this._workspaceService.getWorkspaceFolders()?.[0]?.fsPath ?? '';
 		const currentDepth = this._workerContext?.depth ?? 0;
 
 		const { agentType, prompt, expectedOutput, model, targetFiles, blocking = true } = options.input;
@@ -279,18 +282,19 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 		@IOrchestratorQueueService private readonly _queueService: IOrchestratorQueueService,
 		@ISubtaskProgressService private readonly _progressService: ISubtaskProgressService,
 		@ILogService private readonly _logService: ILogService,
+		@IWorkspaceService private readonly _workspaceService: IWorkspaceService,
 	) { }
 
 	get enabled(): boolean {
 		return true;
 	}
 
-	prepareInvocation(_options: LanguageModelToolInvocationPrepareOptions<SpawnParallelSubTasksParams>, _token: CancellationToken): ProviderResult<any> {
+	prepareInvocation(_options: vscode.LanguageModelToolInvocationPrepareOptions<SpawnParallelSubTasksParams>, _token: CancellationToken): vscode.ProviderResult<vscode.PreparedToolInvocation> {
 		return { presentation: 'hidden' };
 	}
 
 	async invoke(
-		options: LanguageModelToolInvocationOptions<SpawnParallelSubTasksParams>,
+		options: vscode.LanguageModelToolInvocationOptions<SpawnParallelSubTasksParams>,
 		token: CancellationToken
 	): Promise<LanguageModelToolResult> {
 		// Use worker context if available, otherwise default to user session
@@ -300,7 +304,7 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 		}
 		const taskId = this._workerContext?.taskId ?? 'user-task';
 		const planId = this._workerContext?.planId ?? 'user-plan';
-		const worktreePath = this._workerContext?.worktreePath ?? workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+		const worktreePath = this._workerContext?.worktreePath ?? this._workspaceService.getWorkspaceFolders()?.[0]?.fsPath ?? '';
 		const currentDepth = this._workerContext?.depth ?? 0;
 
 		const { subtasks } = options.input;
@@ -559,12 +563,12 @@ export class A2AAwaitSubTasksTool implements ICopilotTool<AwaitSubTasksParams> {
 		return this._workerContext !== undefined;
 	}
 
-	prepareInvocation(_options: LanguageModelToolInvocationPrepareOptions<AwaitSubTasksParams>, _token: CancellationToken): ProviderResult<any> {
+	prepareInvocation(_options: vscode.LanguageModelToolInvocationPrepareOptions<AwaitSubTasksParams>, _token: CancellationToken): vscode.ProviderResult<vscode.PreparedToolInvocation> {
 		return { presentation: 'hidden' };
 	}
 
 	async invoke(
-		options: LanguageModelToolInvocationOptions<AwaitSubTasksParams>,
+		options: vscode.LanguageModelToolInvocationOptions<AwaitSubTasksParams>,
 		token: CancellationToken
 	): Promise<LanguageModelToolResult> {
 		if (!this._workerContext?.workerId) {
@@ -725,12 +729,12 @@ export class A2ANotifyOrchestratorTool implements ICopilotTool<NotifyOrchestrato
 		return this._workerContext !== undefined;
 	}
 
-	prepareInvocation(_options: LanguageModelToolInvocationPrepareOptions<NotifyOrchestratorParams>, _token: CancellationToken): ProviderResult<any> {
+	prepareInvocation(_options: vscode.LanguageModelToolInvocationPrepareOptions<NotifyOrchestratorParams>, _token: CancellationToken): vscode.ProviderResult<vscode.PreparedToolInvocation> {
 		return { presentation: 'hidden' };
 	}
 
 	async invoke(
-		options: LanguageModelToolInvocationOptions<NotifyOrchestratorParams>,
+		options: vscode.LanguageModelToolInvocationOptions<NotifyOrchestratorParams>,
 		_token: CancellationToken
 	): Promise<LanguageModelToolResult> {
 		if (!this._workerContext?.workerId) {

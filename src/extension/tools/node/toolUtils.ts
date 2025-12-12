@@ -17,11 +17,11 @@ import { CancellationToken } from '../../../util/vs/base/common/cancellation';
 import { CancellationError } from '../../../util/vs/base/common/errors';
 import { Schemas } from '../../../util/vs/base/common/network';
 import { isAbsolute } from '../../../util/vs/base/common/path';
-import { isEqual, normalizePath } from '../../../util/vs/base/common/resources';
+import { extUriBiasedIgnorePathCase, isEqual, normalizePath } from '../../../util/vs/base/common/resources';
 import { URI } from '../../../util/vs/base/common/uri';
 import { IInstantiationService, ServicesAccessor } from '../../../util/vs/platform/instantiation/common/instantiation';
 import { LanguageModelPromptTsxPart, LanguageModelToolResult, Position, SymbolKind } from '../../../vscodeTypes';
-import { IWorkerToolsService } from '../../orchestrator/workerToolsService';
+import { IWorkerContext, IWorkerToolsService } from '../../orchestrator/workerToolsService';
 import { renderPromptElementJSON } from '../../prompts/node/base/promptRenderer';
 
 export function checkCancellation(token: CancellationToken): void {
@@ -158,9 +158,55 @@ export async function assertFileOkForTool(accessor: ServicesAccessor, uri: URI):
 		// Service not available in this context
 	}
 
+	// Check if we're running in a worker context with a specific worktree
+	// If so, enforce that file operations ONLY target the worker's worktree
+	let workerContext: IWorkerContext | undefined;
+	try {
+		workerContext = accessor.get(IWorkerContext);
+	} catch {
+		// IWorkerContext not available - not running in a worker context
+	}
+
 	logService.info(`[assertFileOkForTool] Checking URI: ${uri.fsPath}`);
+	if (workerContext?.worktreePath) {
+		logService.info(`[assertFileOkForTool] Running in worker context: ${workerContext.workerId}, worktree: ${workerContext.worktreePath}`);
+	}
 
 	await assertFileNotContentExcluded(accessor, uri);
+
+	// CRITICAL: If running in a worker context with a worktree, enforce that
+	// file operations ONLY target paths within the worker's worktree.
+	// This prevents workers from accidentally modifying files in the main workspace.
+	if (workerContext?.worktreePath) {
+		const worktreeUri = URI.file(workerContext.worktreePath);
+		const isInWorkerWorktree = extUriBiasedIgnorePathCase.isEqualOrParent(uri, worktreeUri);
+
+		if (!isInWorkerWorktree) {
+			// Allow reading external instruction files even from workers
+			if (customInstructionsService.isExternalInstructionsFile(uri)) {
+				logService.info(`[assertFileOkForTool] Worker accessing external instructions file (allowed)`);
+				return;
+			}
+
+			// Allow untitled files
+			if (uri.scheme === Schemas.untitled) {
+				logService.info(`[assertFileOkForTool] Worker accessing untitled file (allowed)`);
+				return;
+			}
+
+			logService.warn(`[assertFileOkForTool] BLOCKED: Worker ${workerContext.workerId} attempted to access ${uri.fsPath} which is outside its worktree ${workerContext.worktreePath}`);
+			throw new Error(
+				`File ${promptPathRepresentationService.getFilePath(uri)} is outside the worker's worktree (${workerContext.worktreePath}). ` +
+				`Workers can only access files within their assigned worktree directory. ` +
+				`Use the full absolute path starting with "${workerContext.worktreePath}".`
+			);
+		}
+
+		logService.info(`[assertFileOkForTool] File is within worker's worktree: ${workerContext.worktreePath}`);
+		return; // File is in worker's worktree, OK
+	}
+
+	// Not in worker context - use standard workspace checks
 
 	// Check if the file is in the workspace
 	const isInWorkspace = workspaceService.getWorkspaceFolder(normalizePath(uri));

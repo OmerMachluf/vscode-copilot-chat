@@ -138,6 +138,30 @@ This policy prevents:
 - Confusion about which changes belong to which worker
 - Merge conflicts when workers complete
 
+### Worktree Isolation (Critical Security Feature)
+
+Workers are **strictly isolated** to their assigned worktree directory:
+
+1. **Scoped Tool Execution**: When tools are invoked by a worker:
+   - The `WorkerToolSet` uses scoped tool instances bound to the worktree
+   - The `ScopedWorkspaceService` presents only the worktree as the workspace
+   - File operations are validated against the worker's `IWorkerContext`
+
+2. **Path Enforcement**: The `assertFileOkForTool` function enforces that:
+   - Workers can ONLY read/write files within their worktree path
+   - Attempts to access files outside the worktree result in a clear error:
+     ```
+     File <path> is outside the worker's worktree (<worktree-path>).
+     Workers can only access files within their assigned worktree directory.
+     ```
+   - External instruction files and untitled files are explicitly allowed
+
+3. **Why This Matters**:
+   - Prevents workers from accidentally modifying the main workspace
+   - Ensures each worker's changes are isolated and reviewable
+   - Allows safe parallel execution of multiple workers
+   - Maintains clean separation between orchestrator and worker file access
+
 ### Worktree Lifecycle
 
 1. **Creation**: Each worker gets an isolated worktree in `.worktrees/<task-name>/`

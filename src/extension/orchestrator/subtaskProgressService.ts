@@ -266,8 +266,9 @@ export class SubtaskProgressService extends Disposable implements ISubtaskProgre
 		this._notificationProgress.set(item.subtaskId, disposable);
 
 		// Ensure the promise doesn't cause unhandled rejection
-		progressPromise.catch(err => {
-			this._logService.error(`[SubtaskProgressService] Notification progress error:`, err);
+		// Convert Thenable to Promise for proper .catch() support
+		Promise.resolve(progressPromise).catch((err: unknown) => {
+			this._logService.error(`[SubtaskProgressService] Notification progress error: ${String(err)}`);
 		});
 	}
 

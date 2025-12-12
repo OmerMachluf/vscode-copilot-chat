@@ -429,8 +429,47 @@ export class WorkerToolSet extends Disposable implements IToolsService {
 		throw new Error('getToolByToolReferenceName is for tests only');
 	}
 
-	invokeTool(name: string | ToolName, options: vscode.LanguageModelToolInvocationOptions<Object>, token: CancellationToken): Thenable<vscode.LanguageModelToolResult | vscode.LanguageModelToolResult2> {
+	/**
+	 * Invoke a tool using the worker's scoped tool instances.
+	 *
+	 * CRITICAL: This method invokes the scoped tool instances created with the worker's
+	 * ScopedWorkspaceService, ensuring file operations target the worktree, not the main workspace.
+	 *
+	 * Unlike the global IToolsService.invokeTool which calls vscode.lm.invokeTool (which uses
+	 * globally registered tools with the main workspace), this method:
+	 * 1. First tries to invoke the scoped copilot tool instance if it exists and has invoke()
+	 * 2. Falls back to vscode.lm.invokeTool for tools without custom invoke (e.g., VS Code built-in tools)
+	 *
+	 * This is essential for worktree isolation - workers must use their scoped tools to ensure
+	 * file edits target the worktree path, not the main repository.
+	 */
+	async invokeTool(name: string | ToolName, options: vscode.LanguageModelToolInvocationOptions<Object>, token: CancellationToken): Promise<vscode.LanguageModelToolResult | vscode.LanguageModelToolResult2> {
 		this._onWillInvokeTool.fire({ toolName: name as string });
+
+		// Get the tool name without the contributed prefix
+		const toolName = getToolName(name) as ToolName;
+
+		// Try to invoke using our scoped tool instance first
+		// This ensures the tool uses the ScopedWorkspaceService bound to the worktree
+		const scopedTool = this._copilotTools.get(toolName);
+		if (scopedTool && typeof scopedTool.invoke === 'function') {
+			this._logService.debug(`[WorkerToolSet] Invoking scoped tool ${toolName} for worker ${this.workerId} at worktree ${this.worktreePath}`);
+			try {
+				const result = await scopedTool.invoke(options, token);
+				if (result) {
+					return result;
+				}
+				// Tool returned null/undefined - fall through to vscode.lm.invokeTool
+				this._logService.debug(`[WorkerToolSet] Scoped tool ${toolName} returned no result, falling back to vscode.lm.invokeTool`);
+			} catch (error) {
+				this._logService.error(`[WorkerToolSet] Scoped tool ${toolName} failed:`, error);
+				throw error;
+			}
+		}
+
+		// Fall back to vscode.lm.invokeTool for tools without custom invoke
+		// (e.g., VS Code built-in tools like terminal, or third-party tools)
+		this._logService.debug(`[WorkerToolSet] Falling back to vscode.lm.invokeTool for ${toolName} (no scoped implementation)`);
 		return vscode.lm.invokeTool(getContributedToolName(name), options, token);
 	}
 
