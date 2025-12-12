@@ -119,8 +119,9 @@ describe('SafetyLimitsService', () => {
 		});
 
 		it('should respect custom max depth', () => {
-			expect(() => safetyLimitsService.enforceDepthLimit(2, 3)).not.toThrow();
-			expect(() => safetyLimitsService.enforceDepthLimit(3, 3)).toThrow(/depth limit.*exceeded/i);
+			safetyLimitsService.updateConfig({ maxSubTaskDepth: 3 });
+			expect(() => safetyLimitsService.enforceDepthLimit(2, 'subtask')).not.toThrow();
+			expect(() => safetyLimitsService.enforceDepthLimit(3, 'subtask')).toThrow(/depth limit.*exceeded/i);
 		});
 
 		it('should include clear error message', () => {
@@ -129,7 +130,7 @@ describe('SafetyLimitsService', () => {
 				expect.fail('Should have thrown');
 			} catch (error) {
 				expect((error as Error).message).toContain('Cannot spawn deeper');
-				expect((error as Error).message).toContain('restructuring');
+				expect((error as Error).message).toContain('Consider completing');
 			}
 		});
 	});

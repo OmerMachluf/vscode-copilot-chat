@@ -23,7 +23,7 @@ interface A2ASubTaskCompleteParams {
 }
 
 export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompleteParams> {
-	static readonly toolName = 'a2a_subtask_complete';
+	static readonly toolName = ToolName.A2ASubTaskComplete;
 
 	constructor(
 		@ISubTaskManager private readonly _subTaskManager: ISubTaskManager,
@@ -42,7 +42,7 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 
 	async invoke(
 		options: LanguageModelToolInvocationOptions<A2ASubTaskCompleteParams>,
-		token: CancellationToken
+		_token: CancellationToken
 	): Promise<LanguageModelToolResult> {
 		const { subTaskId, status, output, outputFile, metadata, error } = options.input;
 		try {
@@ -55,6 +55,14 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 				error,
 			};
 			this._subTaskManager.updateStatus(subTaskId, status === 'success' ? 'completed' : 'failed', result);
+
+			// Determine target for completion message
+			const targetDescription = this._workerContext.owner
+				? `${this._workerContext.owner.ownerType} (${this._workerContext.owner.ownerId})`
+				: 'orchestrator';
+
+			this._logService.info(`[A2ASubTaskCompleteTool] Sending completion to ${targetDescription}`);
+
 			this._queueService.enqueueMessage({
 				id: generateUuid(),
 				timestamp: Date.now(),
@@ -62,12 +70,15 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 				taskId: subTaskId,
 				workerId: this._workerContext.workerId,
 				worktreePath: this._workerContext.worktreePath,
+				depth: this._workerContext.depth,
+				// Include owner context for routing - completion goes to owner, not directly to orchestrator
+				owner: this._workerContext.owner,
 				type: 'completion',
 				priority: 'normal',
 				content: result
 			});
 			return new LanguageModelToolResult([
-				new LanguageModelTextPart('Sub-task completion recorded and parent notified.'),
+				new LanguageModelTextPart(`Sub-task completion recorded and ${targetDescription} notified.`),
 			]);
 		} catch (e) {
 			this._logService.error(`[A2ASubTaskCompleteTool] Failed to complete sub-task:`, e);
@@ -78,4 +89,6 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 	}
 }
 
-ToolRegistry.registerTool(A2ASubTaskCompleteTool);
+// Safe to cast: A2ASubTaskCompleteTool satisfies ICopilotToolCtor requirements
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ToolRegistry.registerTool(A2ASubTaskCompleteTool as any);

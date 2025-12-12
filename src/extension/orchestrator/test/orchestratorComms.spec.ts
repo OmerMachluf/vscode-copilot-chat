@@ -5,14 +5,14 @@
 
 import * as assert from 'assert';
 import { afterEach, beforeEach, describe, it, vi } from 'vitest';
-import { OrchestratorService } from '../orchestratorServiceV2';
-import { IOrchestratorQueueMessage, OrchestratorQueueService } from '../orchestratorQueue';
-import { IOrchestratorPermissions } from '../orchestratorPermissions';
+import { Emitter } from '../../../util/vs/base/common/event';
 import { IAgentInstructionService } from '../agentInstructionService';
 import { IAgentRunner } from '../agentRunner';
-import { IWorkerToolsService } from '../workerToolsService';
+import { IOrchestratorPermissions } from '../orchestratorPermissions';
+import { IOrchestratorQueueMessage, OrchestratorQueueService } from '../orchestratorQueue';
+import { OrchestratorService } from '../orchestratorServiceV2';
 import { WorkerSession } from '../workerSession';
-import { Emitter } from '../../../util/vs/base/common/event';
+import { IWorkerToolsService } from '../workerToolsService';
 
 describe('Orchestrator Communication', () => {
 	let orchestratorService: OrchestratorService;
@@ -21,6 +21,8 @@ describe('Orchestrator Communication', () => {
 	let agentInstructionService: IAgentInstructionService;
 	let agentRunner: IAgentRunner;
 	let workerToolsService: IWorkerToolsService;
+	let subTaskManager: any;
+	let logService: any;
 	let mockVscodeWindow: any;
 
 	beforeEach(() => {
@@ -59,6 +61,24 @@ describe('Orchestrator Communication', () => {
 		workerToolsService = {
 			createWorkerToolSet: vi.fn(),
 			disposeWorkerToolSet: vi.fn(),
+		} as any;
+
+		subTaskManager = {
+			_serviceBrand: undefined,
+			createSubTask: vi.fn(),
+			executeSubTask: vi.fn(),
+			updateStatus: vi.fn(),
+			getSubTask: vi.fn(),
+			setOrchestratorService: vi.fn(),
+		} as any;
+
+		logService = {
+			_serviceBrand: undefined,
+			trace: vi.fn(),
+			debug: vi.fn(),
+			info: vi.fn(),
+			warn: vi.fn(),
+			error: vi.fn(),
 		} as any;
 
 		mockVscodeWindow = {
@@ -116,7 +136,9 @@ describe('Orchestrator Communication', () => {
 			agentRunner,
 			workerToolsService,
 			queueService,
-			permissionService
+			subTaskManager,
+			permissionService,
+			logService
 		);
 
 		// Add a dummy task to allow processing

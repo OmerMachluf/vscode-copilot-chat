@@ -161,7 +161,7 @@ export class WorkspaceConfigLoader extends Disposable {
 				maxSubtasksPerWorker: 10
 			},
 			modelPreferences: {
-				default: 'claude-opus-4.5',
+				default: 'gpt-4o',
 				byTaskType: {},
 				byAgent: {}
 			}

@@ -18,6 +18,7 @@ import { ServiceCollection } from '../../util/vs/platform/instantiation/common/s
 import { getContributedToolName, getToolName, mapContributedToolNamesInSchema, mapContributedToolNamesInString, ToolName } from '../tools/common/toolNames';
 import { ICopilotTool, ICopilotToolExtension, ToolRegistry } from '../tools/common/toolsRegistry';
 import { IToolsService, IToolValidationResult } from '../tools/common/toolsService';
+import { SpawnContext } from './safetyLimits';
 
 export const IWorkerToolsService = createServiceIdentifier<IWorkerToolsService>('IWorkerToolsService');
 
@@ -26,6 +27,18 @@ export const IWorkerToolsService = createServiceIdentifier<IWorkerToolsService>(
  * This is available to tools running within a worker's scoped instantiation service.
  */
 export const IWorkerContext = createServiceIdentifier<IWorkerContext>('IWorkerContext');
+
+/**
+ * Owner context - who spawned this worker and should receive its messages.
+ */
+export interface IWorkerOwnerContext {
+	/** Type of owner */
+	ownerType: 'orchestrator' | 'worker' | 'agent';
+	/** Unique ID of the owner */
+	ownerId: string;
+	/** Session URI for agent sessions */
+	sessionUri?: string;
+}
 
 export interface IWorkerContext {
 	readonly _serviceBrand: undefined;
@@ -39,6 +52,14 @@ export interface IWorkerContext {
 	readonly taskId?: string;
 	/** The current depth level (0=main task, 1=sub-task, etc.) */
 	readonly depth: number;
+	/** Owner context - who spawned this worker */
+	readonly owner?: IWorkerOwnerContext;
+	/**
+	 * The root spawn context - determines depth limits.
+	 * 'orchestrator' = spawned as part of orchestrated workflow (max depth 2)
+	 * 'agent' = spawned from standalone agent (max depth 1)
+	 */
+	readonly spawnContext: SpawnContext;
 }
 
 /**
@@ -53,6 +74,8 @@ class WorkerContextImpl implements IWorkerContext {
 		readonly planId?: string,
 		readonly taskId?: string,
 		readonly depth: number = 0,
+		readonly owner?: IWorkerOwnerContext,
+		readonly spawnContext: SpawnContext = 'agent',
 	) { }
 }
 
@@ -61,6 +84,8 @@ export class GlobalWorkerContext implements IWorkerContext {
 	readonly workerId = '';
 	readonly worktreePath = '';
 	readonly depth = 0;
+	readonly owner = undefined;
+	readonly spawnContext: SpawnContext = 'agent';
 }
 
 /**
@@ -77,9 +102,11 @@ export interface IWorkerToolsService {
 	 * @param planId Optional plan ID if this worker is part of a plan
 	 * @param taskId Optional task ID if this worker is executing a specific task
 	 * @param depth The depth level (0=main task, 1=sub-task, etc.)
+	 * @param owner Owner context for message routing
+	 * @param spawnContext The root spawn context (orchestrator or agent)
 	 * @returns The created WorkerToolSet
 	 */
-	createWorkerToolSet(workerId: string, worktreePath: string, planId?: string, taskId?: string, depth?: number): WorkerToolSet;
+	createWorkerToolSet(workerId: string, worktreePath: string, planId?: string, taskId?: string, depth?: number, owner?: IWorkerOwnerContext, spawnContext?: SpawnContext): WorkerToolSet;
 
 	/**
 	 * Get an existing tool set for a worker.
@@ -254,6 +281,9 @@ export class WorkerToolSet extends Disposable implements IToolsService {
 	private readonly _disabledTools: Set<ToolName>;
 	private readonly _workerContext: IWorkerContext;
 
+	/** Expose worker context for inheritance by child tasks */
+	get workerContext(): IWorkerContext { return this._workerContext; }
+
 	private readonly _onWillInvokeTool = this._register(new Emitter<{ toolName: string }>());
 	public readonly onWillInvokeTool = this._onWillInvokeTool.event;
 
@@ -272,6 +302,8 @@ export class WorkerToolSet extends Disposable implements IToolsService {
 		planId: string | undefined,
 		taskId: string | undefined,
 		depth: number,
+		owner: IWorkerOwnerContext | undefined,
+		spawnContext: SpawnContext,
 		@IWorkspaceService workspaceService: IWorkspaceService,
 		@ILogService private readonly _logService: ILogService,
 	) {
@@ -281,7 +313,7 @@ export class WorkerToolSet extends Disposable implements IToolsService {
 		const scopedWorkspaceService = new ScopedWorkspaceService(workspaceService, worktreePath);
 
 		// Create worker context for this worker
-		this._workerContext = new WorkerContextImpl(workerId, worktreePath, planId, taskId, depth);
+		this._workerContext = new WorkerContextImpl(workerId, worktreePath, planId, taskId, depth, owner, spawnContext);
 
 		// Create child instantiation service with scoped workspace and worker context
 		this._scopedInstantiationService = parentInstantiationService.createChild(
@@ -331,13 +363,6 @@ export class WorkerToolSet extends Disposable implements IToolsService {
 	 */
 	get scopedInstantiationService(): IInstantiationService {
 		return this._scopedInstantiationService;
-	}
-
-	/**
-	 * Get the worker context for this tool set.
-	 */
-	get workerContext(): IWorkerContext {
-		return this._workerContext;
 	}
 
 	/**
@@ -590,7 +615,7 @@ export class WorkerToolsService extends Disposable implements IWorkerToolsServic
 		super();
 	}
 
-	createWorkerToolSet(workerId: string, worktreePath: string, planId?: string, taskId?: string, depth: number = 0): WorkerToolSet {
+	createWorkerToolSet(workerId: string, worktreePath: string, planId?: string, taskId?: string, depth: number = 0, owner?: IWorkerOwnerContext, spawnContext: SpawnContext = 'agent'): WorkerToolSet {
 		// Dispose existing tool set if present
 		this.disposeWorkerToolSet(workerId);
 
@@ -602,6 +627,8 @@ export class WorkerToolsService extends Disposable implements IWorkerToolsServic
 			planId,
 			taskId,
 			depth,
+			owner,
+			spawnContext,
 			this._workspaceService,
 			this._logService,
 		);

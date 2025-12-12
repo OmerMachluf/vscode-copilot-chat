@@ -10,8 +10,6 @@ import { afterEach, beforeEach, describe, it, vi } from 'vitest';
 import {
 	AuditEventType,
 	AuditLogService,
-	IAuditLogEntry,
-	IAuditLogFilter,
 } from '../auditLog';
 
 describe('AuditLogService', () => {

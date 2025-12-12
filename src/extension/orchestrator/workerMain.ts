@@ -122,8 +122,8 @@ class SocketChatResponseStream implements vscode.ChatResponseStream {
 	thinkingProgress(value: any): void { }
 	textEdit(target: any, edits: any): void { }
 	notebookEdit(target: any, edits: any): void { }
-	externalEdit<T>(target: vscode.Uri | vscode.Uri[], callback: () => Thenable<T>): Thenable<T> {
-		return callback();
+	externalEdit(_target: vscode.Uri | vscode.Uri[], callback: () => Thenable<unknown>): Thenable<string> {
+		return Promise.resolve(callback()).then(() => '');
 	}
 
 	markdownWithVulnerabilities(value: string | vscode.MarkdownString, vulnerabilities: any[]): void {

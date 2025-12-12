@@ -1278,7 +1278,7 @@ export class WorkerResponseStream implements vscode.ChatResponseStream {
 		});
 	}
 
-	externalEdit<T>(target: vscode.Uri | vscode.Uri[], callback: () => Thenable<T>): Thenable<T> {
+	externalEdit(target: vscode.Uri | vscode.Uri[], callback: () => Thenable<void>): Thenable<string> {
 		// Write to REAL stream if attached
 		if ((this._realStream as any)?.externalEdit) {
 			return (this._realStream as any).externalEdit(target, callback);
@@ -1288,7 +1288,7 @@ export class WorkerResponseStream implements vscode.ChatResponseStream {
 			type: 'unknown',
 			content: `[External edit: ${uris.map(u => u.fsPath).join(', ')}]`,
 		});
-		return callback();
+		return Promise.resolve(callback()).then(() => '');
 	}
 
 	markdownWithVulnerabilities(value: string | vscode.MarkdownString, vulnerabilities: any[]): void {

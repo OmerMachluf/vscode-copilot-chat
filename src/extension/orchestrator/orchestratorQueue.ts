@@ -12,6 +12,19 @@ import { createDecorator } from '../../util/vs/platform/instantiation/common/ins
 
 export const IOrchestratorQueueService = createDecorator<IOrchestratorQueueService>('orchestratorQueueService');
 
+/**
+ * Owner context for message routing.
+ * Identifies who should receive messages from a worker/subtask.
+ */
+export interface IOwnerContext {
+	/** Type of owner */
+	ownerType: 'orchestrator' | 'worker' | 'agent';
+	/** Unique ID of the owner (worker ID, session ID, or 'orchestrator') */
+	ownerId: string;
+	/** Session URI for agent sessions */
+	sessionUri?: string;
+}
+
 export interface IOrchestratorQueueMessage {
 	id: string;
 	timestamp: number;
@@ -28,8 +41,11 @@ export interface IOrchestratorQueueMessage {
 	subTaskId?: string;
 	depth?: number;
 
+	// Owner context for routing (optional - defaults to orchestrator)
+	owner?: IOwnerContext;
+
 	// Message content
-	type: 'status_update' | 'permission_request' | 'question' | 'completion' | 'error';
+	type: 'status_update' | 'permission_request' | 'question' | 'completion' | 'error' | 'answer' | 'refinement' | 'retry_request';
 	content: unknown;
 }
 
@@ -85,7 +101,15 @@ export interface IOrchestratorQueueService {
 	enqueueMessage(message: IOrchestratorQueueMessage): void;
 	processNext(): Promise<void>;
 	getMetrics(): { depth: number; processingTime: number; waitTime: number };
+
+	/** Register the default handler (orchestrator) */
 	registerHandler(handler: (message: IOrchestratorQueueMessage) => Promise<void>): IDisposable;
+
+	/** Register a handler for a specific owner ID */
+	registerOwnerHandler(ownerId: string, handler: (message: IOrchestratorQueueMessage) => Promise<void>): IDisposable;
+
+	/** Get messages pending for a specific owner */
+	getPendingMessagesForOwner(ownerId: string): IOrchestratorQueueMessage[];
 }
 
 export class OrchestratorQueueService extends Disposable implements IOrchestratorQueueService {
@@ -97,6 +121,9 @@ export class OrchestratorQueueService extends Disposable implements IOrchestrato
 	private _isProcessing = false;
 	private _metrics = { depth: 0, processingTime: 0, waitTime: 0 };
 	private _handler: ((message: IOrchestratorQueueMessage) => Promise<void>) | undefined;
+
+	/** Per-owner handlers for routing messages */
+	private readonly _ownerHandlers = new Map<string, (message: IOrchestratorQueueMessage) => Promise<void>>();
 
 	private readonly _onMessageEnqueued = this._register(new Emitter<IOrchestratorQueueMessage>());
 	public readonly onMessageEnqueued: Event<IOrchestratorQueueMessage> = this._onMessageEnqueued.event;
@@ -169,6 +196,32 @@ export class OrchestratorQueueService extends Disposable implements IOrchestrato
 		return toDisposable(() => { this._handler = undefined; });
 	}
 
+	registerOwnerHandler(ownerId: string, handler: (message: IOrchestratorQueueMessage) => Promise<void>): IDisposable {
+		this._ownerHandlers.set(ownerId, handler);
+		// Check for any pending messages for this owner
+		const pending = this.getPendingMessagesForOwner(ownerId);
+		if (pending.length > 0) {
+			setTimeout(() => this.processNext(), 0);
+		}
+		return toDisposable(() => { this._ownerHandlers.delete(ownerId); });
+	}
+
+	getPendingMessagesForOwner(ownerId: string): IOrchestratorQueueMessage[] {
+		return this._queue.getAll().filter(m => m.owner?.ownerId === ownerId);
+	}
+
+	private _getHandlerForMessage(message: IOrchestratorQueueMessage): ((message: IOrchestratorQueueMessage) => Promise<void>) | undefined {
+		// If message has an owner, try to route to owner handler first
+		if (message.owner?.ownerId) {
+			const ownerHandler = this._ownerHandlers.get(message.owner.ownerId);
+			if (ownerHandler) {
+				return ownerHandler;
+			}
+		}
+		// Fall back to default handler (orchestrator)
+		return this._handler;
+	}
+
 	enqueueMessage(message: IOrchestratorQueueMessage): void {
 		if (this._processedMessageIds.has(message.id)) {
 			return; // Deduplication
@@ -189,7 +242,7 @@ export class OrchestratorQueueService extends Disposable implements IOrchestrato
 	}
 
 	async processNext(): Promise<void> {
-		if (this._isProcessing || this._queue.isEmpty() || !this._handler) {
+		if (this._isProcessing || this._queue.isEmpty()) {
 			return;
 		}
 
@@ -199,11 +252,19 @@ export class OrchestratorQueueService extends Disposable implements IOrchestrato
 		try {
 			const message = this._queue.peek();
 			if (message) {
+				// Find the appropriate handler for this message
+				const handler = this._getHandlerForMessage(message);
+				if (!handler) {
+					// No handler available, leave message in queue
+					this._isProcessing = false;
+					return;
+				}
+
 				this._queue.dequeue();
 
 				this._metrics.waitTime = startTime - message.timestamp;
 
-				await this._handler(message);
+				await handler(message);
 
 				this._processedMessageIds.add(message.id);
 				this._onMessageProcessed.fire(message);

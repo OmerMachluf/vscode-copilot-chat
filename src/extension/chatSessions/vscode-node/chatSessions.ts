@@ -156,11 +156,10 @@ export class ChatSessionsContrib extends Disposable implements IExtensionContrib
 		// Get services
 		const orchestratorService = orchestratorInstaService.invokeFunction(accessor => accessor.get(IOrchestratorService));
 		const agentDiscoveryService = orchestratorInstaService.invokeFunction(accessor => accessor.get(IAgentDiscoveryService));
-		const worktreeManager = orchestratorInstaService.invokeFunction(accessor => accessor.get(IUnifiedWorktreeManager));
 
 		// Create item provider (lists workers as sessions)
 		const orchestratorSessionItemProvider = this._register(
-			new OrchestratorChatSessionItemProvider(orchestratorService, worktreeManager)
+			new OrchestratorChatSessionItemProvider(orchestratorService)
 		);
 		this._register(vscode.chat.registerChatSessionItemProvider(ORCHESTRATOR_SESSION_TYPE, orchestratorSessionItemProvider));
 

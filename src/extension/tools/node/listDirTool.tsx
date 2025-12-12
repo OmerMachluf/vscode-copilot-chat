@@ -6,7 +6,6 @@
 import * as l10n from '@vscode/l10n';
 import { BasePromptElementProps, PromptElement, PromptPiece, PromptSizing, TextChunk } from '@vscode/prompt-tsx';
 import type * as vscode from 'vscode';
-import { ICustomInstructionsService } from '../../../platform/customInstructions/common/customInstructionsService';
 import { IFileSystemService } from '../../../platform/filesystem/common/fileSystemService';
 import { FileType } from '../../../platform/filesystem/common/fileTypes';
 import { IPromptPathRepresentationService } from '../../../platform/prompts/common/promptPathRepresentationService';
@@ -29,7 +28,6 @@ class ListDirTool implements vscode.LanguageModelTool<IListDirParams> {
 		@IFileSystemService private readonly fsService: IFileSystemService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IPromptPathRepresentationService private readonly promptPathRepresentationService: IPromptPathRepresentationService,
-		@ICustomInstructionsService private readonly customInstructionsService: ICustomInstructionsService,
 	) { }
 
 	async invoke(options: vscode.LanguageModelToolInvocationOptions<IListDirParams>, token: CancellationToken) {

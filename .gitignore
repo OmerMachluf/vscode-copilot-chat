@@ -38,4 +38,7 @@ test/simulation/cache/_base.sqlite
 # Orchestrator state file
 .copilot-orchestrator-state.json
 
+# Orchestrator queue state file
+.copilot-orchestrator-queue.json
+
 test/aml/out

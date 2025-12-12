@@ -7,7 +7,6 @@ import * as vscode from 'vscode';
 import { Emitter, Event } from '../../../util/vs/base/common/event';
 import { Disposable } from '../../../util/vs/base/common/lifecycle';
 import { IOrchestratorService } from '../../orchestrator/orchestratorServiceV2';
-import { IUnifiedWorktreeManager } from '../common/unifiedWorktreeManager';
 import {
 	formatTimestamp,
 	getStatusIcon,
@@ -30,7 +29,6 @@ export class OrchestratorChatSessionItemProvider extends Disposable implements v
 
 	constructor(
 		private readonly orchestratorService: IOrchestratorService,
-		private readonly worktreeManager: IUnifiedWorktreeManager,
 	) {
 		super();
 
@@ -113,12 +111,6 @@ export class OrchestratorChatSessionItemProvider extends Disposable implements v
 			// Build label
 			const label = task?.name || worker.name || `Worker ${worker.id.slice(-6)}`;
 
-			// Get statistics if worktree exists
-			let statistics: { files: number; insertions: number; deletions: number } | undefined;
-			if (worktreePath) {
-				statistics = await this.worktreeManager.getWorktreeStats(worker.id);
-			}
-
 			const item: vscode.ChatSessionItem = {
 				resource: OrchestratorSessionId.getResource(task?.id || worker.id),
 				label,
@@ -128,7 +120,6 @@ export class OrchestratorChatSessionItemProvider extends Disposable implements v
 				timing: {
 					startTime: worker.createdAt,
 				},
-				statistics,
 			};
 
 			items.push(item);

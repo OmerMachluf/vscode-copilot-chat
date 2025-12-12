@@ -797,7 +797,7 @@ export const enum ConfirmationCheckResult {
  * Returns a function that returns whether a URI is approved for editing without
  * further user confirmation.
  */
-export function makeUriConfirmationChecker(configuration: IConfigurationService, workspaceService: IWorkspaceService, customInstructionsService: ICustomInstructionsService, workerToolsService: IWorkerToolsService | undefined) {
+export function makeUriConfirmationChecker(configuration: IConfigurationService, workspaceService: IWorkspaceService, customInstructionsService: ICustomInstructionsService, workerToolsService?: IWorkerToolsService) {
 	const patterns = configuration.getNonExtensionConfig<Record<string, boolean>>('chat.tools.edits.autoApprove');
 
 	const checks = new ResourceMap<{ patterns: { pattern: glob.ParsedPattern; isApproved: boolean }[]; ignoreCasing: boolean }>();

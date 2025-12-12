@@ -16,7 +16,6 @@ import { ResourceSet } from '../../../../util/vs/base/common/map';
 import { isString } from '../../../../util/vs/base/common/types';
 import { URI } from '../../../../util/vs/base/common/uri';
 import { ChatVariablesCollection, isPromptInstruction } from '../../../prompt/common/chatVariablesCollection';
-import { IPromptVariablesService } from '../../../prompt/node/promptVariablesService';
 import { Tag } from '../base/tag';
 
 /**
@@ -98,7 +97,6 @@ export class CustomInstructions extends PromptElement<CustomInstructionsProps> {
 		props: CustomInstructionsProps,
 		@ICustomInstructionsService private readonly customInstructionsService: ICustomInstructionsService,
 		@IPromptPathRepresentationService private readonly promptPathRepresentationService: IPromptPathRepresentationService,
-		@IPromptVariablesService private readonly promptVariablesService: IPromptVariablesService,
 		@IFileSystemService private readonly fileSystemService: IFileSystemService,
 		@IWorkspaceService private readonly workspaceService: IWorkspaceService,
 		@ILogService private readonly logService: ILogService,

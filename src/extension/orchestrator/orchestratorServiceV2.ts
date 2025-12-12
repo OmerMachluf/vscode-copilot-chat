@@ -609,18 +609,13 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				}
 				break;
 
-			case 'question':
-			case 'permission_request':
-				// Evaluate permission
-				const action = message.type === 'question' ? 'ask_question' : (message.content as any).permission || 'unknown';
-				const decision = this._permissionService.evaluatePermission(action, message.content as any);
-
+			case 'question': {
+				const decision = this._permissionService.evaluatePermission('ask_question', message.content as any);
 				if (decision === 'auto_approve') {
 					this._autoRespond(message, true);
 				} else if (decision === 'auto_deny') {
 					this._autoRespond(message, false);
 				} else {
-					// Add to inbox
 					this._inbox.addItem({
 						id: generateUuid(),
 						message,
@@ -628,11 +623,46 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 						requiresUserAction: true,
 						createdAt: Date.now()
 					});
-					// Notify user (maybe via toast or status bar)
 					vscode.window.showInformationMessage(`Orchestrator: New request from ${message.workerId}`);
 				}
 				break;
+			}
+
+			case 'permission_request': {
+				if (this._isStructuredPermissionRequest(message.content)) {
+					await this._handlePermissionRequest(message);
+					break;
+				}
+				// Legacy/simple permission payload
+				const action = (message.content as any).permission || 'unknown';
+				const decision = this._permissionService.evaluatePermission(action, message.content as any);
+				if (decision === 'auto_approve') {
+					this._autoRespond(message, true);
+				} else if (decision === 'auto_deny') {
+					this._autoRespond(message, false);
+				} else {
+					this._inbox.addItem({
+						id: generateUuid(),
+						message,
+						status: 'pending',
+						requiresUserAction: true,
+						createdAt: Date.now()
+					});
+					vscode.window.showInformationMessage(`Orchestrator: New request from ${message.workerId}`);
+				}
+				break;
+			}
 		}
+	}
+
+	private _isStructuredPermissionRequest(content: unknown): content is IPermissionRequest {
+		if (!content || typeof content !== 'object') {
+			return false;
+		}
+		const candidate = content as Partial<IPermissionRequest>;
+		return typeof candidate.action === 'string'
+			&& typeof candidate.requesterId === 'string'
+			&& (candidate.requesterType === 'worker' || candidate.requesterType === 'subtask');
 	}
 
 	private _autoRespond(message: IOrchestratorQueueMessage, approved: boolean): void {
@@ -1298,7 +1328,16 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 			// Create scoped tool set for this worker
 			// This ensures tools operate within the worker's worktree
-			const workerToolSet = this._workerToolsService.createWorkerToolSet(worker.id, worktreePath);
+			// Workers deployed by orchestrator have owner = orchestrator, spawnContext = orchestrator
+			const workerToolSet = this._workerToolsService.createWorkerToolSet(
+				worker.id,
+				worktreePath,
+				task.planId,
+				task.id,
+				0, // depth = 0 for orchestrator-deployed workers
+				{ ownerType: 'orchestrator', ownerId: 'orchestrator' },
+				'orchestrator' // spawnContext = orchestrator allows depth up to 2
+			);
 			this._workerToolSets.set(worker.id, workerToolSet);
 
 			// Also store in override map for runtime changes (kept for backward compat)

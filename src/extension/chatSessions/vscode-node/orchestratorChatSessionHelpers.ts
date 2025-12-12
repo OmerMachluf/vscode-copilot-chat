@@ -179,7 +179,8 @@ export function workerMessagesToChatHistory(messages: readonly WorkerMessage[]):
 				[], // references
 				'orchestrator', // participant
 				[], // toolReferences
-				undefined // editedFileEvents
+				undefined, // editedFileEvents
+				undefined // id
 			);
 			history.push(requestTurn);
 

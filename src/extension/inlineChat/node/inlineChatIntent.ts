@@ -147,7 +147,7 @@ export class InlineChatIntent implements IIntent {
 			request = { ...request, prompt: intent.description };
 		}
 
-		const handler = this._instantiationService.createInstance(DefaultIntentRequestHandler, intent, conversation, request, stream, token, documentContext, ChatLocation.Editor, chatTelemetry, undefined, onPaused);
+		const handler = this._instantiationService.createInstance(DefaultIntentRequestHandler, intent, conversation, request, stream, token, documentContext, ChatLocation.Editor, chatTelemetry, undefined, onPaused, 'inlineChat');
 		const result = await handler.getResult();
 
 		if (!didEmitEdits) {

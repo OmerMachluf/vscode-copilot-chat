@@ -474,13 +474,24 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 	}
 
 	private async _executeSubTaskInternal(subTask: ISubTask, token: CancellationToken, streamCollector?: SubTaskStreamCollector): Promise<ISubTaskResult> {
-		// Get or create worker tool set for the parent worker
-		let toolSet = this._workerToolsService.getWorkerToolSet(subTask.parentWorkerId);
+		// Get parent's tool set to inherit spawn context
+		const parentToolSet = this._workerToolsService.getWorkerToolSet(subTask.parentWorkerId);
+		// Inherit spawn context from parent - if parent was from orchestrator, children are too
+		const inheritedSpawnContext = parentToolSet?.workerContext?.spawnContext ?? 'agent';
+
+		// Get or create worker tool set for this subtask
+		let toolSet = this._workerToolsService.getWorkerToolSet(`${subTask.parentWorkerId}-subtask-${subTask.id}`);
 		if (!toolSet) {
 			// Create a new tool set scoped to the worktree
+			// Owner is the parent worker that spawned this subtask
 			toolSet = this._workerToolsService.createWorkerToolSet(
 				`${subTask.parentWorkerId}-subtask-${subTask.id}`,
-				subTask.worktreePath
+				subTask.worktreePath,
+				subTask.planId,
+				subTask.parentTaskId,
+				subTask.depth,
+				{ ownerType: 'worker', ownerId: subTask.parentWorkerId },
+				inheritedSpawnContext // Inherit spawn context from parent
 			);
 		}
 
@@ -532,6 +543,12 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			streamCollector = new SubTaskStreamCollector();
 		}
 
+		// Determine if this subtask can spawn more subtasks based on depth
+		const canSpawnSubTasks = subTask.depth < this.maxDepth;
+		const subTaskGuidance = canSpawnSubTasks
+			? `You CAN spawn sub-tasks if needed using a2a_spawn_subtask or a2a_spawn_parallel_subtasks tools. Use orchestrator_listAgents to discover available agent types.`
+			: `You are at maximum depth (${subTask.depth}/${this.maxDepth}) and CANNOT spawn additional sub-tasks. Complete this task directly.`;
+
 		// Build agent run options
 		const runOptions: IAgentRunOptions = {
 			prompt: contextPrompt,
@@ -540,13 +557,38 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			worktreePath: subTask.worktreePath,
 			token,
 			maxToolCallIterations: 50, // Lower limit for sub-tasks
-			additionalInstructions: `You are executing a sub-task spawned by a parent agent.
-Expected output: ${subTask.expectedOutput}
-Depth level: ${subTask.depth} (max: ${this.maxDepth})
-${subTask.targetFiles?.length ? `Target files: ${subTask.targetFiles.join(', ')}` : ''}
+			additionalInstructions: `## SUB-TASK CONTEXT
+You are a sub-agent spawned by a PARENT AGENT (not the user).
+- **Your Parent:** Worker ID '${subTask.parentWorkerId}'
+- **Your Task ID:** ${subTask.id}
+- **Depth Level:** ${subTask.depth} of ${this.maxDepth}
+${subTask.targetFiles?.length ? `- **Target Files:** ${subTask.targetFiles.join(', ')}` : ''}
 
-Focus on completing this specific task and return a clear result.
-Do not spawn additional sub-tasks unless absolutely necessary.`,
+## COMMUNICATION WITH PARENT
+- Use \`a2a_notify_orchestrator\` to send status updates, questions, or progress reports to your parent.
+- Use \`a2a_subtask_complete\` when you finish to report your results back to the parent.
+- Your parent is WAITING for your completion - they will receive and process your result.
+- **DO NOT** try to communicate with the user directly - route everything through your parent.
+
+## YOUR RESPONSIBILITIES
+1. Complete the specific task assigned to you.
+2. Report completion (success OR failure) using \`a2a_subtask_complete\`.
+3. Any file changes you make in the worktree will be visible to your parent.
+4. Your parent is responsible for merging/integrating your changes.
+
+## SUB-TASK SPAWNING
+${subTaskGuidance}
+
+Good reasons to spawn sub-tasks:
+- Investigating API documentation or external resources
+- Code review by a specialist agent
+- Build/test troubleshooting while you focus on main task
+- Any independent research that would distract from your core goal
+
+## EXPECTED OUTPUT
+${subTask.expectedOutput}
+
+Focus on your assigned task and provide a clear, actionable result.`,
 		};
 
 		// Execute the agent
@@ -567,21 +609,29 @@ Do not spawn additional sub-tasks unless absolutely necessary.`,
 	private _buildSubTaskPrompt(subTask: ISubTask): string {
 		const parts: string[] = [];
 
-		// Add context about being a sub-task
-		parts.push(`## Sub-Task Execution`);
-		parts.push(`Agent Type: ${subTask.agentType}`);
-		parts.push(`Task ID: ${subTask.id}`);
-		parts.push(`Depth: ${subTask.depth}`);
+		// Add context about being a sub-task with clear parent relationship
+		parts.push(`## Sub-Task Assignment`);
+		parts.push(`You have been delegated this task by your parent agent.`);
+		parts.push('');
+		parts.push(`| Property | Value |`);
+		parts.push(`|----------|-------|`);
+		parts.push(`| Agent Type | ${subTask.agentType} |`);
+		parts.push(`| Task ID | ${subTask.id} |`);
+		parts.push(`| Parent Worker | ${subTask.parentWorkerId} |`);
+		parts.push(`| Depth Level | ${subTask.depth} |`);
+		parts.push(`| Worktree | ${subTask.worktreePath} |`);
 		parts.push('');
 
 		// Add the actual prompt
-		parts.push(`## Task`);
+		parts.push(`## Your Task`);
 		parts.push(subTask.prompt);
 		parts.push('');
 
 		// Add expected output guidance
-		parts.push(`## Expected Output`);
+		parts.push(`## Expected Deliverable`);
 		parts.push(subTask.expectedOutput);
+		parts.push('');
+		parts.push(`When complete, use \`a2a_subtask_complete\` to report your results to your parent.`);
 
 		return parts.join('\n');
 	}

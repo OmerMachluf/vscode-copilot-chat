@@ -13,16 +13,33 @@ import { createDecorator } from '../../util/vs/platform/instantiation/common/ins
 // ============================================================================
 
 /**
+ * Context type for determining appropriate depth limits.
+ */
+export type SpawnContext = 'orchestrator' | 'agent' | 'subtask';
+
+/**
  * Configurable safety limits for sub-task management.
  */
 export interface ISafetyLimitsConfig {
-	/** Maximum sub-task nesting depth (default: 2) */
+	/**
+	 * Maximum sub-task nesting depth when spawned from orchestrator.
+	 * Orchestrator → Worker (depth 1) → Sub-worker (depth 2) → NO MORE
+	 * Default: 2
+	 */
+	maxDepthFromOrchestrator: number;
+	/**
+	 * Maximum sub-task nesting depth when spawned from a standalone agent (non-orchestrator).
+	 * Agent → Subtask (depth 1) → NO MORE
+	 * Default: 1
+	 */
+	maxDepthFromAgent: number;
+	/** @deprecated Use maxDepthFromOrchestrator or maxDepthFromAgent instead */
 	maxSubTaskDepth: number;
-	/** Maximum total sub-tasks per worker (default: 10) */
+	/** Maximum total sub-tasks per worker (default: 100) */
 	maxSubTasksPerWorker: number;
-	/** Maximum parallel sub-tasks at once per worker (default: 5) */
+	/** Maximum parallel sub-tasks at once per worker (default: 20) */
 	maxParallelSubTasks: number;
-	/** Rate limit: max sub-task spawns per minute per worker (default: 20) */
+	/** Rate limit: max sub-task spawns per minute per worker (default: 100) */
 	subTaskSpawnRateLimit: number;
 }
 
@@ -117,10 +134,18 @@ export interface ISafetyLimitsService {
 	updateConfig(config: Partial<ISafetyLimitsConfig>): void;
 
 	/**
+	 * Get the maximum depth allowed for a given spawn context.
+	 * @param context The context from which subtasks are being spawned
+	 */
+	getMaxDepthForContext(context: SpawnContext): number;
+
+	/**
 	 * Enforce depth limit before spawning a sub-task.
+	 * @param parentDepth Current depth of the parent
+	 * @param context The spawning context (orchestrator, agent, or subtask)
 	 * @throws Error if depth limit would be exceeded
 	 */
-	enforceDepthLimit(parentDepth: number, maxDepth?: number): void;
+	enforceDepthLimit(parentDepth: number, context?: SpawnContext): void;
 
 	/**
 	 * Detect if spawning a new sub-task would create a cycle.
@@ -210,9 +235,15 @@ export interface ISafetyLimitsService {
 
 /**
  * Default safety limits configuration.
+ *
+ * Depth limits:
+ * - Orchestrator context: orchestrator → worker (1) → sub-worker (2) → STOP
+ * - Agent context: agent → subtask (1) → STOP
  */
 const DEFAULT_SAFETY_LIMITS: ISafetyLimitsConfig = {
-	maxSubTaskDepth: 2,
+	maxDepthFromOrchestrator: 2,
+	maxDepthFromAgent: 1,
+	maxSubTaskDepth: 2, // Deprecated, kept for backward compatibility
 	maxSubTasksPerWorker: 100,
 	maxParallelSubTasks: 20,
 	subTaskSpawnRateLimit: 100,
@@ -280,14 +311,32 @@ export class SafetyLimitsService extends Disposable implements ISafetyLimitsServ
 	// Depth Limit Enforcement
 	// ========================================================================
 
-	enforceDepthLimit(parentDepth: number, maxDepth?: number): void {
-		const effectiveMaxDepth = maxDepth ?? this._config.maxSubTaskDepth;
+	getMaxDepthForContext(context: SpawnContext): number {
+		switch (context) {
+			case 'orchestrator':
+				return this._config.maxDepthFromOrchestrator;
+			case 'agent':
+				return this._config.maxDepthFromAgent;
+			case 'subtask':
+				// Subtasks inherit the limit from their root context
+				// If a subtask is at depth 1 from orchestrator (max 2), it can spawn 1 more
+				// If a subtask is at depth 1 from agent (max 1), it cannot spawn more
+				return this._config.maxSubTaskDepth;
+			default:
+				return this._config.maxSubTaskDepth;
+		}
+	}
+
+	enforceDepthLimit(parentDepth: number, context: SpawnContext = 'subtask'): void {
+		const effectiveMaxDepth = this.getMaxDepthForContext(context);
 
 		if (parentDepth >= effectiveMaxDepth) {
+			const contextLabel = context === 'orchestrator' ? 'orchestrator-deployed worker' :
+				context === 'agent' ? 'standalone agent' : 'sub-task';
 			const error = new Error(
-				`Sub-task depth limit (${effectiveMaxDepth}) exceeded. ` +
+				`Sub-task depth limit (${effectiveMaxDepth}) exceeded for ${contextLabel}. ` +
 				`Cannot spawn deeper sub-tasks from depth ${parentDepth}. ` +
-				`Consider restructuring your task to reduce nesting.`
+				`Consider completing this task directly instead of delegating further.`
 			);
 			this._logService.warn(`[SafetyLimitsService] Depth limit exceeded: ${error.message}`);
 			throw error;

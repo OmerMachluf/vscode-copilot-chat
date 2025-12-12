@@ -4,12 +4,12 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import * as vscode from 'vscode';
 import { DisposableStore } from '../../../util/vs/base/common/lifecycle';
+import { IPermissionRequest, OrchestratorPermissionService } from '../orchestratorPermissions';
+import { OrchestratorQueueService } from '../orchestratorQueue';
 import { OrchestratorService } from '../orchestratorServiceV2';
 import { SubTaskManager } from '../subTaskManager';
-import { OrchestratorPermissionService, IPermissionRequest } from '../orchestratorPermissions';
-import { OrchestratorQueueService } from '../orchestratorQueue';
-import * as vscode from 'vscode';
 
 // Mock fs
 vi.mock('fs', () => ({
@@ -39,105 +39,105 @@ vi.mock('vscode', () => {
             selectChatModels: vi.fn().mockResolvedValue([]),
         },
         l10n: { t: (s: string) => s },
-        Position: class { constructor(public line: number, public character: number) {} },
-        Range: class { constructor(public start: any, public end: any) {} },
-        Selection: class { constructor(public anchor: any, public active: any) {} },
+        Position: class { constructor(public line: number, public character: number) { } },
+        Range: class { constructor(public start: any, public end: any) { } },
+        Selection: class { constructor(public anchor: any, public active: any) { } },
         EventEmitter: class { event = vi.fn(); fire = vi.fn(); dispose = vi.fn(); },
         CancellationTokenSource: class { token = { isCancellationRequested: false, onCancellationRequested: vi.fn() }; cancel = vi.fn(); dispose = vi.fn(); },
-        Disposable: class { static from(...disposables: any[]) { return { dispose: () => disposables.forEach(d => d.dispose()) }; } dispose() {} },
-        MarkdownString: class { constructor(public value: string) {} },
-        Diagnostic: class {},
-        TextEdit: class {},
-        WorkspaceEdit: class {},
+        Disposable: class { static from(...disposables: any[]) { return { dispose: () => disposables.forEach(d => d.dispose()) }; } dispose() { } },
+        MarkdownString: class { constructor(public value: string) { } },
+        Diagnostic: class { },
+        TextEdit: class { },
+        WorkspaceEdit: class { },
         TextEditorCursorStyle: {},
         TextEditorLineNumbersStyle: {},
         TextEditorRevealType: {},
         EndOfLine: {},
         DiagnosticSeverity: {},
         ExtensionMode: {},
-        Location: class {},
-        DiagnosticRelatedInformation: class {},
+        Location: class { },
+        DiagnosticRelatedInformation: class { },
         ChatVariableLevel: {},
         ChatResponseClearToPreviousToolInvocationReason: {},
-        ChatResponseMarkdownPart: class {},
-        ChatResponseThinkingProgressPart: class {},
-        ChatResponseFileTreePart: class {},
-        ChatResponseAnchorPart: class {},
-        ChatResponseProgressPart: class {},
-        ChatResponseProgressPart2: class {},
-        ChatResponseReferencePart: class {},
-        ChatResponseReferencePart2: class {},
-        ChatResponseCodeCitationPart: class {},
-        ChatResponseCommandButtonPart: class {},
-        ChatResponseWarningPart: class {},
-        ChatResponseMovePart: class {},
-        ChatResponseExtensionsPart: class {},
-        ChatResponseExternalEditPart: class {},
-        ChatResponsePullRequestPart: class {},
-        ChatResponseMarkdownWithVulnerabilitiesPart: class {},
-        ChatResponseCodeblockUriPart: class {},
-        ChatResponseTextEditPart: class {},
-        ChatResponseNotebookEditPart: class {},
-        ChatResponseConfirmationPart: class {},
-        ChatPrepareToolInvocationPart: class {},
-        ChatRequest: class {},
-        ChatRequestTurn: class {},
-        ChatResponseTurn: class {},
-        NewSymbolName: class {},
+        ChatResponseMarkdownPart: class { },
+        ChatResponseThinkingProgressPart: class { },
+        ChatResponseFileTreePart: class { },
+        ChatResponseAnchorPart: class { },
+        ChatResponseProgressPart: class { },
+        ChatResponseProgressPart2: class { },
+        ChatResponseReferencePart: class { },
+        ChatResponseReferencePart2: class { },
+        ChatResponseCodeCitationPart: class { },
+        ChatResponseCommandButtonPart: class { },
+        ChatResponseWarningPart: class { },
+        ChatResponseMovePart: class { },
+        ChatResponseExtensionsPart: class { },
+        ChatResponseExternalEditPart: class { },
+        ChatResponsePullRequestPart: class { },
+        ChatResponseMarkdownWithVulnerabilitiesPart: class { },
+        ChatResponseCodeblockUriPart: class { },
+        ChatResponseTextEditPart: class { },
+        ChatResponseNotebookEditPart: class { },
+        ChatResponseConfirmationPart: class { },
+        ChatPrepareToolInvocationPart: class { },
+        ChatRequest: class { },
+        ChatRequestTurn: class { },
+        ChatResponseTurn: class { },
+        NewSymbolName: class { },
         NewSymbolNameTag: {},
         NewSymbolNameTriggerKind: {},
         ChatLocation: {},
-        ChatRequestEditorData: class {},
-        ChatRequestNotebookData: class {},
-        LanguageModelToolInformation: class {},
-        LanguageModelToolResult: class {},
-        ExtendedLanguageModelToolResult: class {},
-        LanguageModelToolResult2: class {},
-        SymbolInformation: class {},
-        LanguageModelPromptTsxPart: class {},
-        LanguageModelTextPart: class {},
-        LanguageModelTextPart2: class {},
-        LanguageModelThinkingPart: class {},
-        LanguageModelDataPart: class {},
-        LanguageModelDataPart2: class {},
+        ChatRequestEditorData: class { },
+        ChatRequestNotebookData: class { },
+        LanguageModelToolInformation: class { },
+        LanguageModelToolResult: class { },
+        ExtendedLanguageModelToolResult: class { },
+        LanguageModelToolResult2: class { },
+        SymbolInformation: class { },
+        LanguageModelPromptTsxPart: class { },
+        LanguageModelTextPart: class { },
+        LanguageModelTextPart2: class { },
+        LanguageModelThinkingPart: class { },
+        LanguageModelDataPart: class { },
+        LanguageModelDataPart2: class { },
         LanguageModelPartAudience: {},
-        LanguageModelToolMCPSource: class {},
-        LanguageModelToolExtensionSource: class {},
-        ChatReferenceBinaryData: class {},
-        ChatReferenceDiagnostic: class {},
-        TextSearchMatch2: class {},
-        AISearchKeyword: class {},
+        LanguageModelToolMCPSource: class { },
+        LanguageModelToolExtensionSource: class { },
+        ChatReferenceBinaryData: class { },
+        ChatReferenceDiagnostic: class { },
+        TextSearchMatch2: class { },
+        AISearchKeyword: class { },
         ExcludeSettingOptions: {},
         NotebookCellKind: {},
-        NotebookRange: class {},
-        NotebookEdit: class {},
-        NotebookCellData: class {},
-        NotebookData: class {},
+        NotebookRange: class { },
+        NotebookEdit: class { },
+        NotebookCellData: class { },
+        NotebookData: class { },
         ChatErrorLevel: {},
         TerminalShellExecutionCommandLineConfidence: {},
         ChatRequestEditedFileEventKind: {},
-        Extension: class {},
-        LanguageModelToolCallPart: class {},
-        LanguageModelToolResultPart: class {},
-        LanguageModelToolResultPart2: class {},
+        Extension: class { },
+        LanguageModelToolCallPart: class { },
+        LanguageModelToolResultPart: class { },
+        LanguageModelToolResultPart2: class { },
         LanguageModelChatMessageRole: {},
         TextEditorSelectionChangeKind: {},
         TextDocumentChangeReason: {},
-        ChatToolInvocationPart: class {},
-        ChatResponseTurn2: class {},
-        ChatRequestTurn2: class {},
-        LanguageModelError: class {},
+        ChatToolInvocationPart: class { },
+        ChatResponseTurn2: class { },
+        ChatRequestTurn2: class { },
+        LanguageModelError: class { },
         SymbolKind: {},
-        SnippetString: class {},
-        SnippetTextEdit: class {},
+        SnippetString: class { },
+        SnippetTextEdit: class { },
         FileType: { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 },
         ChatSessionStatus: {},
-        ThemeColor: class {},
-        TreeItem: class {},
+        ThemeColor: class { },
+        TreeItem: class { },
         TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
         UIKind: { Desktop: 1, Web: 2 },
         LogLevel: { Trace: 1, Debug: 2, Info: 3, Warning: 4, Error: 5, Critical: 6, Off: 7 },
-        ChatResponseStream: class {},
+        ChatResponseStream: class { },
     };
 });
 
@@ -167,7 +167,7 @@ describe('Orchestrator Permission Flow', () => {
     let subTaskManager: SubTaskManager;
     let permissionService: OrchestratorPermissionService;
     let queueService: OrchestratorQueueService;
-    
+
     // Mock dependencies
     let mockAgentInstructionService: any;
     let mockAgentRunner: any;
@@ -177,14 +177,14 @@ describe('Orchestrator Permission Flow', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         disposables = new DisposableStore();
-        
+
         // Setup mocks
         mockAgentInstructionService = { loadInstructions: vi.fn().mockResolvedValue({ instructions: [] }) };
         mockAgentRunner = { run: vi.fn() };
-        mockWorkerToolsService = { 
-            createWorkerToolSet: vi.fn(), 
+        mockWorkerToolsService = {
+            createWorkerToolSet: vi.fn(),
             getWorkerToolSet: vi.fn(),
-            disposeWorkerToolSet: vi.fn() 
+            disposeWorkerToolSet: vi.fn()
         };
         mockSafetyLimitsService = {
             config: {
@@ -229,7 +229,8 @@ describe('Orchestrator Permission Flow', () => {
             mockWorkerToolsService,
             queueService,
             subTaskManager,
-            permissionService
+            permissionService,
+            createMockLogService() as any
         );
         disposables.add(orchestratorService);
 
@@ -334,7 +335,7 @@ describe('Orchestrator Permission Flow', () => {
     it('should escalate to orchestrator and ask user if needed', async () => {
         // Mock global permissions to ask user
         vi.spyOn(permissionService, 'evaluatePermission').mockReturnValue('ask_user');
-        
+
         // Mock user approval
         (vscode.window.showInformationMessage as any).mockResolvedValue('Approve');
 
@@ -403,10 +404,10 @@ describe('Orchestrator Permission Flow', () => {
 
     it('should apply default action (approve) on timeout', async () => {
         vi.spyOn(permissionService, 'evaluatePermission').mockReturnValue('ask_user');
-        
+
         // Mock user dialog that never resolves (simulates user not responding)
-        (vscode.window.showInformationMessage as any).mockImplementation(() => 
-            new Promise(() => {}) // Never resolves
+        (vscode.window.showInformationMessage as any).mockImplementation(() =>
+            new Promise(() => { }) // Never resolves
         );
 
         const request: IPermissionRequest = {
@@ -443,10 +444,10 @@ describe('Orchestrator Permission Flow', () => {
 
     it('should apply default action (deny) on timeout', async () => {
         vi.spyOn(permissionService, 'evaluatePermission').mockReturnValue('ask_user');
-        
+
         // Mock user dialog that never resolves (simulates user not responding)
-        (vscode.window.showInformationMessage as any).mockImplementation(() => 
-            new Promise(() => {}) // Never resolves
+        (vscode.window.showInformationMessage as any).mockImplementation(() =>
+            new Promise(() => { }) // Never resolves
         );
 
         const request: IPermissionRequest = {
