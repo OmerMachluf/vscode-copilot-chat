@@ -1783,6 +1783,41 @@
 				}
 			},
 			{
+				"name": "copilot_a2aPullSubTaskChanges",
+				"toolReferenceName": "a2a_pull_subtask_changes",
+				"displayName": "Pull Sub-Task Changes",
+				"modelDescription": "Pull changes from a subtask's worktree into the parent's worktree. Use this after reviewing a subtask's work and determining it is satisfactory.",
+				"userDescription": "Pull sub-task changes",
+				"icon": "$(git-pull-request)",
+				"tags": ["vscode_codesearch"],
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"workerId": { "type": "string", "description": "The worker ID whose changes to pull" },
+						"subtaskWorktree": { "type": "string", "description": "The path to the subtask's worktree" },
+						"files": { "type": "array", "items": { "type": "string" }, "description": "Optional: specific files to pull. If omitted, pulls all changed files." }
+					},
+					"required": ["workerId", "subtaskWorktree"]
+				}
+			},
+			{
+				"name": "copilot_a2aSendMessageToWorker",
+				"toolReferenceName": "a2a_send_message_to_worker",
+				"displayName": "Send Message to Worker",
+				"modelDescription": "Send a message to a subtask worker. Use this to provide feedback or request the worker to continue working on the task.",
+				"userDescription": "Send message to worker",
+				"icon": "$(comment)",
+				"tags": ["vscode_codesearch"],
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"workerId": { "type": "string", "description": "The worker ID to send the message to" },
+						"message": { "type": "string", "description": "The message content" }
+					},
+					"required": ["workerId", "message"]
+				}
+			},
+			{
 				"name": "copilot_orchestratorReassignAgent",
 				"toolReferenceName": "orchestrator_reassignAgent",
 				"displayName": "Reassign Agent",
@@ -1934,7 +1969,9 @@
 					"a2a_spawnParallelSubTasks",
 					"a2a_awaitSubTasks",
 					"a2a_notifyOrchestrator",
-					"a2a_subtask_complete"
+					"a2a_subtask_complete",
+					"a2a_pull_subtask_changes",
+					"a2a_send_message_to_worker"
 				]
 			},
 			{
