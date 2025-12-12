@@ -253,8 +253,8 @@ export class ParentCompletionService extends Disposable implements IParentComple
 		}
 		this._processedCompletions.add(completionId);
 
-		// Format the completion message
-		const message = this._createCompletionMessage(subTask, result);
+		// Format the completion message (including diff stats)
+		const message = await this._createCompletionMessage(subTask, result);
 
 		// Determine the owner
 		const ownerId = subTask.parentWorkerId;
@@ -270,7 +270,13 @@ export class ParentCompletionService extends Disposable implements IParentComple
 		}
 	}
 
-	private _createCompletionMessage(subTask: ISubTask, result: ISubTaskResult): IParentCompletionMessage {
+	private async _createCompletionMessage(subTask: ISubTask, result: ISubTaskResult): Promise<IParentCompletionMessage> {
+		// Fetch diff stats for the worktree to include in completion payload
+		let diffStats: { changedFilesCount: number; insertions: number; deletions: number } | undefined;
+		if (subTask.worktreePath) {
+			diffStats = await getWorktreeDiffStats(subTask.worktreePath);
+		}
+
 		return {
 			subTaskId: subTask.id,
 			agentType: subTask.agentType,
@@ -280,8 +286,9 @@ export class ParentCompletionService extends Disposable implements IParentComple
 			status: result.status,
 			error: result.error,
 			timestamp: Date.now(),
-			// Note: changedFilesCount, insertions, deletions can be populated by git diff stats
-			// This will be enhanced in Phase 5 (worktree semantics)
+			changedFilesCount: diffStats?.changedFilesCount,
+			insertions: diffStats?.insertions,
+			deletions: diffStats?.deletions,
 		};
 	}
 
@@ -464,4 +471,126 @@ export async function getWorktreeDiffStats(worktreePath: string): Promise<{
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * Get the list of changed files in a worktree.
+ * Returns an array of file paths relative to the worktree root.
+ */
+export async function getWorktreeChangedFiles(worktreePath: string): Promise<string[]> {
+	try {
+		const result = await new Promise<string>((resolve, reject) => {
+			const { exec } = require('child_process');
+			exec(
+				'git diff --name-only HEAD',
+				{ cwd: worktreePath, encoding: 'utf-8' },
+				(error: Error | null, stdout: string) => {
+					if (error) {
+						reject(error);
+					} else {
+						resolve(stdout);
+					}
+				}
+			);
+		});
+
+		return result.split('\n').filter(l => l.trim());
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Open a worktree in a new VS Code window.
+ * @param worktreePath Path to the worktree to open
+ * @param options Additional options for opening
+ */
+export async function openWorktreeInNewWindow(worktreePath: string, options?: { newWindow?: boolean }): Promise<void> {
+	const vscode = require('vscode');
+	const uri = vscode.Uri.file(worktreePath);
+	await vscode.commands.executeCommand('vscode.openFolder', uri, { forceNewWindow: options?.newWindow ?? true });
+}
+
+/**
+ * Show diff for a worktree against its base branch.
+ * Opens the VS Code diff editor with all changed files.
+ */
+export async function showWorktreeDiff(worktreePath: string): Promise<void> {
+	const vscode = require('vscode');
+	try {
+		// Get the list of changed files
+		const changedFiles = await getWorktreeChangedFiles(worktreePath);
+
+		if (changedFiles.length === 0) {
+			vscode.window.showInformationMessage('No changes in worktree');
+			return;
+		}
+
+		// Open the first changed file in diff view, user can navigate from there
+		const path = require('path');
+		const firstFile = changedFiles[0];
+		const fileUri = vscode.Uri.file(path.join(worktreePath, firstFile));
+
+		// Use the SCM view to show changes
+		await vscode.commands.executeCommand('git.openChange', fileUri);
+	} catch (error) {
+		vscode.window.showErrorMessage(`Failed to show diff: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+
+/**
+ * Create a quick pick action menu for worktree operations.
+ * Useful for parent agents to offer actions on completed subtask worktrees.
+ */
+export interface IWorktreeAction {
+	label: string;
+	description?: string;
+	action: 'open' | 'diff' | 'files' | 'merge' | 'discard';
+}
+
+export async function showWorktreeActionsMenu(
+	worktreePath: string,
+	branchName: string,
+	diffStats?: { changedFilesCount: number; insertions: number; deletions: number }
+): Promise<IWorktreeAction | undefined> {
+	const vscode = require('vscode');
+
+	const statsInfo = diffStats
+		? ` (${diffStats.changedFilesCount} files, +${diffStats.insertions}/-${diffStats.deletions})`
+		: '';
+
+	const items: (IWorktreeAction & { picked?: boolean })[] = [
+		{
+			label: '$(folder-opened) Open Worktree',
+			description: 'Open in new VS Code window',
+			action: 'open',
+		},
+		{
+			label: '$(diff) Show Diff',
+			description: `View changes${statsInfo}`,
+			action: 'diff',
+		},
+		{
+			label: '$(list-unordered) List Changed Files',
+			description: 'Show all modified files',
+			action: 'files',
+		},
+		{
+			label: '$(git-merge) Merge to Main',
+			description: `Merge ${branchName} into main branch`,
+			action: 'merge',
+		},
+		{
+			label: '$(trash) Discard Changes',
+			description: 'Remove worktree and branch',
+			action: 'discard',
+		},
+	];
+
+	const selected = await vscode.window.showQuickPick(items, {
+		placeHolder: `Actions for worktree: ${branchName}`,
+		title: 'Worktree Actions',
+	});
+
+	return selected ? { label: selected.label, description: selected.description, action: selected.action } : undefined;
 }

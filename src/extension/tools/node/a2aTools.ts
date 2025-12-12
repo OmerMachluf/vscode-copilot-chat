@@ -3,13 +3,14 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import * as vscode from 'vscode';
+import type * as vscode from 'vscode';
 import { CancellationToken, LanguageModelTextPart, LanguageModelToolInvocationOptions, LanguageModelToolInvocationPrepareOptions, LanguageModelToolResult, ProviderResult, workspace } from 'vscode';
 import { ILogService } from '../../../platform/log/common/logService';
 import { IDisposable } from '../../../util/vs/base/common/lifecycle';
 import { generateUuid } from '../../../util/vs/base/common/uuid';
 import { IOrchestratorQueueMessage, IOrchestratorQueueService } from '../../orchestrator/orchestratorQueue';
 import { ISubTask, ISubTaskCreateOptions, ISubTaskManager, ISubTaskResult } from '../../orchestrator/subTaskManager';
+import { ISubtaskProgressService, ParallelSubtaskProgressRenderer } from '../../orchestrator/subtaskProgressService';
 import { IWorkerContext } from '../../orchestrator/workerToolsService';
 import { ToolName } from '../common/toolNames';
 import { ICopilotTool, ToolRegistry } from '../common/toolsRegistry';
@@ -75,6 +76,7 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 		@ISubTaskManager private readonly _subTaskManager: ISubTaskManager,
 		@IWorkerContext private readonly _workerContext: IWorkerContext,
 		@IOrchestratorQueueService private readonly _queueService: IOrchestratorQueueService,
+		@ISubtaskProgressService private readonly _progressService: ISubtaskProgressService,
 		@ILogService private readonly _logService: ILogService,
 	) { }
 
@@ -156,12 +158,28 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 		// Create the sub-task
 		const subTask = this._subTaskManager.createSubTask(createOptions);
 
+		// Get chat stream for progress (if available through progress service)
+		const parentStream = this._progressService.getStream(workerId);
+
 		// Non-blocking mode: return immediately with task ID
 		if (!blocking) {
-			// Start execution in background (don't await)
-			this._subTaskManager.executeSubTask(subTask.id, token).catch(error => {
-				this._logService.error(`[A2ASpawnSubTaskTool] Background sub-task ${subTask.id} failed:`, error);
+			// Create progress tracking for the background task
+			const progressHandle = this._progressService.createProgress({
+				subtaskId: subTask.id,
+				agentType,
+				message: `Executing in background...`,
+				stream: parentStream,
 			});
+
+			// Start execution in background (don't await)
+			this._subTaskManager.executeSubTask(subTask.id, token)
+				.then(result => {
+					progressHandle.complete(result);
+				})
+				.catch(error => {
+					progressHandle.fail(error instanceof Error ? error.message : String(error));
+					this._logService.error(`[A2ASpawnSubTaskTool] Background sub-task ${subTask.id} failed:`, error);
+				});
 
 			return new LanguageModelToolResult([
 				new LanguageModelTextPart(
@@ -182,67 +200,69 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 		const collectedMessages: IOrchestratorQueueMessage[] = [];
 		let handlerDisposable: IDisposable | undefined;
 
-		return await vscode.window.withProgress({
-			location: vscode.ProgressLocation.Notification,
-			title: `🤖 Sub-task: ${agentType}`,
-			cancellable: true
-		}, async (progress, progressToken) => {
-			const linkedToken = progressToken.isCancellationRequested ? progressToken : token;
+		// Create progress tracking
+		const progressHandle = this._progressService.createProgress({
+			subtaskId: subTask.id,
+			agentType,
+			message: `Executing (ID: ${subTask.id.slice(-8)})...`,
+			stream: parentStream,
+		});
 
-			try {
-				progress.report({ message: `Executing (ID: ${subTask.id.slice(-8)})...` });
+		try {
+			// Register this worker as owner handler to receive messages from subtask
+			handlerDisposable = this._queueService.registerOwnerHandler(workerId, async (message) => {
+				this._logService.debug(`[A2ASpawnSubTaskTool] Received message from subtask: ${message.type}`);
+				collectedMessages.push(message);
+				const content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
+				progressHandle.update(`[${message.type}] ${content.slice(0, 50)}...`);
+			});
 
-				// Register this worker as owner handler to receive messages from subtask
-				handlerDisposable = this._queueService.registerOwnerHandler(workerId, async (message) => {
-					this._logService.debug(`[A2ASpawnSubTaskTool] Received message from subtask: ${message.type}`);
-					collectedMessages.push(message);
-					const content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
-					progress.report({ message: `[${message.type}] ${content.slice(0, 50)}...` });
-				});
+			// Execute the sub-task and wait for result
+			const result = await this._subTaskManager.executeSubTask(subTask.id, token);
 
-				// Execute the sub-task and wait for result
-				const result = await this._subTaskManager.executeSubTask(subTask.id, linkedToken);
+			// Mark progress as complete
+			progressHandle.complete(result);
 
-				// Format collected messages as additional context
-				const messagesSummary = collectedMessages.length > 0
-					? `\n\n**Sub-Task Communications (${collectedMessages.length} messages):**\n${collectedMessages.map(m => `- [${m.type}] ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`).join('\n')}`
-					: '';
+			// Format collected messages as additional context
+			const messagesSummary = collectedMessages.length > 0
+				? `\n\n**Sub-Task Communications (${collectedMessages.length} messages):**\n${collectedMessages.map(m => `- [${m.type}] ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`).join('\n')}`
+				: '';
 
-				// Return the result
-				if (result.status === 'success') {
-					return new LanguageModelToolResult([
-						new LanguageModelTextPart(
-							`Sub-task completed successfully.\n\n` +
-							`**Sub-Task ID:** ${subTask.id}\n` +
-							`**Agent:** ${agentType}\n` +
-							`**Status:** ${result.status}\n\n` +
-							`**Output:**\n${result.output}${messagesSummary}`
-						),
-					]);
-				} else {
-					return new LanguageModelToolResult([
-						new LanguageModelTextPart(
-							`Sub-task failed.\n\n` +
-							`**Sub-Task ID:** ${subTask.id}\n` +
-							`**Agent:** ${agentType}\n` +
-							`**Status:** ${result.status}\n` +
-							`**Error:** ${result.error ?? 'Unknown error'}\n\n` +
-							`**Partial Output:**\n${result.output || '(none)'}${messagesSummary}`
-						),
-					]);
-				}
-			} catch (error) {
-				this._logService.error(`[A2ASpawnSubTaskTool] Failed to spawn sub-task:`, error);
+			// Return the result
+			if (result.status === 'success') {
 				return new LanguageModelToolResult([
 					new LanguageModelTextPart(
-						`ERROR: Failed to spawn sub-task: ${error instanceof Error ? error.message : String(error)}`
+						`Sub-task completed successfully.\n\n` +
+						`**Sub-Task ID:** ${subTask.id}\n` +
+						`**Agent:** ${agentType}\n` +
+						`**Status:** ${result.status}\n\n` +
+						`**Output:**\n${result.output}${messagesSummary}`
 					),
 				]);
-			} finally {
-				// Always unregister the handler when done
-				handlerDisposable?.dispose();
+			} else {
+				return new LanguageModelToolResult([
+					new LanguageModelTextPart(
+						`Sub-task failed.\n\n` +
+						`**Sub-Task ID:** ${subTask.id}\n` +
+						`**Agent:** ${agentType}\n` +
+						`**Status:** ${result.status}\n` +
+						`**Error:** ${result.error ?? 'Unknown error'}\n\n` +
+						`**Partial Output:**\n${result.output || '(none)'}${messagesSummary}`
+					),
+				]);
 			}
-		});
+		} catch (error) {
+			progressHandle.fail(error instanceof Error ? error.message : String(error));
+			this._logService.error(`[A2ASpawnSubTaskTool] Failed to spawn sub-task:`, error);
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(
+					`ERROR: Failed to spawn sub-task: ${error instanceof Error ? error.message : String(error)}`
+				),
+			]);
+		} finally {
+			// Always unregister the handler when done
+			handlerDisposable?.dispose();
+		}
 	}
 }
 
@@ -257,6 +277,7 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 		@ISubTaskManager private readonly _subTaskManager: ISubTaskManager,
 		@IWorkerContext private readonly _workerContext: IWorkerContext,
 		@IOrchestratorQueueService private readonly _queueService: IOrchestratorQueueService,
+		@ISubtaskProgressService private readonly _progressService: ISubtaskProgressService,
 		@ILogService private readonly _logService: ILogService,
 	) { }
 
@@ -374,11 +395,33 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 		if (!waitForAll) {
 			this._logService.info(`[A2ASpawnParallelSubTasksTool] Non-blocking mode: starting ${createdTasks.length} tasks in background`);
 
-			// Start all tasks in background (fire-and-forget)
-			for (const task of createdTasks) {
-				this._subTaskManager.executeSubTask(task.id, token).catch((error) => {
-					this._logService.error(`[A2ASpawnParallelSubTasksTool] Background task ${task.id} failed:`, error);
-				});
+			// Get chat stream for progress (if available through progress service)
+			const parentStream = this._progressService.getStream(workerId);
+
+			// Create progress renderer for parallel tasks
+			const progressRenderer = new ParallelSubtaskProgressRenderer(
+				this._progressService,
+				parentStream,
+				this._logService
+			);
+
+			// Start all tasks in background with progress tracking
+			for (let i = 0; i < createdTasks.length; i++) {
+				const task = createdTasks[i];
+				const config = subtasks[i];
+
+				const handle = progressRenderer.addSubtask(task.id, config.agentType);
+
+				this._subTaskManager.executeSubTask(task.id, token)
+					.then(result => {
+						handle.complete(result);
+						progressRenderer.reportSummary();
+					})
+					.catch((error) => {
+						handle.fail(error instanceof Error ? error.message : String(error));
+						progressRenderer.reportSummary();
+						this._logService.error(`[A2ASpawnParallelSubTasksTool] Background task ${task.id} failed:`, error);
+					});
 			}
 
 			const taskIds = createdTasks.map(t => t.id);
@@ -395,6 +438,16 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 		}
 
 		// BLOCKING MODE: Wait for all tasks with progress UI
+		// Get chat stream for progress (if available through progress service)
+		const parentStream = this._progressService.getStream(workerId);
+
+		// Create progress renderer for parallel tasks
+		const progressRenderer = new ParallelSubtaskProgressRenderer(
+			this._progressService,
+			parentStream,
+			this._logService
+		);
+
 		// Collect messages from all subtasks while they run
 		const collectedMessages: Map<string, IOrchestratorQueueMessage[]> = new Map();
 		for (const task of createdTasks) {
@@ -402,95 +455,89 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 		}
 		let handlerDisposable: IDisposable | undefined;
 
-		// Show progress indicator while waiting for subtasks
-		return await vscode.window.withProgress({
-			location: vscode.ProgressLocation.Notification,
-			title: `🤖 Parallel Sub-tasks (${subtasks.length})`,
-			cancellable: true
-		}, async (progress, progressToken) => {
-			const linkedToken = progressToken.isCancellationRequested ? progressToken : token;
-			const completedCount = { value: 0 };
+		try {
+			// Create progress items for each subtask
+			const progressHandles = createdTasks.map((task, i) =>
+				progressRenderer.addSubtask(task.id, subtasks[i].agentType)
+			);
 
-			try {
-				progress.report({ message: `Executing ${subtasks.length} sub-tasks in parallel...`, increment: 10 });
+			// Register this worker as owner handler to receive messages from all subtasks
+			handlerDisposable = this._queueService.registerOwnerHandler(workerId, async (message) => {
+				this._logService.debug(`[A2ASpawnParallelSubTasksTool] Received message from subtask: ${message.type}`);
+				// Route message to the appropriate subtask's collection
+				const taskMessages = collectedMessages.get(message.subTaskId ?? message.taskId);
+				if (taskMessages) {
+					taskMessages.push(message);
+				}
+				// Update progress
+				if (message.type === 'completion') {
+					progressRenderer.reportSummary();
+				}
+			});
 
-				// Register this worker as owner handler to receive messages from all subtasks
-				handlerDisposable = this._queueService.registerOwnerHandler(workerId, async (message) => {
-					this._logService.debug(`[A2ASpawnParallelSubTasksTool] Received message from subtask: ${message.type}`);
-					// Route message to the appropriate subtask's collection
-					const taskMessages = collectedMessages.get(message.subTaskId ?? message.taskId);
-					if (taskMessages) {
-						taskMessages.push(message);
+			// Execute all in parallel
+			const resultPromises = createdTasks.map((task, i) =>
+				this._subTaskManager.executeSubTask(task.id, token).then(result => {
+					progressHandles[i].complete(result);
+					return result;
+				})
+			);
+
+			const results = await Promise.all(resultPromises);
+
+			// Report final summary
+			progressRenderer.reportSummary();
+
+			// Format results
+			const resultLines: string[] = [];
+			resultLines.push(`## Parallel Sub-Tasks Results\n`);
+			resultLines.push(`Total: ${results.length} | Success: ${results.filter(r => r.status === 'success').length} | Failed: ${results.filter(r => r.status !== 'success').length}\n`);
+
+			for (let i = 0; i < results.length; i++) {
+				const result = results[i];
+				const task = createdTasks[i];
+				const taskConfig = subtasks[i];
+				const taskMessages = collectedMessages.get(task.id) ?? [];
+
+				resultLines.push(`### Sub-Task ${i + 1}: ${taskConfig.agentType}`);
+				resultLines.push(`- **ID:** ${task.id}`);
+				resultLines.push(`- **Status:** ${result.status}`);
+
+				if (result.status === 'success') {
+					resultLines.push(`- **Output:**\n${result.output}\n`);
+				} else {
+					resultLines.push(`- **Error:** ${result.error ?? 'Unknown'}`);
+					if (result.output) {
+						resultLines.push(`- **Partial Output:**\n${result.output}\n`);
 					}
-					// Update progress with message count
-					if (message.type === 'completion') {
-						completedCount.value++;
-						progress.report({
-							message: `Completed ${completedCount.value}/${subtasks.length}`,
-							increment: 80 / subtasks.length
-						});
-					}
-				});
-
-				// Execute all in parallel
-				const resultPromises = createdTasks.map(task =>
-					this._subTaskManager.executeSubTask(task.id, linkedToken)
-				);
-
-				const results = await Promise.all(resultPromises);
-
-				progress.report({ message: 'All sub-tasks completed', increment: 10 });
-
-				// Format results
-				const resultLines: string[] = [];
-				resultLines.push(`## Parallel Sub-Tasks Results\n`);
-				resultLines.push(`Total: ${results.length} | Success: ${results.filter(r => r.status === 'success').length} | Failed: ${results.filter(r => r.status !== 'success').length}\n`);
-
-				for (let i = 0; i < results.length; i++) {
-					const result = results[i];
-					const task = createdTasks[i];
-					const taskConfig = subtasks[i];
-					const taskMessages = collectedMessages.get(task.id) ?? [];
-
-					resultLines.push(`### Sub-Task ${i + 1}: ${taskConfig.agentType}`);
-					resultLines.push(`- **ID:** ${task.id}`);
-					resultLines.push(`- **Status:** ${result.status}`);
-
-					if (result.status === 'success') {
-						resultLines.push(`- **Output:**\n${result.output}\n`);
-					} else {
-						resultLines.push(`- **Error:** ${result.error ?? 'Unknown'}`);
-						if (result.output) {
-							resultLines.push(`- **Partial Output:**\n${result.output}\n`);
-						}
-					}
-
-					// Include collected messages for this subtask
-					if (taskMessages.length > 0) {
-						resultLines.push(`- **Communications (${taskMessages.length} messages):**`);
-						for (const msg of taskMessages) {
-							resultLines.push(`  - [${msg.type}] ${typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)}`);
-						}
-					}
-					resultLines.push('');
 				}
 
-				return new LanguageModelToolResult([
-					new LanguageModelTextPart(resultLines.join('\n')),
-				]);
-
-			} catch (error) {
-				this._logService.error(`[A2ASpawnParallelSubTasksTool] Failed:`, error);
-				return new LanguageModelToolResult([
-					new LanguageModelTextPart(
-						`ERROR: Failed to execute parallel sub-tasks: ${error instanceof Error ? error.message : String(error)}`
-					),
-				]);
-			} finally {
-				// Always unregister the handler when done
-				handlerDisposable?.dispose();
+				// Include collected messages for this subtask
+				if (taskMessages.length > 0) {
+					resultLines.push(`- **Communications (${taskMessages.length} messages):**`);
+					for (const msg of taskMessages) {
+						resultLines.push(`  - [${msg.type}] ${typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)}`);
+					}
+				}
+				resultLines.push('');
 			}
-		});
+
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(resultLines.join('\n')),
+			]);
+
+		} catch (error) {
+			progressRenderer.dispose();
+			this._logService.error(`[A2ASpawnParallelSubTasksTool] Failed:`, error);
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(
+					`ERROR: Failed to execute parallel sub-tasks: ${error instanceof Error ? error.message : String(error)}`
+				),
+			]);
+		} finally {
+			// Always unregister the handler when done
+			handlerDisposable?.dispose();
+		}
 	}
 }
 

@@ -2133,6 +2133,16 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			throw new Error('No workspace folder open');
 		}
 
+		// Check for dirty workspace (fail-fast policy)
+		// Prevents accidental loss of uncommitted work and merge confusion
+		const hasUncommittedChanges = await this._checkForDirtyWorkspace(workspaceFolder);
+		if (hasUncommittedChanges) {
+			throw new Error(
+				'Cannot create worktree: the main workspace has uncommitted changes. ' +
+				'Please commit, stash, or discard your changes before spawning workers.'
+			);
+		}
+
 		const worktreesDir = path.join(workspaceFolder, '..', '.worktrees');
 		if (!fs.existsSync(worktreesDir)) {
 			fs.mkdirSync(worktreesDir, { recursive: true });
@@ -2173,6 +2183,20 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		}
 
 		return worktreePath;
+	}
+
+	/**
+	 * Check if the workspace has uncommitted changes (staged or unstaged).
+	 * Used to enforce the "fail-fast" dirty workspace policy.
+	 */
+	private async _checkForDirtyWorkspace(workspaceFolder: string): Promise<boolean> {
+		try {
+			const statusOutput = await this._execGit(['status', '--porcelain'], workspaceFolder);
+			return statusOutput.trim().length > 0;
+		} catch {
+			// If git command fails, assume clean to allow worktree creation
+			return false;
+		}
 	}
 
 	// --- Session URI Management ---

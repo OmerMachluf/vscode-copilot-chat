@@ -121,7 +121,45 @@ Define project-specific permissions.
 - **Execute**: ask_user
 ```
 
-## 3. Configuration Templates
+## 4. Worktree Semantics
+
+### Dirty Workspace Policy
+
+When the orchestrator creates worktrees for workers, it follows a **fail-fast** policy:
+
+1. **Clean State Requirement**: The main workspace must have no uncommitted changes before spawning workers.
+2. **Error on Dirty State**: If uncommitted changes exist, the orchestrator will:
+   - Display an error message indicating the dirty state
+   - Suggest the user commit, stash, or discard changes
+   - Refuse to create new worktrees until resolved
+
+This policy prevents:
+- Accidental loss of uncommitted work
+- Confusion about which changes belong to which worker
+- Merge conflicts when workers complete
+
+### Worktree Lifecycle
+
+1. **Creation**: Each worker gets an isolated worktree in `.worktrees/<task-name>/`
+2. **Branch**: A new branch `<task-name>` is created from the base branch
+3. **Execution**: Worker makes changes within its worktree
+4. **Completion**: On completion, the worktree's changes are:
+   - Committed with a task-specific message
+   - Pushed to origin
+   - Optionally converted to a PR
+5. **Cleanup**: Worktree and branch are removed after successful merge or explicit cleanup
+
+### Completion Payloads
+
+When a subtask completes, the parent receives:
+- `worktreePath`: Full path to the subtask's worktree
+- `changedFilesCount`: Number of files modified
+- `insertions`: Lines added
+- `deletions`: Lines removed
+
+This information helps the parent understand the scope of changes and decide on next steps.
+
+## 5. Configuration Templates
 
 We provide templates for common scenarios:
 

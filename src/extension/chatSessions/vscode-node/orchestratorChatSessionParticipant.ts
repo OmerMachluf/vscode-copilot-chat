@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import { ITelemetryService } from '../../../platform/telemetry/common/telemetry';
 import { Disposable, DisposableStore } from '../../../util/vs/base/common/lifecycle';
 import { IOrchestratorService } from '../../orchestrator/orchestratorServiceV2';
+import { ISubtaskProgressService } from '../../orchestrator/subtaskProgressService';
 import { OrchestratorSessionId } from './orchestratorChatSessionHelpers';
 
 /**
@@ -16,6 +17,7 @@ import { OrchestratorSessionId } from './orchestratorChatSessionHelpers';
 export class OrchestratorChatSessionParticipant extends Disposable {
 	constructor(
 		@IOrchestratorService private readonly orchestratorService: IOrchestratorService,
+		@ISubtaskProgressService private readonly subtaskProgressService: ISubtaskProgressService,
 		@ITelemetryService private readonly telemetryService: ITelemetryService,
 	) {
 		super();
@@ -94,6 +96,10 @@ export class OrchestratorChatSessionParticipant extends Disposable {
 			const workerSession = this.orchestratorService.getWorkerSession(workerId);
 			if (workerSession) {
 				disposables.add(workerSession.attachStream(stream));
+
+				// Register the stream with the subtask progress service
+				// This enables in-chat progress bubbles for A2A subtasks
+				disposables.add(this.subtaskProgressService.registerStream(workerId, stream));
 
 				// CRITICAL: Pass the toolInvocationToken to the worker
 				// This enables inline tool confirmations instead of modal dialogs

@@ -509,3 +509,103 @@ interface IOrchestratorQueueMessage {
 - [x] Provide observability checklist with correlation IDs and logging points
 - [x] Identify gaps (G1–G6) with severity and phase assignments
 - [x] Provide implementation notes for Phase 2
+
+---
+
+## 9. Phase 3-5 Improvements (Implemented)
+
+### 9.1 In-Chat Progress Bubbles (Phase 3)
+
+The A2A spawn tools now display progress directly in the chat response stream instead of VS Code notification popups:
+
+**Implementation:**
+- **[SubtaskProgressService](../src/extension/orchestrator/subtaskProgressService.ts)**: Abstracts progress reporting between chat streams and fallback notifications
+- Stream registration: `orchestratorChatSessionParticipant` registers its `ChatResponseStream` with the progress service
+- Progress updates appear as `stream.progress()` calls in the parent's chat bubble
+
+**Key Components:**
+```typescript
+// ISubtaskProgressService provides two modes:
+// 1. Chat stream mode: Updates shown inline in chat
+// 2. Fallback mode: VS Code notification popups
+
+interface ISubtaskProgressService {
+  registerStream(ownerId: string, stream: vscode.ChatResponseStream): IDisposable;
+  createProgress(ownerId: string, options: ISubtaskProgressOptions): ISubtaskProgressHandle;
+  createParallelRenderer(ownerId: string): ParallelSubtaskProgressRenderer;
+}
+```
+
+### 9.2 Parent Wake-Up (Phase 2)
+
+Parents now automatically wake up when subtasks complete:
+
+**Implementation:**
+- **[ParentCompletionService](../src/extension/orchestrator/parentCompletionService.ts)**: Persistent owner handlers that outlive tool invocations
+- **[WorkerSessionWakeUpAdapter](../src/extension/orchestrator/parentCompletionService.ts)**: Injects completion messages as synthetic user messages
+
+**Completion Payload:**
+```typescript
+interface IParentCompletionMessage {
+  subTaskId: string;
+  agentType: string;
+  taskPrompt: string;
+  response: string;
+  worktreePath: string;
+  status: 'success' | 'partial' | 'failed' | 'timeout';
+  error?: string;
+  timestamp: number;
+  // Phase 5 additions:
+  changedFilesCount?: number;
+  insertions?: number;
+  deletions?: number;
+}
+```
+
+### 9.3 Depth Limits (Phase 4)
+
+Subtask spawning now respects configurable depth limits:
+
+| Spawn Context | Max Depth | Effect |
+|---------------|-----------|--------|
+| Orchestrator-deployed worker | 2 | Can spawn subtasks that spawn one more level |
+| Standalone agent session | 1 | Can spawn subtasks, but those cannot spawn further |
+
+**Configuration:**
+```typescript
+// ISafetyLimitsConfig
+{
+  maxSubtaskDepth: 2,                    // Orchestrator workers
+  maxSubtaskDepthForAgentContext: 1,     // Standalone agents
+  maxConcurrentSubtasks: 10,
+  maxTotalSubtasksPerWorker: 50,
+  // ...
+}
+```
+
+### 9.4 Worktree Semantics (Phase 5)
+
+**Dirty Workspace Policy:**
+- **Fail-fast**: Worktree creation fails if the main workspace has uncommitted changes
+- Error message instructs user to commit, stash, or discard changes
+
+**Completion Payloads Include:**
+- `worktreePath`: Full path to the subtask's worktree
+- `changedFilesCount`: Number of files modified
+- `insertions`: Lines added
+- `deletions`: Lines removed
+
+**Parent-Side Helpers:**
+```typescript
+// Get changed files list
+getWorktreeChangedFiles(worktreePath: string): Promise<string[]>
+
+// Open worktree in new VS Code window
+openWorktreeInNewWindow(worktreePath: string, options?: { newWindow?: boolean }): Promise<void>
+
+// Show diff for worktree changes
+showWorktreeDiff(worktreePath: string): Promise<void>
+
+// Interactive action menu
+showWorktreeActionsMenu(worktreePath: string, branchName: string, diffStats?): Promise<IWorktreeAction | undefined>
+```
