@@ -11,6 +11,7 @@ import { IDisposable } from '../../../util/vs/base/common/lifecycle';
 import { generateUuid } from '../../../util/vs/base/common/uuid';
 import { LanguageModelTextPart, LanguageModelToolResult } from '../../../vscodeTypes';
 import { IOrchestratorQueueMessage, IOrchestratorQueueService } from '../../orchestrator/orchestratorQueue';
+import { IOrchestratorService } from '../../orchestrator/orchestratorServiceV2';
 import { ISubTask, ISubTaskCreateOptions, ISubTaskManager, ISubTaskResult } from '../../orchestrator/subTaskManager';
 import { ISubtaskProgressService, ParallelSubtaskProgressRenderer } from '../../orchestrator/subtaskProgressService';
 import { IWorkerContext } from '../../orchestrator/workerToolsService';
@@ -238,15 +239,20 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 			stream: parentStream,
 		});
 
+		// Get the parent's worker ID for registering handlers
+		const parentWorkerId = this._workerContext?.workerId;
+
 		try {
 			// Register this worker as owner handler to receive messages from subtask
-			this._logService.debug(`[A2ASpawnSubTaskTool] Registering owner handler for workerId '${workerId}'`);
-			handlerDisposable = this._queueService.registerOwnerHandler(workerId, async (message) => {
-				this._logService.info(`[A2ASpawnSubTaskTool] RECEIVED MESSAGE from subtask: type=${message.type}, taskId=${message.taskId}`);
-				collectedMessages.push(message);
-				const content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
-				progressHandle.update(`[${message.type}] ${content.slice(0, 50)}...`);
-			});
+			if (parentWorkerId) {
+				this._logService.debug(`[A2ASpawnSubTaskTool] Registering owner handler for parentWorkerId '${parentWorkerId}'`);
+				handlerDisposable = this._queueService.registerOwnerHandler(parentWorkerId, async (message) => {
+					this._logService.info(`[A2ASpawnSubTaskTool] RECEIVED MESSAGE from subtask: type=${message.type}, taskId=${message.taskId}`);
+					collectedMessages.push(message);
+					const content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
+					progressHandle.update(`[${message.type}] ${content.slice(0, 50)}...`);
+				});
+			}
 
 			// Execute the sub-task and wait for result
 			this._logService.debug(`[A2ASpawnSubTaskTool] Calling executeSubTask for ${subTask.id}`);
@@ -264,6 +270,30 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 				: '';
 			this._logService.info(`[A2ASpawnSubTaskTool] Collected ${collectedMessages.length} messages from subtask`);
 
+			// Extract merge info from result metadata (if subtask used separate worktree)
+			const mergeResult = result.metadata?.mergeResult as { success: boolean; mergedFiles: string[]; error?: string } | undefined;
+			const mergedFilesSummary = mergeResult?.mergedFiles?.length
+				? `\n\n**Files merged to your worktree (${mergeResult.mergedFiles.length}):**\n${mergeResult.mergedFiles.map(f => `- ${f}`).join('\n')}`
+				: '';
+			const mergeError = mergeResult && !mergeResult.success
+				? `\n\n⚠️ **Merge warning:** ${mergeResult.error}`
+				: '';
+
+			// Extract worktree info for parent to review and pull
+			const subtaskWorktree = result.metadata?.subtaskWorktree as string | undefined;
+			const changedFiles = result.metadata?.changedFiles as string[] | undefined;
+			const subtaskWorkerId = result.metadata?.workerId as string | undefined;
+			const worktreeInfo = subtaskWorktree && changedFiles?.length
+				? `\n\n**⚠️ Subtask made changes in its worktree:**\n` +
+				`- **Worktree:** ${subtaskWorktree}\n` +
+				`- **Worker ID:** ${subtaskWorkerId}\n` +
+				`- **Changed files (${changedFiles.length}):**\n${changedFiles.map(f => `  - ${f}`).join('\n')}\n\n` +
+				`**Next steps:**\n` +
+				`1. Review if the work is satisfactory\n` +
+				`2. If YES: Use \`a2a_pull_subtask_changes\` to pull changes to your worktree, then \`a2a_complete_subtask\` to cleanup\n` +
+				`3. If NO: Use \`a2a_send_message_to_worker\` to send feedback and continue the work`
+				: '';
+
 			// Return the result
 			if (result.status === 'success') {
 				this._logService.info(`[A2ASpawnSubTaskTool] ========== INVOKE COMPLETED (SUCCESS) ==========`);
@@ -273,7 +303,7 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 						`**Sub-Task ID:** ${subTask.id}\n` +
 						`**Agent:** ${agentType}\n` +
 						`**Status:** ${result.status}\n\n` +
-						`**Output:**\n${result.output}${messagesSummary}`
+						`**Output:**\n${result.output}${worktreeInfo}${mergedFilesSummary}${mergeError}${messagesSummary}`
 					),
 				]);
 			} else {
@@ -285,7 +315,7 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 						`**Agent:** ${agentType}\n` +
 						`**Status:** ${result.status}\n` +
 						`**Error:** ${result.error ?? 'Unknown error'}\n\n` +
-						`**Partial Output:**\n${result.output || '(none)'}${messagesSummary}`
+						`**Partial Output:**\n${result.output || '(none)'}${worktreeInfo}${mergedFilesSummary}${mergeError}${messagesSummary}`
 					),
 				]);
 			}
@@ -540,6 +570,11 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 				const taskConfig = subtasks[i];
 				const taskMessages = collectedMessages.get(task.id) ?? [];
 
+				// Extract worktree info from result metadata
+				const subtaskWorktree = result.metadata?.subtaskWorktree as string | undefined;
+				const changedFiles = result.metadata?.changedFiles as string[] | undefined;
+				const workerId = result.metadata?.workerId as string | undefined;
+
 				resultLines.push(`### Sub-Task ${i + 1}: ${taskConfig.agentType}`);
 				resultLines.push(`- **ID:** ${task.id}`);
 				resultLines.push(`- **Status:** ${result.status}`);
@@ -553,6 +588,17 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 					}
 				}
 
+				// Include worktree info for parent to review
+				if (subtaskWorktree && changedFiles?.length) {
+					resultLines.push(`- **⚠️ Changes in separate worktree:**`);
+					resultLines.push(`  - Worktree: ${subtaskWorktree}`);
+					resultLines.push(`  - Worker ID: ${workerId}`);
+					resultLines.push(`  - Changed files (${changedFiles.length}):`);
+					for (const file of changedFiles) {
+						resultLines.push(`    - ${file}`);
+					}
+				}
+
 				// Include collected messages for this subtask
 				if (taskMessages.length > 0) {
 					resultLines.push(`- **Communications (${taskMessages.length} messages):**`);
@@ -560,6 +606,21 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 						resultLines.push(`  - [${msg.type}] ${typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)}`);
 					}
 				}
+				resultLines.push('');
+			}
+
+			// Add parent guidance if any subtasks have changes to review
+			const hasChangesToReview = results.some(r => {
+				const changedFiles = r.metadata?.changedFiles as string[] | undefined;
+				return changedFiles && changedFiles.length > 0;
+			});
+
+			if (hasChangesToReview) {
+				resultLines.push('---');
+				resultLines.push('### Next Steps for Each Subtask with Changes:');
+				resultLines.push('1. **Review** the changes in each subtask\'s worktree');
+				resultLines.push('2. If satisfied with a subtask: Use `a2a_pull_subtask_changes` with the worker ID to merge changes');
+				resultLines.push('3. If not satisfied: Use `a2a_send_message_to_worker` to send feedback to continue work');
 				resultLines.push('');
 			}
 
@@ -821,8 +882,241 @@ export class A2ANotifyOrchestratorTool implements ICopilotTool<NotifyOrchestrato
 	}
 }
 
+// ============================================================================
+// Parent-side tools for managing subtask results
+// ============================================================================
+
+interface PullSubTaskChangesParams {
+	/** The subtask's worktree path (from the spawn result metadata) */
+	subtaskWorktree: string;
+	/** The files to pull (optional - if not specified, pulls all changed files) */
+	files?: string[];
+	/** Whether to also cleanup/remove the subtask worktree after pulling (default: false) */
+	cleanup?: boolean;
+}
+
+/**
+ * Tool for parent agents to pull changes from a completed subtask's worktree.
+ * After reviewing subtask output, parent can use this to merge changes to their worktree.
+ */
+export class A2APullSubTaskChangesTool implements ICopilotTool<PullSubTaskChangesParams> {
+	static readonly toolName = ToolName.A2APullSubTaskChanges;
+
+	constructor(
+		@IWorkerContext private readonly _workerContext: IWorkerContext,
+		@ILogService private readonly _logService: ILogService,
+		@IWorkspaceService private readonly _workspaceService: IWorkspaceService,
+	) { }
+
+	get enabled(): boolean {
+		return true;
+	}
+
+	prepareInvocation(_options: vscode.LanguageModelToolInvocationPrepareOptions<PullSubTaskChangesParams>, _token: CancellationToken): vscode.ProviderResult<vscode.PreparedToolInvocation> {
+		return { invocationMessage: 'Pulling changes from subtask worktree...' };
+	}
+
+	async invoke(
+		options: vscode.LanguageModelToolInvocationOptions<PullSubTaskChangesParams>,
+		_token: CancellationToken
+	): Promise<LanguageModelToolResult> {
+		const { subtaskWorktree, files, cleanup = false } = options.input;
+
+		// Determine parent's worktree
+		const parentWorktree = this._workerContext?.worktreePath ||
+			this._workspaceService.getWorkspaceFolders()?.[0]?.fsPath;
+
+		if (!parentWorktree) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart('ERROR: Could not determine your worktree path.'),
+			]);
+		}
+
+		if (!subtaskWorktree) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart('ERROR: subtaskWorktree parameter is required.'),
+			]);
+		}
+
+		if (subtaskWorktree === parentWorktree) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart('Subtask used the same worktree - no pull needed. Changes are already in your worktree.'),
+			]);
+		}
+
+		this._logService.info(`[A2APullSubTaskChangesTool] Pulling changes from ${subtaskWorktree} to ${parentWorktree}`);
+
+		try {
+			// Get list of changed files in subtask worktree
+			const statusOutput = await this._execGit(['status', '--porcelain'], subtaskWorktree);
+			const changedFiles: string[] = [];
+			for (const line of statusOutput.split(/\r?\n/).filter(Boolean)) {
+				const file = line.slice(3).trim();
+				if (file) {
+					changedFiles.push(file);
+				}
+			}
+
+			if (changedFiles.length === 0) {
+				return new LanguageModelToolResult([
+					new LanguageModelTextPart('No changed files in subtask worktree to pull.'),
+				]);
+			}
+
+			// Filter files if specific ones requested
+			const filesToPull = files?.length
+				? changedFiles.filter(f => files.some(requested => f.includes(requested)))
+				: changedFiles;
+
+			if (filesToPull.length === 0) {
+				return new LanguageModelToolResult([
+					new LanguageModelTextPart(`No matching files found. Available changed files: ${changedFiles.join(', ')}`),
+				]);
+			}
+
+			// Copy files from subtask worktree to parent worktree
+			const pulledFiles: string[] = [];
+			const fs = await import('fs');
+			const path = await import('path');
+
+			for (const file of filesToPull) {
+				const sourcePath = path.join(subtaskWorktree, file);
+				const targetPath = path.join(parentWorktree, file);
+
+				try {
+					if (fs.existsSync(sourcePath)) {
+						// Ensure target directory exists
+						const targetDir = path.dirname(targetPath);
+						if (!fs.existsSync(targetDir)) {
+							fs.mkdirSync(targetDir, { recursive: true });
+						}
+						fs.copyFileSync(sourcePath, targetPath);
+						pulledFiles.push(file);
+					} else {
+						// File was deleted in subtask
+						if (fs.existsSync(targetPath)) {
+							fs.unlinkSync(targetPath);
+							pulledFiles.push(`(deleted) ${file}`);
+						}
+					}
+				} catch (fileError) {
+					this._logService.warn(`[A2APullSubTaskChangesTool] Failed to pull file ${file}: ${fileError}`);
+				}
+			}
+
+			// Cleanup worktree if requested
+			let cleanupMessage = '';
+			if (cleanup) {
+				try {
+					const workspaceRoot = this._workspaceService.getWorkspaceFolders()?.[0]?.fsPath;
+					if (workspaceRoot) {
+						await this._execGit(['worktree', 'remove', subtaskWorktree, '--force'], workspaceRoot);
+						cleanupMessage = '\n\nSubtask worktree has been cleaned up.';
+					}
+				} catch (cleanupError) {
+					cleanupMessage = `\n\n⚠️ Could not cleanup worktree: ${cleanupError}`;
+				}
+			}
+
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(
+					`Successfully pulled ${pulledFiles.length} files from subtask worktree.\n\n` +
+					`**Pulled files:**\n${pulledFiles.map(f => `- ${f}`).join('\n')}${cleanupMessage}`
+				),
+			]);
+
+		} catch (error) {
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			this._logService.error(`[A2APullSubTaskChangesTool] Failed: ${errorMessage}`);
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`ERROR: Failed to pull changes: ${errorMessage}`),
+			]);
+		}
+	}
+
+	private async _execGit(args: string[], cwd: string): Promise<string> {
+		const cp = await import('child_process');
+		return new Promise((resolve, reject) => {
+			cp.exec(`git ${args.map(a => `"${a}"`).join(' ')}`, {
+				cwd,
+				maxBuffer: 10 * 1024 * 1024
+			}, (err, stdout, stderr) => {
+				if (err) {
+					reject(new Error(stderr || err.message));
+				} else {
+					resolve(stdout.trim());
+				}
+			});
+		});
+	}
+}
+
+interface SendMessageToWorkerParams {
+	/** The worker ID to send the message to */
+	workerId: string;
+	/** The message content */
+	message: string;
+}
+
+/**
+ * Tool for parent agents to send messages back to their subtask workers.
+ * Use this when subtask output is not satisfactory and worker should continue.
+ */
+export class A2ASendMessageToWorkerTool implements ICopilotTool<SendMessageToWorkerParams> {
+	static readonly toolName = ToolName.A2ASendMessageToWorker;
+
+	constructor(
+		@IOrchestratorService private readonly _orchestratorService: IOrchestratorService,
+		@ILogService private readonly _logService: ILogService,
+	) { }
+
+	get enabled(): boolean {
+		return true;
+	}
+
+	prepareInvocation(_options: vscode.LanguageModelToolInvocationPrepareOptions<SendMessageToWorkerParams>, _token: CancellationToken): vscode.ProviderResult<vscode.PreparedToolInvocation> {
+		return { invocationMessage: 'Sending message to worker...' };
+	}
+
+	async invoke(
+		options: vscode.LanguageModelToolInvocationOptions<SendMessageToWorkerParams>,
+		_token: CancellationToken
+	): Promise<LanguageModelToolResult> {
+		const { workerId, message } = options.input;
+
+		if (!workerId) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart('ERROR: workerId is required.'),
+			]);
+		}
+
+		this._logService.info(`[A2ASendMessageToWorkerTool] Sending message to worker ${workerId}`);
+
+		try {
+			// Send message to worker via orchestrator service
+			this._orchestratorService.sendMessageToWorker(workerId, message);
+
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(
+					`Message sent to worker ${workerId}.\n\n` +
+					'The worker should wake up and continue working based on your feedback.'
+				),
+			]);
+
+		} catch (error) {
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			this._logService.error(`[A2ASendMessageToWorkerTool] Failed: ${errorMessage}`);
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`ERROR: Failed to send message: ${errorMessage}`),
+			]);
+		}
+	}
+}
+
 // Register the tools
 ToolRegistry.registerTool(A2ASpawnSubTaskTool);
 ToolRegistry.registerTool(A2ASpawnParallelSubTasksTool);
 ToolRegistry.registerTool(A2AAwaitSubTasksTool);
 ToolRegistry.registerTool(A2ANotifyOrchestratorTool);
+ToolRegistry.registerTool(A2APullSubTaskChangesTool);
+ToolRegistry.registerTool(A2ASendMessageToWorkerTool);

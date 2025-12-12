@@ -493,8 +493,43 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			this._logService.info(`[SubTaskManager] Now calling _waitForOrchestratorTaskCompletion for task ${orchestratorTask.id}, worker ${workerSession.id}`);
 			const result = await this._waitForOrchestratorTaskCompletion(orchestratorTask.id, workerSession.id, token);
 			this._logService.info(`[SubTaskManager] _waitForOrchestratorTaskCompletion RETURNED: status=${result.status}, error=${result.error || 'none'}`);
+
+			// Get subtask's worktree info for parent to review (NO auto-merge!)
+			// Parent is responsible for reviewing changes and deciding when to pull/merge.
+			const subtaskWorktree = workerSession.worktreePath;
+			const parentWorktree = subTask.worktreePath;
+			this._logService.debug(`[SubTaskManager] Subtask worktree: ${subtaskWorktree}, Parent worktree: ${parentWorktree}`)
+
+			// Get list of changed files in subtask worktree (for parent to review)
+			let changedFiles: string[] = [];
+			if (subtaskWorktree && subtaskWorktree !== parentWorktree) {
+				try {
+					const statusOutput = await this._execGitInWorktree(['status', '--porcelain'], subtaskWorktree);
+					for (const line of statusOutput.split(/\r?\n/).filter(Boolean)) {
+						const file = line.slice(3).trim();
+						if (file) {
+							changedFiles.push(file);
+						}
+					}
+				} catch (e) {
+					this._logService.debug(`[SubTaskManager] Could not get changed files: ${e}`);
+				}
+			}
+
+			// Enhance result with worktree info (parent uses this to decide what to do)
+			const enhancedResult: ISubTaskResult = {
+				...result,
+				metadata: {
+					...result.metadata,
+					subtaskWorktree,
+					parentWorktree,
+					changedFiles,
+					workerId: workerSession.id,
+				},
+			};
+
 			this._logService.info(`[SubTaskManager] ========== _executeSubTaskWithOrchestratorUI COMPLETED for ${subTask.id} ==========`);
-			return result;
+			return enhancedResult;
 		} catch (error) {
 			this._logService.error(`[SubTaskManager] _executeSubTaskWithOrchestratorUI FAILED: ${error instanceof Error ? error.message : String(error)}`);
 			// Clean up the orchestrator task on failure
@@ -874,19 +909,19 @@ You are a sub-agent spawned by a PARENT AGENT (not the user).
 - **Depth Level:** ${subTask.depth} of ${this.maxDepth}
 ${subTask.targetFiles?.length ? `- **Target Files:** ${subTask.targetFiles.join(', ')}` : ''}
 
+## YOUR WORKTREE
+You are working in your own dedicated worktree (separate from your parent's).
+When you complete your work, your file changes will be automatically merged back to your parent's worktree.
+
 ## COMMUNICATION WITH PARENT
 - Use \`a2a_notify_orchestrator\` to send status updates, questions, or progress reports to your parent.
-- When you complete your work, you MUST call \`a2a_subtask_complete\`.
-	- Always include \`subTaskId\`, \`status\`, and a concise \`output\` summary.
-	- Do NOT include \`commitMessage\` unless your parent explicitly asked you to commit/merge.
-	- If you made no file changes, still call \`a2a_subtask_complete\` and set status to 'partial' with an explanation.
 - **DO NOT** try to communicate with the user directly - route everything through your parent.
 
 ## YOUR RESPONSIBILITIES
 1. Complete the specific task assigned to you.
-2. When done, call \`a2a_subtask_complete\` and then stop.
-3. Any file changes you make in the worktree will be visible to your parent.
-4. Your parent is responsible for merging/integrating your changes.
+2. Make file changes directly in your worktree using standard tools (create_file, replace_string_in_file, etc.).
+3. When done, simply stop. Your parent will be notified and your changes will be merged automatically.
+4. Do NOT worry about committing or merging - that's handled automatically.
 
 ## SUB-TASK SPAWNING
 ${subTaskGuidance}
@@ -1124,6 +1159,28 @@ Focus on your assigned task and provide a clear, actionable result.`,
 				this._runningSubTasks.delete(id);
 			}
 		}
+	}
+
+	// ========================================================================
+	// Worktree Merge
+	// ========================================================================
+
+	/**
+	 * Execute a git command in a worktree.
+	 */
+	private async _execGitInWorktree(args: string[], cwd: string): Promise<string> {
+		return new Promise((resolve, reject) => {
+			cp.exec(`git ${args.map(a => `"${a}"`).join(' ')}`, {
+				cwd,
+				maxBuffer: 10 * 1024 * 1024
+			}, (err, stdout, stderr) => {
+				if (err) {
+					reject(new Error(stderr || err.message));
+				} else {
+					resolve(stdout.trim());
+				}
+			});
+		});
 	}
 
 	override dispose(): void {

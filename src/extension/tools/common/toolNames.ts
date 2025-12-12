@@ -93,6 +93,9 @@ export enum ToolName {
 	A2AAwaitSubTasks = 'a2a_await_subtasks',
 	A2ANotifyOrchestrator = 'a2a_notify_orchestrator',
 	A2ASubTaskComplete = 'a2a_subtask_complete',
+	// Parent-side tools for managing subtask results
+	A2APullSubTaskChanges = 'a2a_pull_subtask_changes',
+	A2ASendMessageToWorker = 'a2a_send_message_to_worker',
 }
 
 export enum ContributedToolName {
@@ -161,6 +164,8 @@ export enum ContributedToolName {
 	A2AAwaitSubTasks = 'copilot_a2aAwaitSubTasks',
 	A2ANotifyOrchestrator = 'copilot_a2aNotifyOrchestrator',
 	A2ASubTaskComplete = 'copilot_a2aSubTaskComplete',
+	A2APullSubTaskChanges = 'copilot_a2aPullSubTaskChanges',
+	A2ASendMessageToWorker = 'copilot_a2aSendMessageToWorker',
 }
 
 export const byokEditToolNamesToToolNames = {
@@ -297,6 +302,8 @@ export const toolCategories: Record<ToolName, ToolCategory> = {
 	[ToolName.A2AAwaitSubTasks]: ToolCategory.Core,
 	[ToolName.A2ANotifyOrchestrator]: ToolCategory.Core,
 	[ToolName.A2ASubTaskComplete]: ToolCategory.Core,
+	[ToolName.A2APullSubTaskChanges]: ToolCategory.Core,
+	[ToolName.A2ASendMessageToWorker]: ToolCategory.Core,
 } as const;
 
 
