@@ -130,14 +130,16 @@ Improve consistency by:
 - Orchestrator worktree creation currently uses git CLI; migrating to UnifiedWorktreeManager needs careful parity checks.
 
 ### Plan divide to phases
-### Phase 1: Baseline Traceability & Contract Definition
+### Phase 1: Baseline Traceability & Contract Definition ✅ COMPLETE
 **Objective**: Establish clear, testable contracts for subtask lifecycle, parent identity, and message routing.
 
 **Tasks**:
-1. [ ] Document current A2A flows (spawn/await/notify/complete) and identify which paths are “blocking tool output” vs “queue-routed messages”.
-2. [ ] Define a canonical “Parent Session Identity” schema (workerId vs chat sessionId vs sessionUri) and how it maps to `IOwnerContext` in [src/extension/orchestrator/orchestratorQueue.ts](src/extension/orchestrator/orchestratorQueue.ts).
-3. [ ] Define the subtask lifecycle event model (states + payload) and map it to SubTaskManager events in [src/extension/orchestrator/subTaskManager.ts](src/extension/orchestrator/subTaskManager.ts).
-4. [ ] Add an observability checklist: correlation IDs (subTaskId), logging points, and expected message routing behavior.
+1. [x] Document current A2A flows (spawn/await/notify/complete) and identify which paths are “blocking tool output” vs “queue-routed messages”.
+2. [x] Define a canonical "Parent Session Identity" schema (workerId vs chat sessionId vs sessionUri) and how it maps to `IOwnerContext` in [src/extension/orchestrator/orchestratorQueue.ts](src/extension/orchestrator/orchestratorQueue.ts).
+3. [x] Define the subtask lifecycle event model (states + payload) and map it to SubTaskManager events in [src/extension/orchestrator/subTaskManager.ts](src/extension/orchestrator/subTaskManager.ts).
+4. [x] Add an observability checklist: correlation IDs (subTaskId), logging points, and expected message routing behavior.
+
+**Deliverable**: [docs/orchestrator-traceability-contract.md](../docs/orchestrator-traceability-contract.md)
 
 **Depends on**: None
 **Estimated Time**: 1–2 days
@@ -169,14 +171,14 @@ Improve consistency by:
 **Estimated Time**: 2–3 days
 **Success Criteria**: Users see running/completed subtasks in-chat for parallel agents, not only notifications.
 
-### Phase 4: Depth Limits & Configuration Alignment
+### Phase 4: Depth Limits & Configuration Alignment ✅ COMPLETE
 **Objective**: Enforce depth limits consistently by spawn context, matching desired defaults.
 
 **Tasks**:
-1. [ ] Make `SubTaskManager` derive effective max depth from `SafetyLimitsService` context (`orchestrator` vs `agent`) rather than hardcoding `maxDepth = 2` in [src/extension/orchestrator/subTaskManager.ts](src/extension/orchestrator/subTaskManager.ts).
-2. [ ] Ensure spawn context is correctly set/inherited through worker toolsets (already partially present as `spawnContext` inheritance).
-3. [ ] Align user/workspace settings (`copilot.orchestrator.limits.maxSubtaskDepth`) with the SafetyLimitsService config model in [src/extension/orchestrator/safetyLimits.ts](src/extension/orchestrator/safetyLimits.ts).
-4. [ ] Update error messaging so depth-limit failures clearly explain current depth and allowed maximum.
+1. [x] Make `SubTaskManager` derive effective max depth from `SafetyLimitsService` context (`orchestrator` vs `agent`) rather than hardcoding `maxDepth = 2` in [src/extension/orchestrator/subTaskManager.ts](src/extension/orchestrator/subTaskManager.ts).
+2. [x] Ensure spawn context is correctly set/inherited through worker toolsets (already partially present as `spawnContext` inheritance).
+3. [x] Align user/workspace settings (`copilot.orchestrator.limits.maxSubtaskDepth`) with the SafetyLimitsService config model in [src/extension/orchestrator/safetyLimits.ts](src/extension/orchestrator/safetyLimits.ts).
+4. [x] Update error messaging so depth-limit failures clearly explain current depth and allowed maximum.
 
 **Depends on**: Phase 1
 **Estimated Time**: 1–2 days

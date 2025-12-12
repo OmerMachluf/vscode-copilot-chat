@@ -30,7 +30,24 @@ export interface IOrchestratorPermissions {
 }
 
 export interface IOrchestratorLimits {
+	/**
+	 * Maximum sub-task depth when spawned from orchestrator-deployed workers.
+	 * Orchestrator → Worker (depth 1) → Sub-worker (depth 2) → STOP
+	 * Default: 2
+	 */
+	maxSubtaskDepthOrchestrator: number;
+	/**
+	 * Maximum sub-task depth when spawned from standalone agents.
+	 * Agent → Subtask (depth 1) → STOP
+	 * Default: 1
+	 */
+	maxSubtaskDepthAgent: number;
+	/**
+	 * @deprecated Use maxSubtaskDepthOrchestrator or maxSubtaskDepthAgent instead.
+	 * Legacy setting - controls orchestrator depth if new settings are not set.
+	 */
 	maxSubtaskDepth: number;
+	/** Maximum total sub-tasks per worker (default: 10) */
 	maxSubtasksPerWorker: number;
 }
 
@@ -157,7 +174,9 @@ export class WorkspaceConfigLoader extends Disposable {
 				network: { fetch: 'ask_user' }
 			},
 			limits: {
-				maxSubtaskDepth: 2,
+				maxSubtaskDepthOrchestrator: 2,
+				maxSubtaskDepthAgent: 1,
+				maxSubtaskDepth: 2, // Deprecated
 				maxSubtasksPerWorker: 10
 			},
 			modelPreferences: {
@@ -215,7 +234,12 @@ export class WorkspaceConfigLoader extends Disposable {
 		const config: Partial<IWorkspaceConfiguration> = {
 			agentCapabilities: {},
 			permissions: {},
-			limits: { maxSubtaskDepth: 2, maxSubtasksPerWorker: 10 }, // Default values for limits if not found
+			limits: {
+				maxSubtaskDepthOrchestrator: 2,
+				maxSubtaskDepthAgent: 1,
+				maxSubtaskDepth: 2, // Deprecated
+				maxSubtasksPerWorker: 10
+			}, // Default values for limits if not found
 			modelPreferences: { default: '', byTaskType: {}, byAgent: {} }
 		};
 

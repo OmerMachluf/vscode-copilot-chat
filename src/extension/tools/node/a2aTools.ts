@@ -103,13 +103,22 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 
 		const { agentType, prompt, expectedOutput, model, targetFiles, blocking = true } = options.input;
 
+		// Get spawn context from worker context (inherited from parent)
+		// Normalize to 'orchestrator' | 'agent' (subtask is only used internally for depth checking)
+		const rawSpawnContext = this._workerContext?.spawnContext ?? 'agent';
+		const spawnContext: 'orchestrator' | 'agent' = rawSpawnContext === 'orchestrator' ? 'orchestrator' : 'agent';
+		const effectiveMaxDepth = this._subTaskManager.getMaxDepthForContext(spawnContext);
+
 		// Check depth limit before creating
-		if (currentDepth >= this._subTaskManager.maxDepth) {
+		if (currentDepth >= effectiveMaxDepth) {
+			const contextLabel = spawnContext === 'orchestrator' ? 'orchestrator-deployed worker' : 'standalone agent';
 			return new LanguageModelToolResult([
 				new LanguageModelTextPart(
-					`ERROR: Maximum sub-task depth (${this._subTaskManager.maxDepth}) reached. ` +
-					`Current depth: ${currentDepth}. Cannot spawn additional sub-tasks. ` +
-					`Consider completing this task directly instead of delegating further.`
+					`ERROR: Maximum sub-task depth exceeded for ${contextLabel}.\\n\\n` +
+					`**Current depth:** ${currentDepth}\\n` +
+					`**Maximum allowed depth for ${spawnContext} context:** ${effectiveMaxDepth}\\n\\n` +
+					`Cannot spawn additional sub-tasks. Consider completing this task directly instead of delegating further.\\n` +
+					`${spawnContext === 'agent' ? 'Tip: Standalone agents have max depth 1 (agent → subtask). Orchestrator workflows allow depth 2.' : ''}`
 				),
 			]);
 		}
@@ -129,7 +138,7 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 
 		this._logService.info(`[A2ASpawnSubTaskTool] Creating sub-task for ${agentType} at depth ${currentDepth + 1} (blocking: ${blocking})`);
 
-		// Create sub-task options
+		// Create sub-task options with inherited spawn context
 		const createOptions: ISubTaskCreateOptions = {
 			parentWorkerId: workerId,
 			parentTaskId: taskId,
@@ -141,6 +150,7 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 			model,
 			currentDepth,
 			targetFiles,
+			spawnContext,
 		};
 
 		// Create the sub-task
@@ -280,11 +290,22 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 			]);
 		}
 
+		// Get spawn context from worker context (inherited from parent)
+		// Normalize to 'orchestrator' | 'agent' (subtask is only used internally for depth checking)
+		const rawSpawnContext = this._workerContext?.spawnContext ?? 'agent';
+		const spawnContext: 'orchestrator' | 'agent' = rawSpawnContext === 'orchestrator' ? 'orchestrator' : 'agent';
+		const effectiveMaxDepth = this._subTaskManager.getMaxDepthForContext(spawnContext);
+
 		// Validate depth limit
-		if (currentDepth >= this._subTaskManager.maxDepth) {
+		if (currentDepth >= effectiveMaxDepth) {
+			const contextLabel = spawnContext === 'orchestrator' ? 'orchestrator-deployed worker' : 'standalone agent';
 			return new LanguageModelToolResult([
 				new LanguageModelTextPart(
-					`ERROR: Maximum sub-task depth (${this._subTaskManager.maxDepth}) reached.`
+					`ERROR: Maximum sub-task depth exceeded for ${contextLabel}.\\n\\n` +
+					`**Current depth:** ${currentDepth}\\n` +
+					`**Maximum allowed depth for ${spawnContext} context:** ${effectiveMaxDepth}\\n\\n` +
+					`Cannot spawn additional sub-tasks.\\n` +
+					`${spawnContext === 'agent' ? 'Tip: Standalone agents have max depth 1. Orchestrator workflows allow depth 2.' : ''}`
 				),
 			]);
 		}
@@ -329,7 +350,7 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 
 		const waitForAll = options.input.waitForAll !== false; // Default to true (blocking)
 
-		// Create all sub-tasks first
+		// Create all sub-tasks first with inherited spawn context
 		const createdTasks: ISubTask[] = [];
 		for (const taskConfig of subtasks) {
 			const createOptions: ISubTaskCreateOptions = {
@@ -343,6 +364,7 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 				model: taskConfig.model,
 				currentDepth,
 				targetFiles: taskConfig.targetFiles,
+				spawnContext,
 			};
 			const task = this._subTaskManager.createSubTask(createOptions);
 			createdTasks.push(task);

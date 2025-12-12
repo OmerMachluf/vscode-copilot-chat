@@ -492,17 +492,46 @@ describe('SubTaskManager with Safety Limits', () => {
 			expect(subTask.depth).toBe(1);
 		});
 
-		it('should throw when depth limit exceeded', () => {
-			expect(() => subTaskManager.createSubTask(createOptions({ currentDepth: 2 })))
+		it('should allow orchestrator context to reach depth 2', () => {
+			const subTask = subTaskManager.createSubTask(createOptions({
+				currentDepth: 1,
+				spawnContext: 'orchestrator',
+			}));
+			expect(subTask.depth).toBe(2);
+		});
+
+		it('should throw for agent context at depth 1', () => {
+			expect(() => subTaskManager.createSubTask(createOptions({
+				currentDepth: 1,
+				spawnContext: 'agent',
+			}))).toThrow(/depth limit.*exceeded/i);
+		});
+
+		it('should throw for orchestrator context at depth 2', () => {
+			expect(() => subTaskManager.createSubTask(createOptions({
+				currentDepth: 2,
+				spawnContext: 'orchestrator',
+			}))).toThrow(/depth limit.*exceeded/i);
+		});
+
+		it('should default to agent context when not specified', () => {
+			// Agent context allows max depth 1, so depth 1 should fail
+			expect(() => subTaskManager.createSubTask(createOptions({ currentDepth: 1 })))
 				.toThrow(/depth limit.*exceeded/i);
 		});
 
-		it('should provide clear error message on depth limit', () => {
+		it('should provide clear error message with context info', () => {
 			try {
-				subTaskManager.createSubTask(createOptions({ currentDepth: 2 }));
+				subTaskManager.createSubTask(createOptions({
+					currentDepth: 1,
+					spawnContext: 'agent',
+				}));
 				expect.fail('Should have thrown');
 			} catch (error) {
-				expect((error as Error).message).toContain('Cannot spawn deeper');
+				const message = (error as Error).message;
+				expect(message).toContain('standalone agent');
+				expect(message).toContain('Current depth');
+				expect(message).toContain('Maximum allowed depth');
 			}
 		});
 	});

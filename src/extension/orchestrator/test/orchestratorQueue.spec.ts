@@ -13,6 +13,7 @@ describe('OrchestratorQueueService', () => {
 	let queueService: OrchestratorQueueService;
 	let workspaceFolder: string;
 	let stateFile: string;
+	let mockLogService: any;
 
 	beforeEach(() => {
 		// Mock vscode.workspace
@@ -40,7 +41,16 @@ describe('OrchestratorQueueService', () => {
 			};
 		});
 
-		queueService = new OrchestratorQueueService();
+		mockLogService = {
+			_serviceBrand: undefined,
+			debug: vi.fn(),
+			info: vi.fn(),
+			warn: vi.fn(),
+			error: vi.fn(),
+			trace: vi.fn(),
+		};
+
+		queueService = new OrchestratorQueueService(mockLogService);
 	});
 
 	afterEach(() => {
@@ -97,7 +107,7 @@ describe('OrchestratorQueueService', () => {
 		assert.ok(fs.existsSync(stateFile));
 
 		// Create new service instance
-		const newService = new OrchestratorQueueService();
+		const newService = new OrchestratorQueueService(mockLogService);
 
 		// Register handler to process the persisted message
 		const processed: string[] = [];

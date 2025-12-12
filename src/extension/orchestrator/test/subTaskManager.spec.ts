@@ -45,6 +45,8 @@ const createMockWorkerToolsService = () => ({
 const createMockSafetyLimitsService = () => ({
 	_serviceBrand: undefined,
 	config: {
+		maxDepthFromOrchestrator: 2,
+		maxDepthFromAgent: 1,
 		maxSubTaskDepth: 2,
 		maxSubTasksPerWorker: 10,
 		maxParallelSubTasks: 5,
@@ -52,6 +54,7 @@ const createMockSafetyLimitsService = () => ({
 	},
 	onEmergencyStop: vi.fn(() => ({ dispose: () => { } })),
 	// Methods required by SubTaskManager.createSubTask
+	getMaxDepthForContext: vi.fn((context: 'orchestrator' | 'agent') => context === 'orchestrator' ? 2 : 1),
 	enforceDepthLimit: vi.fn(), // Does nothing by default, can be configured to throw
 	checkRateLimit: vi.fn().mockReturnValue(true),
 	checkTotalLimit: vi.fn().mockReturnValue(true),
@@ -187,14 +190,7 @@ describe('SubTaskManager', () => {
 			expect(subTask.depth).toBe(2); // currentDepth (1) + 1
 		});
 
-		it('should enforce depth limit', () => {
-			// Configure mock to throw when depth limit is exceeded
-			mockSafetyLimitsService.enforceDepthLimit.mockImplementation((parentDepth: number) => {
-				if (parentDepth >= 2) {
-					throw new Error('Depth limit exceeded: cannot spawn sub-task beyond maximum depth');
-				}
-			});
-
+		it('should enforce depth limit for agent context (max 1)', () => {
 			const options: ISubTaskCreateOptions = {
 				parentWorkerId: 'worker-1',
 				parentTaskId: 'task-1',
@@ -203,7 +199,42 @@ describe('SubTaskManager', () => {
 				agentType: '@agent',
 				prompt: 'Do something',
 				expectedOutput: 'Result',
-				currentDepth: 2, // At max depth
+				currentDepth: 1, // At max depth for agent context
+				spawnContext: 'agent', // Agent context has max depth 1
+			};
+
+			expect(() => subTaskManager.createSubTask(options)).toThrow(/depth limit exceeded/i);
+		});
+
+		it('should allow depth 2 for orchestrator context', () => {
+			const options: ISubTaskCreateOptions = {
+				parentWorkerId: 'worker-1',
+				parentTaskId: 'task-1',
+				planId: 'plan-1',
+				worktreePath: '/test/worktree',
+				agentType: '@agent',
+				prompt: 'Do something',
+				expectedOutput: 'Result',
+				currentDepth: 1, // At depth 1
+				spawnContext: 'orchestrator', // Orchestrator context has max depth 2
+			};
+
+			// Should NOT throw - orchestrator allows depth 2
+			const subTask = subTaskManager.createSubTask(options);
+			expect(subTask.depth).toBe(2);
+		});
+
+		it('should enforce depth limit for orchestrator context (max 2)', () => {
+			const options: ISubTaskCreateOptions = {
+				parentWorkerId: 'worker-1',
+				parentTaskId: 'task-1',
+				planId: 'plan-1',
+				worktreePath: '/test/worktree',
+				agentType: '@agent',
+				prompt: 'Do something',
+				expectedOutput: 'Result',
+				currentDepth: 2, // At max depth for orchestrator context
+				spawnContext: 'orchestrator',
 			};
 
 			expect(() => subTaskManager.createSubTask(options)).toThrow(/depth limit exceeded/i);

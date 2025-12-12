@@ -52,9 +52,6 @@ export { ISubTask, ISubTaskCreateOptions, ISubTaskManager, ISubTaskResult };
 export class SubTaskManager extends Disposable implements ISubTaskManager {
 	readonly _serviceBrand: undefined;
 
-	/** Maximum depth for sub-tasks (0=main, 1=sub, 2=sub-sub) */
-	readonly maxDepth = 2;
-
 	private readonly _subTasks = new Map<string, ISubTask>();
 	private readonly _cancellationSources = new Map<string, CancellationTokenSource>();
 	private readonly _runningSubTasks = new Map<string, Promise<ISubTaskResult>>();
@@ -116,6 +113,22 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 		}));
 	}
 
+	/**
+	 * Get maximum depth for orchestrator-spawned chains.
+	 * This is the default used when spawnContext is 'orchestrator'.
+	 */
+	get maxDepth(): number {
+		return this._safetyLimitsService.getMaxDepthForContext('orchestrator');
+	}
+
+	/**
+	 * Get effective max depth for a specific spawn context.
+	 * @param context The spawn context ('orchestrator' or 'agent')
+	 */
+	getMaxDepthForContext(context: 'orchestrator' | 'agent'): number {
+		return this._safetyLimitsService.getMaxDepthForContext(context);
+	}
+
 	get safetyLimits(): ISafetyLimitsConfig {
 		return this._safetyLimitsService.config;
 	}
@@ -141,9 +154,21 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 	createSubTask(options: ISubTaskCreateOptions): ISubTask {
 		const newDepth = options.currentDepth + 1;
 		const workerId = options.parentWorkerId;
+		// Derive spawn context from options or default to 'agent'
+		const spawnContext = options.spawnContext ?? 'agent';
 
-		// 1. Enforce depth limit
-		this._safetyLimitsService.enforceDepthLimit(options.currentDepth);
+		// 1. Enforce depth limit using spawn context for correct limits
+		const effectiveMaxDepth = this._safetyLimitsService.getMaxDepthForContext(spawnContext);
+		if (options.currentDepth >= effectiveMaxDepth) {
+			const contextLabel = spawnContext === 'orchestrator' ? 'orchestrator-deployed worker' : 'standalone agent';
+			throw new Error(
+				`Sub-task depth limit exceeded for ${contextLabel}.\n\n` +
+				`**Current depth:** ${options.currentDepth}\n` +
+				`**Maximum allowed depth for ${spawnContext} context:** ${effectiveMaxDepth}\n\n` +
+				`Cannot spawn deeper sub-tasks. Consider completing this task directly instead of delegating further.\n` +
+				`${spawnContext === 'agent' ? 'Tip: Standalone agents have max depth 1 (agent → subtask). Orchestrator workflows allow depth 2.' : ''}`
+			);
+		}
 
 		// 2. Check rate limit
 		if (!this._safetyLimitsService.checkRateLimit(workerId)) {
@@ -285,12 +310,15 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 	async executeSubTask(id: string, token: CancellationToken): Promise<ISubTaskResult> {
 		const subTask = this._subTasks.get(id);
 		if (!subTask) {
-			return {
+			const result: ISubTaskResult = {
 				taskId: id,
 				status: 'failed',
 				output: '',
 				error: `Sub-task ${id} not found`,
 			};
+			// Fire completion event even for not-found case
+			this._logService.warn(`[SubTaskManager] Sub-task ${id} not found during execution`);
+			return result;
 		}
 
 		// Check for conflicts before starting
@@ -312,27 +340,35 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 
 		this.updateStatus(id, 'running');
 
+		let result: ISubTaskResult;
+
 		try {
 			// Use the orchestrator infrastructure for full chat UI support if available
 			// This creates a real WorkerSession that appears in the sessions panel
 			// with thinking bubbles, tool confirmations, etc.
 			if (this._orchestratorService) {
-				return await this._executeSubTaskWithOrchestratorUI(subTask, cts.token);
+				result = await this._executeSubTaskWithOrchestratorUI(subTask, cts.token);
 			} else {
 				// Orchestrator not available, use headless execution
-				const result = await this._executeSubTaskHeadless(subTask, cts.token);
-				this.updateStatus(id, result.status === 'success' ? 'completed' : 'failed', result);
-				return result;
+				result = await this._executeSubTaskHeadless(subTask, cts.token);
 			}
+
+			// Ensure status is updated (may have already been updated by orchestrator events)
+			const currentSubTask = this._subTasks.get(id);
+			if (currentSubTask && !['completed', 'failed', 'cancelled'].includes(currentSubTask.status)) {
+				this.updateStatus(id, result.status === 'success' ? 'completed' : 'failed', result);
+			}
+
+			return result;
 		} catch (error) {
 			// Fallback to headless execution if orchestrator fails
 			this._logService.warn(`[SubTaskManager] Orchestrator UI execution failed, falling back to headless: ${error}`);
 			try {
-				const result = await this._executeSubTaskHeadless(subTask, cts.token);
+				result = await this._executeSubTaskHeadless(subTask, cts.token);
 				this.updateStatus(id, result.status === 'success' ? 'completed' : 'failed', result);
 				return result;
 			} catch (fallbackError) {
-				const result: ISubTaskResult = {
+				result = {
 					taskId: id,
 					status: 'failed',
 					output: '',
@@ -344,6 +380,23 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 		} finally {
 			this._cancellationSources.delete(id);
 			this._runningSubTasks.delete(id);
+
+			// FALLBACK COMPLETION: Ensure parent is notified even if the subagent never called
+			// a2a_subtask_complete. This handles crashes, timeouts, and cancellations.
+			// The updateStatus call above (or in catch blocks) will have fired onDidCompleteSubTask
+			// which ParentCompletionService listens to. This comment documents the guarantee.
+			const finalSubTask = this._subTasks.get(id);
+			if (finalSubTask && finalSubTask.status === 'running') {
+				// If we got here and status is still 'running', something went very wrong
+				this._logService.error(`[SubTaskManager] Sub-task ${id} finished execution but status is still 'running' - forcing completion`);
+				const fallbackResult: ISubTaskResult = {
+					taskId: id,
+					status: 'failed',
+					output: '',
+					error: 'Execution completed unexpectedly without status update',
+				};
+				this.updateStatus(id, 'failed', fallbackResult);
+			}
 		}
 	}
 
@@ -543,11 +596,13 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			streamCollector = new SubTaskStreamCollector();
 		}
 
+		// Determine effective max depth based on inherited spawn context
+		const effectiveMaxDepth = this._safetyLimitsService.getMaxDepthForContext(inheritedSpawnContext);
 		// Determine if this subtask can spawn more subtasks based on depth
-		const canSpawnSubTasks = subTask.depth < this.maxDepth;
+		const canSpawnSubTasks = subTask.depth < effectiveMaxDepth;
 		const subTaskGuidance = canSpawnSubTasks
 			? `You CAN spawn sub-tasks if needed using a2a_spawn_subtask or a2a_spawn_parallel_subtasks tools. Use orchestrator_listAgents to discover available agent types.`
-			: `You are at maximum depth (${subTask.depth}/${this.maxDepth}) and CANNOT spawn additional sub-tasks. Complete this task directly.`;
+			: `You are at maximum depth (${subTask.depth}/${effectiveMaxDepth}) for ${inheritedSpawnContext} context and CANNOT spawn additional sub-tasks. Complete this task directly.`;
 
 		// Build agent run options
 		const runOptions: IAgentRunOptions = {

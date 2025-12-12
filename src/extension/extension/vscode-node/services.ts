@@ -97,6 +97,7 @@ import { AgentInstructionService, IAgentInstructionService } from '../../orchest
 import { AgentRunnerService, IAgentRunner } from '../../orchestrator/agentRunner';
 import { IOrchestratorQueueService, OrchestratorQueueService } from '../../orchestrator/orchestratorQueue';
 import { IOrchestratorService, OrchestratorService } from '../../orchestrator/orchestratorServiceV2';
+import { IParentCompletionService, ParentCompletionService } from '../../orchestrator/parentCompletionService';
 import { ISafetyLimitsService, SafetyLimitsService } from '../../orchestrator/safetyLimits';
 import { ISubTaskManager, SubTaskManager } from '../../orchestrator/subTaskManager';
 import { GlobalWorkerContext, IWorkerContext, IWorkerToolsService, WorkerToolsService } from '../../orchestrator/workerToolsService';
@@ -184,6 +185,7 @@ export function registerServices(builder: IInstantiationServiceBuilder, extensio
 	builder.define(ISafetyLimitsService, new SyncDescriptor(SafetyLimitsService));
 	builder.define(ISubTaskManager, new SyncDescriptor(SubTaskManager));
 	builder.define(IOrchestratorQueueService, new SyncDescriptor(OrchestratorQueueService));
+	builder.define(IParentCompletionService, new SyncDescriptor(ParentCompletionService));
 	builder.define(IOrchestratorService, new SyncDescriptor(OrchestratorService));
 	builder.define(IParserService, new SyncDescriptor(ParserServiceImpl, [/*useWorker*/ true]));
 	builder.define(IIntentService, new SyncDescriptor(IntentService));

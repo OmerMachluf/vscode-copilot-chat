@@ -219,6 +219,12 @@ export interface ISubTaskCreateOptions {
 	parentHistory?: IAgentHistoryEntry[];
 	/** Inherited permissions from parent */
 	inheritedPermissions?: IOrchestratorPermissions;
+	/**
+	 * Spawn context inherited from parent - determines depth limits.
+	 * 'orchestrator' = spawned from orchestrator-deployed worker (max depth 2)
+	 * 'agent' = spawned from standalone agent (max depth 1)
+	 */
+	spawnContext?: 'orchestrator' | 'agent';
 }
 
 /**
@@ -228,10 +234,17 @@ export interface ISubTaskManager {
 	readonly _serviceBrand: undefined;
 
 	/**
-	 * Maximum depth allowed for sub-tasks.
+	 * Maximum depth allowed for sub-tasks (defaults to orchestrator context).
 	 * depth 0 = main task, depth 1 = sub-task, depth 2 = sub-sub-task
 	 */
 	readonly maxDepth: number;
+
+	/**
+	 * Get effective max depth for a specific spawn context.
+	 * @param context The spawn context ('orchestrator' or 'agent')
+	 * @returns Maximum depth allowed for that context
+	 */
+	getMaxDepthForContext(context: 'orchestrator' | 'agent'): number;
 
 	/**
 	 * Get current safety limits configuration.

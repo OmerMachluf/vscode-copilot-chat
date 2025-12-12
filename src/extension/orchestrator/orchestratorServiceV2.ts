@@ -27,6 +27,7 @@ import {
 } from './completionManager';
 import { IOrchestratorPermissionService, IPermissionRequest } from './orchestratorPermissions';
 import { IOrchestratorQueueMessage, IOrchestratorQueueService } from './orchestratorQueue';
+import { IParentCompletionService, WorkerSessionWakeUpAdapter } from './parentCompletionService';
 import { ISubTaskManager } from './subTaskManager';
 import { WorkerHealthMonitor } from './workerHealthMonitor';
 import { SerializedWorkerState, WorkerResponseStream, WorkerSession, WorkerSessionState } from './workerSession';
@@ -534,6 +535,9 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 	private readonly _completionManager: CompletionManager;
 
+	/** Map of worker ID -> wake-up adapter disposables */
+	private readonly _wakeUpAdapters = new Map<string, { dispose(): void }>();
+
 	constructor(
 		@IAgentInstructionService private readonly _agentInstructionService: IAgentInstructionService,
 		@IAgentRunner private readonly _agentRunner: IAgentRunner,
@@ -541,6 +545,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		@IOrchestratorQueueService private readonly _queueService: IOrchestratorQueueService,
 		@ISubTaskManager private readonly _subTaskManager: ISubTaskManager,
 		@IOrchestratorPermissionService private readonly _permissionService: IOrchestratorPermissionService,
+		@IParentCompletionService private readonly _parentCompletionService: IParentCompletionService,
 		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
@@ -1351,6 +1356,17 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			task.sessionUri = this._createSessionUri(task.id);
 			this._workers.set(worker.id, worker);
 
+			// Register wake-up adapter for parent completion notifications
+			// This ensures workers receive completion messages from their subtasks
+			const wakeUpAdapter = new WorkerSessionWakeUpAdapter(
+				worker,
+				this._parentCompletionService,
+				this._logService
+			);
+			const adapterDisposable = wakeUpAdapter.register();
+			this._wakeUpAdapters.set(worker.id, adapterDisposable);
+			this._register(adapterDisposable);
+
 			this._onOrchestratorEvent.fire({
 				type: 'task.started',
 				planId: task.planId,
@@ -1644,6 +1660,13 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		// Stop monitoring
 		this._healthMonitor.stopMonitoring(workerId);
 		this._circuitBreakers.delete(workerId);
+
+		// Dispose wake-up adapter
+		const wakeUpAdapter = this._wakeUpAdapters.get(workerId);
+		if (wakeUpAdapter) {
+			wakeUpAdapter.dispose();
+			this._wakeUpAdapters.delete(workerId);
+		}
 
 		// Dispose the worker first (stops the conversation loop)
 		worker.dispose();

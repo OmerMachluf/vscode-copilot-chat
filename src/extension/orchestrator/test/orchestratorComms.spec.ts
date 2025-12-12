@@ -22,12 +22,22 @@ describe('Orchestrator Communication', () => {
 	let agentRunner: IAgentRunner;
 	let workerToolsService: IWorkerToolsService;
 	let subTaskManager: any;
+	let parentCompletionService: any;
 	let logService: any;
 	let mockVscodeWindow: any;
 
 	beforeEach(() => {
 		// Mock dependencies
-		queueService = new OrchestratorQueueService();
+		logService = {
+			_serviceBrand: undefined,
+			trace: vi.fn(),
+			debug: vi.fn(),
+			info: vi.fn(),
+			warn: vi.fn(),
+			error: vi.fn(),
+		} as any;
+
+		queueService = new OrchestratorQueueService(logService);
 
 		const defaultPermissions: IOrchestratorPermissions = {
 			auto_approve: ['file_edits_in_worktree', 'subtask_spawning'],
@@ -72,14 +82,17 @@ describe('Orchestrator Communication', () => {
 			setOrchestratorService: vi.fn(),
 		} as any;
 
-		logService = {
+		const parentCompletionServiceMock = {
 			_serviceBrand: undefined,
-			trace: vi.fn(),
-			debug: vi.fn(),
-			info: vi.fn(),
-			warn: vi.fn(),
-			error: vi.fn(),
+			registerParentHandler: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+			hasParentHandler: vi.fn().mockReturnValue(false),
+			getPendingCompletions: vi.fn().mockReturnValue([]),
+			formatAsUserMessage: vi.fn().mockReturnValue(''),
+			onCompletionDelivered: new Emitter().event,
+			onCompletionQueued: new Emitter().event,
+			deliverCompletion: vi.fn(),
 		} as any;
+		parentCompletionService = parentCompletionServiceMock;
 
 		mockVscodeWindow = {
 			showInformationMessage: vi.fn(),
@@ -138,6 +151,7 @@ describe('Orchestrator Communication', () => {
 			queueService,
 			subTaskManager,
 			permissionService,
+			parentCompletionService,
 			logService
 		);
 
