@@ -100,15 +100,15 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 		options: vscode.LanguageModelToolInvocationOptions<SpawnSubTaskParams>,
 		token: CancellationToken
 	): Promise<LanguageModelToolResult> {
-		this._logService.info(`[A2ASpawnSubTaskTool] ========== INVOKE STARTED ==========`);
+		this._logService.info(`[A2ASpawnSubTaskTool] invoke`);
 
 		// Use worker context if available, otherwise default to user session
 		let workerId = this._workerContext?.workerId;
 		if (!workerId) {
 			workerId = 'user-session-v3';
-			this._logService.info(`[A2ASpawnSubTaskTool] No worker context, using default workerId: ${workerId}`);
+			this._logService.debug(`[A2ASpawnSubTaskTool] No worker context, using default workerId: ${workerId}`);
 		} else {
-			this._logService.info(`[A2ASpawnSubTaskTool] Using worker context workerId: ${workerId}`);
+			this._logService.debug(`[A2ASpawnSubTaskTool] Using worker context workerId: ${workerId}`);
 		}
 
 		const taskId = this._workerContext?.taskId ?? 'user-task';
@@ -120,10 +120,10 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 
 		const { agentType, prompt, expectedOutput, model, targetFiles, blocking = true } = options.input;
 
-		this._logService.info(`[A2ASpawnSubTaskTool] Input params: agentType=${agentType}, blocking=${blocking}, model=${model || 'default'}, currentDepth=${currentDepth}`);
-		this._logService.info(`[A2ASpawnSubTaskTool] Context: taskId=${taskId}, planId=${planId}`);
-		this._logService.info(`[A2ASpawnSubTaskTool] Worktree: workerContext.worktreePath=${this._workerContext?.worktreePath || 'none'}, workspaceFolders=${workspaceFolders?.length ?? 0}, resolved=${worktreePath || '(empty - orchestrator will create)'}`);
-		this._logService.info(`[A2ASpawnSubTaskTool] Prompt preview: ${prompt.slice(0, 100)}...`);
+		this._logService.debug(`[A2ASpawnSubTaskTool] Input params: agentType=${agentType}, blocking=${blocking}, model=${model || 'default'}, currentDepth=${currentDepth}`);
+		this._logService.debug(`[A2ASpawnSubTaskTool] Context: taskId=${taskId}, planId=${planId}`);
+		this._logService.debug(`[A2ASpawnSubTaskTool] Worktree resolved: ${worktreePath || '(empty - orchestrator will create)'}`);
+		this._logService.debug(`[A2ASpawnSubTaskTool] Prompt preview: ${prompt.slice(0, 100)}...`);
 
 		// Get spawn context from worker context (inherited from parent)
 		// Normalize to 'orchestrator' | 'agent' (subtask is only used internally for depth checking)
@@ -131,7 +131,7 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 		const spawnContext: 'orchestrator' | 'agent' = rawSpawnContext === 'orchestrator' ? 'orchestrator' : 'agent';
 		const effectiveMaxDepth = this._subTaskManager.getMaxDepthForContext(spawnContext);
 
-		this._logService.info(`[A2ASpawnSubTaskTool] Spawn context: ${spawnContext}, effectiveMaxDepth=${effectiveMaxDepth}`);
+		this._logService.debug(`[A2ASpawnSubTaskTool] Spawn context: ${spawnContext}, effectiveMaxDepth=${effectiveMaxDepth}`);
 
 		// Check depth limit before creating
 		if (currentDepth >= effectiveMaxDepth) {
@@ -163,7 +163,7 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 			}
 		}
 
-		this._logService.info(`[A2ASpawnSubTaskTool] Creating sub-task for ${agentType} at depth ${currentDepth + 1} (blocking: ${blocking})`);
+		this._logService.info(`[A2ASpawnSubTaskTool] Spawning subtask: agentType=${agentType}, blocking=${blocking}, depth=${currentDepth + 1}`);
 
 		// Create sub-task options with inherited spawn context
 		const createOptions: ISubTaskCreateOptions = {
@@ -182,15 +182,15 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 
 		// Create the sub-task
 		const subTask = this._subTaskManager.createSubTask(createOptions);
-		this._logService.info(`[A2ASpawnSubTaskTool] SubTask CREATED: id=${subTask.id}, status=${subTask.status}`);
+		this._logService.info(`[A2ASpawnSubTaskTool] SubTask created: id=${subTask.id}`);
 
 		// Get chat stream for progress (if available through progress service)
 		const parentStream = this._progressService.getStream(workerId);
-		this._logService.info(`[A2ASpawnSubTaskTool] Parent stream for workerId '${workerId}': ${parentStream ? 'FOUND' : 'NOT FOUND (no chat bubbles)'}`);
+		this._logService.debug(`[A2ASpawnSubTaskTool] Parent stream for workerId '${workerId}': ${parentStream ? 'FOUND' : 'NOT FOUND'}`);
 
 		// Non-blocking mode: return immediately with task ID
 		if (!blocking) {
-			this._logService.info(`[A2ASpawnSubTaskTool] NON-BLOCKING MODE: returning immediately, subtask will run in background`);
+			this._logService.debug(`[A2ASpawnSubTaskTool] Non-blocking mode: returning immediately`);
 			// Create progress tracking for the background task
 			const progressHandle = this._progressService.createProgress({
 				subtaskId: subTask.id,
@@ -225,7 +225,7 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 		}
 
 		// Blocking mode: wait for completion with progress indicator
-		this._logService.info(`[A2ASpawnSubTaskTool] BLOCKING MODE: will wait for subtask ${subTask.id} to complete`);
+		this._logService.debug(`[A2ASpawnSubTaskTool] Blocking mode: waiting for ${subTask.id}`);
 		const collectedMessages: IOrchestratorQueueMessage[] = [];
 		let handlerDisposable: IDisposable | undefined;
 
@@ -240,7 +240,7 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 
 		try {
 			// Register this worker as owner handler to receive messages from subtask
-			this._logService.info(`[A2ASpawnSubTaskTool] Registering owner handler for workerId '${workerId}'`);
+			this._logService.debug(`[A2ASpawnSubTaskTool] Registering owner handler for workerId '${workerId}'`);
 			handlerDisposable = this._queueService.registerOwnerHandler(workerId, async (message) => {
 				this._logService.info(`[A2ASpawnSubTaskTool] RECEIVED MESSAGE from subtask: type=${message.type}, taskId=${message.taskId}`);
 				collectedMessages.push(message);
@@ -249,10 +249,10 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 			});
 
 			// Execute the sub-task and wait for result
-			this._logService.info(`[A2ASpawnSubTaskTool] CALLING executeSubTask for subtask ${subTask.id}...`);
+			this._logService.debug(`[A2ASpawnSubTaskTool] Calling executeSubTask for ${subTask.id}`);
 			const result = await this._subTaskManager.executeSubTask(subTask.id, token);
-			this._logService.info(`[A2ASpawnSubTaskTool] executeSubTask RETURNED: status=${result.status}, error=${result.error || 'none'}`);
-			this._logService.info(`[A2ASpawnSubTaskTool] Result output preview: ${(result.output || '').slice(0, 200)}...`);
+			this._logService.info(`[A2ASpawnSubTaskTool] Subtask completed: id=${subTask.id}, status=${result.status}`);
+			this._logService.debug(`[A2ASpawnSubTaskTool] Result output preview: ${(result.output || '').slice(0, 200)}...`);
 
 			// Mark progress as complete
 			progressHandle.complete(result);

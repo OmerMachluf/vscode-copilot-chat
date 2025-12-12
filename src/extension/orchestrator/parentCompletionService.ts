@@ -33,6 +33,12 @@ export interface IParentCompletionMessage {
 	insertions?: number;
 	/** Number of deletions (if available) */
 	deletions?: number;
+	/** Optional list of changed files (best effort, may be truncated) */
+	changedFiles?: string[];
+	/** Whether the sub-agent explicitly called a2a_subtask_complete */
+	completedViaTool?: boolean;
+	/** If the sub-agent merged changes as part of completion */
+	mergedToBranch?: string;
 	/** Status of the completion */
 	status: 'success' | 'partial' | 'failed' | 'timeout';
 	/** Error message if failed */
@@ -240,13 +246,29 @@ export class ParentCompletionService extends Disposable implements IParentComple
 			lines.push(statsLine);
 		}
 
+		if (message.mergedToBranch) {
+			lines.push(`**Merged to:** ${message.mergedToBranch}`);
+		}
+
+		if (message.completedViaTool !== undefined) {
+			lines.push(`**Completion tool used:** ${message.completedViaTool ? 'yes' : 'no (fallback completion)'}`);
+		}
+
+		if (message.changedFiles && message.changedFiles.length > 0) {
+			const maxFiles = 20;
+			const shown = message.changedFiles.slice(0, maxFiles);
+			lines.push('');
+			lines.push('**Changed files (preview):**');
+			lines.push(shown.map(f => `- ${f}`).join('\n') + (message.changedFiles.length > maxFiles ? `\n- …and ${message.changedFiles.length - maxFiles} more` : ''));
+		}
+
 		// Add guidance for parent on what to do next
 		lines.push('');
 		lines.push('---');
-		lines.push('**YOUR NEXT STEP:** As the parent, you must decide what to do:');
-		lines.push('- If the work is complete and ready to merge: Call `a2a_subtask_complete` with a `commitMessage` to commit and merge the changes');
-		lines.push('- If more work is needed: Use `orchestrator_sendMessage` to give the worker additional instructions');
-		lines.push('- If the task failed: You can retry, take over, or report failure to your own parent');
+		lines.push('**YOUR NEXT STEP:** As the parent, decide what to do:');
+		lines.push('- If changes look good and you want to integrate them now: commit/merge using your normal workflow (git / PR).');
+		lines.push('- If the sub-agent is expected to have made file changes but did not: send follow-up instructions (ask for concrete edits + rerun).');
+		lines.push('- If this completion was a fallback (tool not used): treat results as lower confidence and consider asking the sub-agent to call `a2a_subtask_complete` explicitly.');
 
 		return lines.join('\n');
 	}
@@ -281,8 +303,18 @@ export class ParentCompletionService extends Disposable implements IParentComple
 	private async _createCompletionMessage(subTask: ISubTask, result: ISubTaskResult): Promise<IParentCompletionMessage> {
 		// Fetch diff stats for the worktree to include in completion payload
 		let diffStats: { changedFilesCount: number; insertions: number; deletions: number } | undefined;
+		let changedFiles: string[] | undefined;
 		if (subTask.worktreePath) {
 			diffStats = await getWorktreeDiffStats(subTask.worktreePath);
+			changedFiles = await getWorktreeChangedFiles(subTask.worktreePath);
+		}
+
+		const completedViaTool = Boolean(result.metadata && (result.metadata as any).completedViaTool);
+		const mergedToBranch = (result.metadata as any)?.targetBranch || (result.metadata as any)?.mergedToBranch;
+		const metadataFilesChanged = (result.metadata as any)?.filesChanged;
+		if (Array.isArray(metadataFilesChanged) && metadataFilesChanged.length > 0) {
+			// Prefer metadata from explicit completion tool when available
+			changedFiles = metadataFilesChanged;
 		}
 
 		return {
@@ -297,6 +329,9 @@ export class ParentCompletionService extends Disposable implements IParentComple
 			changedFilesCount: diffStats?.changedFilesCount,
 			insertions: diffStats?.insertions,
 			deletions: diffStats?.deletions,
+			changedFiles,
+			completedViaTool,
+			mergedToBranch,
 		};
 	}
 
@@ -444,38 +479,103 @@ export async function getWorktreeDiffStats(worktreePath: string): Promise<{
 	deletions: number;
 } | undefined> {
 	try {
-		// Run git diff --stat --numstat
-		const result = await new Promise<string>((resolve, reject) => {
-			const { exec } = require('child_process');
-			exec(
-				'git diff --stat --numstat HEAD',
-				{ cwd: worktreePath, encoding: 'utf-8' },
-				(error: Error | null, stdout: string) => {
-					if (error) {
-						reject(error);
-					} else {
-						resolve(stdout);
+		const execGit = async (args: string[]): Promise<string> => {
+			return await new Promise<string>((resolve, reject) => {
+				const { exec } = require('child_process');
+				exec(
+					`git ${args.join(' ')}`,
+					{ cwd: worktreePath, encoding: 'utf-8' },
+					(error: Error | null, stdout: string, stderr: string) => {
+						if (error) {
+							reject(new Error(stderr || error.message));
+						} else {
+							resolve(stdout);
+						}
 					}
+				);
+			});
+		};
+
+		const getDefaultBranch = async (): Promise<string> => {
+			try {
+				const remoteHead = await execGit(['symbolic-ref', 'refs/remotes/origin/HEAD']);
+				const match = remoteHead.match(/refs\/remotes\/origin\/(.+)/);
+				if (match?.[1]) {
+					return match[1];
 				}
-			);
-		});
-
-		// Parse the output
-		const lines = result.split('\n').filter(l => l.trim());
-		let insertions = 0;
-		let deletions = 0;
-		let changedFilesCount = 0;
-
-		for (const line of lines) {
-			const match = line.match(/^(\d+)\s+(\d+)\s+/);
-			if (match) {
-				insertions += parseInt(match[1], 10);
-				deletions += parseInt(match[2], 10);
-				changedFilesCount++;
+			} catch {
+				// ignore
 			}
+			for (const branch of ['main', 'master']) {
+				try {
+					await execGit(['rev-parse', '--verify', branch]);
+					return branch;
+				} catch {
+					// ignore
+				}
+			}
+			return 'main';
+		};
+
+		const parseNumstat = (text: string): { files: number; insertions: number; deletions: number } => {
+			const lines = text.split('\n').filter(l => l.trim());
+			let insertions = 0;
+			let deletions = 0;
+			let files = 0;
+			for (const line of lines) {
+				// numstat format: <ins>\t<del>\t<path>
+				const parts = line.split(/\s+/);
+				if (parts.length < 3) {
+					continue;
+				}
+				const ins = parts[0];
+				const del = parts[1];
+				if (ins === '-' || del === '-') {
+					// binary changes; count file but not line deltas
+					files++;
+					continue;
+				}
+				const insN = Number(ins);
+				const delN = Number(del);
+				if (!Number.isNaN(insN) && !Number.isNaN(delN)) {
+					insertions += insN;
+					deletions += delN;
+					files++;
+				}
+			}
+			return { files, insertions, deletions };
+		};
+
+		// Combine:
+		// 1) committed changes vs base branch, and
+		// 2) uncommitted/staged changes vs HEAD
+		const baseBranch = await getDefaultBranch();
+		let committed = { files: 0, insertions: 0, deletions: 0 };
+		try {
+			await execGit(['fetch', 'origin']);
+		} catch {
+			// ignore fetch issues
+		}
+		try {
+			const committedNumstat = await execGit(['diff', '--numstat', `${baseBranch}...HEAD`]);
+			committed = parseNumstat(committedNumstat);
+		} catch {
+			// ignore
 		}
 
-		return { changedFilesCount, insertions, deletions };
+		let uncommitted = { files: 0, insertions: 0, deletions: 0 };
+		try {
+			const uncommittedNumstat = await execGit(['diff', '--numstat', 'HEAD']);
+			uncommitted = parseNumstat(uncommittedNumstat);
+		} catch {
+			// ignore
+		}
+
+		return {
+			changedFilesCount: Math.max(committed.files, uncommitted.files),
+			insertions: committed.insertions + uncommitted.insertions,
+			deletions: committed.deletions + uncommitted.deletions,
+		};
 	} catch {
 		return undefined;
 	}
@@ -487,22 +587,91 @@ export async function getWorktreeDiffStats(worktreePath: string): Promise<{
  */
 export async function getWorktreeChangedFiles(worktreePath: string): Promise<string[]> {
 	try {
-		const result = await new Promise<string>((resolve, reject) => {
-			const { exec } = require('child_process');
-			exec(
-				'git diff --name-only HEAD',
-				{ cwd: worktreePath, encoding: 'utf-8' },
-				(error: Error | null, stdout: string) => {
-					if (error) {
-						reject(error);
-					} else {
-						resolve(stdout);
+		const execGit = async (args: string[]): Promise<string> => {
+			return await new Promise<string>((resolve, reject) => {
+				const { exec } = require('child_process');
+				exec(
+					`git ${args.join(' ')}`,
+					{ cwd: worktreePath, encoding: 'utf-8' },
+					(error: Error | null, stdout: string, stderr: string) => {
+						if (error) {
+							reject(new Error(stderr || error.message));
+						} else {
+							resolve(stdout);
+						}
 					}
-				}
-			);
-		});
+				);
+			});
+		};
 
-		return result.split('\n').filter(l => l.trim());
+		const getDefaultBranch = async (): Promise<string> => {
+			try {
+				const remoteHead = await execGit(['symbolic-ref', 'refs/remotes/origin/HEAD']);
+				const match = remoteHead.match(/refs\/remotes\/origin\/(.+)/);
+				if (match?.[1]) {
+					return match[1];
+				}
+			} catch {
+				// ignore
+			}
+			for (const branch of ['main', 'master']) {
+				try {
+					await execGit(['rev-parse', '--verify', branch]);
+					return branch;
+				} catch {
+					// ignore
+				}
+			}
+			return 'main';
+		};
+
+		let baseBranch = 'main';
+		try {
+			baseBranch = await getDefaultBranch();
+		} catch {
+			// ignore
+		}
+
+		try {
+			await execGit(['fetch', 'origin']);
+		} catch {
+			// ignore
+		}
+
+		const files = new Set<string>();
+		// committed changes vs base
+		try {
+			const committed = await execGit(['diff', '--name-only', `${baseBranch}...HEAD`]);
+			for (const f of committed.split('\n').map(l => l.trim()).filter(Boolean)) {
+				files.add(f);
+			}
+		} catch {
+			// ignore
+		}
+		// working tree changes (staged + unstaged)
+		try {
+			const working = await execGit(['diff', '--name-only', 'HEAD']);
+			for (const f of working.split('\n').map(l => l.trim()).filter(Boolean)) {
+				files.add(f);
+			}
+		} catch {
+			// ignore
+		}
+		// untracked files
+		try {
+			const status = await execGit(['status', '--porcelain']);
+			for (const line of status.split('\n').map(l => l.trim()).filter(Boolean)) {
+				// format: XY <path> OR ?? <path>
+				const file = line.slice(3).trim();
+				if (file) {
+					files.add(file);
+				}
+			}
+		} catch {
+			// ignore
+		}
+
+		return [...files.values()];
 	} catch {
 		return [];
 	}

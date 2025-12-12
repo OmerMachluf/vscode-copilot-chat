@@ -46,6 +46,11 @@ interface IGitWorkResult {
 	conflictingFiles?: string[];
 }
 
+interface IWorktreeChangeSummary {
+	readonly changedFiles: string[];
+	readonly hasChanges: boolean;
+}
+
 /**
  * Helper function to execute git commands
  */
@@ -119,12 +124,20 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 		error?: string,
 	): Promise<LanguageModelToolResult> {
 		try {
+			const worktreePath = this._workerContext.worktreePath;
+			const changeSummary = worktreePath ? await this._getWorktreeChangeSummary(worktreePath) : undefined;
+
 			const result: ISubTaskResult = {
 				taskId: subTaskId,
 				status,
 				output,
 				outputFile,
-				metadata,
+				metadata: {
+					...metadata,
+					completedViaTool: true,
+					changedFiles: changeSummary?.changedFiles,
+					hasChanges: changeSummary?.hasChanges,
+				},
 				error,
 			};
 			this._subTaskManager.updateStatus(subTaskId, status === 'success' ? 'completed' : 'failed', result);
@@ -172,7 +185,7 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 		const worktreePath = this._workerContext.worktreePath;
 
 		this._logService.info(`[A2ASubTaskCompleteTool] Starting git workflow for subtask ${subTaskId}`);
-		this._logService.info(`[A2ASubTaskCompleteTool] Worktree: ${worktreePath}`);
+		this._logService.debug(`[A2ASubTaskCompleteTool] Worktree: ${worktreePath}`);
 
 		try {
 			// Step 1: Get current branch name
@@ -185,9 +198,36 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 				return this._reportGitError(subTaskId, commitResult.error || 'Failed to commit changes', output, metadata);
 			}
 
+			// If there were no changes to commit, do not attempt to merge/push/cleanup.
+			// This prevents confusing failures like "nothing to commit" after a squash merge.
+			if (commitResult.filesChanged && commitResult.filesChanged.length === 0) {
+				const result: ISubTaskResult = {
+					taskId: subTaskId,
+					status: status === 'success' ? 'partial' : status,
+					output,
+					metadata: {
+						...metadata,
+						completedViaTool: true,
+						noChangesToCommit: true,
+						filesChanged: [],
+					},
+					error: status === 'success' ? 'No file changes detected in the worktree to commit/merge.' : undefined,
+				};
+
+				this._subTaskManager.updateStatus(subTaskId, result.status === 'success' ? 'completed' : 'failed', result);
+				this._sendCompletionMessage(result);
+				return new LanguageModelToolResult([
+					new LanguageModelTextPart(
+						`✓ Completion recorded, but no file changes were found.\n` +
+						`  - No commit/merge performed\n` +
+						`  - Parent agent notified`
+					),
+				]);
+			}
+
 			// Step 3: Get files changed for report
 			const filesChanged = await this._getFilesChanged(worktreePath);
-			this._logService.info(`[A2ASubTaskCompleteTool] Files changed: ${filesChanged.length}`);
+			this._logService.debug(`[A2ASubTaskCompleteTool] Files changed: ${filesChanged.length}`);
 
 			// Step 4: Determine target branch and merge
 			const targetBranch = await this._getTargetBranch(worktreePath);
@@ -363,6 +403,25 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 		}
 	}
 
+	private async _getWorktreeChangeSummary(worktreePath: string): Promise<IWorktreeChangeSummary> {
+		try {
+			const status = await execGit(['status', '--porcelain'], worktreePath);
+			const files = new Set<string>();
+			for (const line of status.split('\n').map(l => l.trim()).filter(Boolean)) {
+				const file = line.slice(3).trim();
+				if (file) {
+					files.add(file);
+				}
+			}
+			return {
+				changedFiles: [...files.values()],
+				hasChanges: files.size > 0,
+			};
+		} catch {
+			return { changedFiles: [], hasChanges: false };
+		}
+	}
+
 	// --- Reporting methods ---
 
 	private _reportGitSuccess(
@@ -379,6 +438,7 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 			output,
 			metadata: {
 				...metadata,
+				completedViaTool: true,
 				filesChanged,
 				targetBranch,
 				mergedSuccessfully: true,

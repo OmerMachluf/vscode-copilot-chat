@@ -862,12 +862,15 @@ ${subTask.targetFiles?.length ? `- **Target Files:** ${subTask.targetFiles.join(
 
 ## COMMUNICATION WITH PARENT
 - Use \`a2a_notify_orchestrator\` to send status updates, questions, or progress reports to your parent.
-- When you complete your work, simply stop. Your parent will be notified automatically.
+- When you complete your work, you MUST call \`a2a_subtask_complete\`.
+	- Always include \`subTaskId\`, \`status\`, and a concise \`output\` summary.
+	- Do NOT include \`commitMessage\` unless your parent explicitly asked you to commit/merge.
+	- If you made no file changes, still call \`a2a_subtask_complete\` and set status to 'partial' with an explanation.
 - **DO NOT** try to communicate with the user directly - route everything through your parent.
 
 ## YOUR RESPONSIBILITIES
 1. Complete the specific task assigned to you.
-2. When done, simply finish. Your parent is responsible for deciding what happens next.
+2. When done, call \`a2a_subtask_complete\` and then stop.
 3. Any file changes you make in the worktree will be visible to your parent.
 4. Your parent is responsible for merging/integrating your changes.
 
