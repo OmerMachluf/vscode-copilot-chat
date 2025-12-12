@@ -94,6 +94,11 @@ export class OrchestratorChatSessionParticipant extends Disposable {
 			const workerSession = this.orchestratorService.getWorkerSession(workerId);
 			if (workerSession) {
 				disposables.add(workerSession.attachStream(stream));
+
+				// CRITICAL: Pass the toolInvocationToken to the worker
+				// This enables inline tool confirmations instead of modal dialogs
+				// The token comes from this real VS Code ChatRequest
+				workerSession.setToolInvocationToken(request.toolInvocationToken);
 			}
 
 			// Handle cancellation - interrupt the worker when user clicks stop

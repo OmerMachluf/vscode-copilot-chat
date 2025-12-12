@@ -153,7 +153,11 @@ async function handleMessage(msg: any, socket: net.Socket, instantiationService?
 			const agentRunner = instantiationService.invokeFunction(accessor => accessor.get(IAgentRunner));
 
 			// Get the default language model
-			const models = await vscode.lm.selectChatModels({ family: 'gpt-4o' });
+			// Try to get any available copilot model, fallback to any model
+			let models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+			if (models.length === 0) {
+				models = await vscode.lm.selectChatModels();
+			}
 			const model = models[0];
 
 			if (!model) {

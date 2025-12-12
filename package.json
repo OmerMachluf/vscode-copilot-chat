@@ -2466,6 +2466,36 @@
 				"locations": [
 					"panel"
 				]
+			},
+			{
+				"id": "copilot-cloud-agent",
+				"name": "copilot-cloud-agent",
+				"fullName": "Cloud Agent",
+				"description": "Delegate tasks to the GitHub Copilot Cloud Agent",
+				"isDefault": false,
+				"locations": [
+					"panel"
+				]
+			},
+			{
+				"id": "copilotcli",
+				"name": "copilotcli",
+				"fullName": "Background Agent",
+				"description": "Run tasks in the background",
+				"isDefault": false,
+				"locations": [
+					"panel"
+				]
+			},
+			{
+				"id": "orchestrator",
+				"name": "orchestrator",
+				"fullName": "Orchestrator Workers",
+				"description": "Manage parallel plan tasks with orchestrated workers",
+				"isDefault": false,
+				"locations": [
+					"panel"
+				]
 			}
 		],
 		"languageModelChatProviders": [
@@ -4681,7 +4711,7 @@
 							"boolean",
 							"string"
 						],
-						"default": false,
+						"default": true,
 						"markdownDescription": "%github.copilot.config.claudeCode.enabled%",
 						"tags": [
 							"advanced",
@@ -4770,7 +4800,7 @@
 					},
 					"github.copilot.chat.cli.customAgents.enabled": {
 						"type": "boolean",
-						"default": false,
+						"default": true,
 						"markdownDescription": "%github.copilot.config.cli.customAgents.enabled%",
 						"tags": [
 							"advanced",
@@ -4779,7 +4809,7 @@
 					},
 					"github.copilot.chat.cli.mcp.enabled": {
 						"type": "boolean",
-						"default": false,
+						"default": true,
 						"markdownDescription": "%github.copilot.config.cli.mcp.enabled%",
 						"tags": [
 							"advanced",
@@ -5989,10 +6019,10 @@
 		"prepare": "husky",
 		"vscode-dts:dev": "node node_modules/@vscode/dts/index.js dev && mv vscode.proposed.*.ts src/extension",
 		"vscode-dts:main": "node node_modules/@vscode/dts/index.js main && mv vscode.d.ts src/extension",
-		"build": "node .esbuild.ts",
-		"compile": "node .esbuild.ts --dev",
+		"build": "node .esbuild.mts",
+		"compile": "node .esbuild.mts --dev",
 		"watch": "npm-run-all -p watch:*",
-		"watch:esbuild": "node .esbuild.ts --watch --dev",
+		"watch:esbuild": "node .esbuild.mts --watch --dev",
 		"watch:tsc-extension": "tsc --noEmit --watch --project tsconfig.json",
 		"watch:tsc-extension-web": "tsc --noEmit --watch --project tsconfig.worker.json",
 		"watch:tsc-simulation-workbench": "tsc --noEmit --watch --project test/simulation/workbench/tsconfig.json",

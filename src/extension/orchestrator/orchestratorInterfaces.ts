@@ -7,9 +7,9 @@ import * as vscode from 'vscode';
 import { CancellationToken } from '../../util/vs/base/common/cancellation';
 import { Event } from '../../util/vs/base/common/event';
 import { createDecorator } from '../../util/vs/platform/instantiation/common/instantiation';
-import { WorkerToolSet } from './workerToolsService';
 import { IOrchestratorPermissions } from './orchestratorPermissions';
 import { IEmergencyStopOptions, IEmergencyStopResult, ISafetyLimitsConfig, ISubTaskCost, ITokenUsage } from './safetyLimits';
+import { WorkerToolSet } from './workerToolsService';
 
 // --- From agentRunner.ts ---
 
@@ -43,6 +43,13 @@ export interface IAgentRunOptions {
 
 	/** Cancellation token */
 	token: CancellationToken;
+
+	/**
+	 * Tool invocation token from a real VS Code ChatRequest.
+	 * When provided, tool confirmations will show inline in the chat UI
+	 * instead of as modal dialogs.
+	 */
+	toolInvocationToken?: vscode.ChatParticipantToolToken;
 
 	/** Event fired when the agent should pause/resume */
 	onPaused?: Event<boolean>;
@@ -352,4 +359,11 @@ export interface ISubTaskManager {
 	 * @returns true if auto-approved by inherited permissions
 	 */
 	checkPermission(subTaskId: string, action: string): boolean;
+
+	/**
+	 * Set the orchestrator service for UI-enabled subtask execution.
+	 * This is called lazily by OrchestratorService to avoid circular dependency.
+	 * @param orchestratorService The orchestrator service instance
+	 */
+	setOrchestratorService(orchestratorService: unknown): void;
 }

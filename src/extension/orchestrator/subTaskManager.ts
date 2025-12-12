@@ -21,6 +21,9 @@ import {
 	ITokenUsage,
 } from './safetyLimits';
 import { IWorkerToolsService } from './workerToolsService';
+
+// Lazy import to avoid circular dependency - IOrchestratorService is imported dynamically
+type IOrchestratorService = import('./orchestratorServiceV2').IOrchestratorService;
 export { ISubTask, ISubTaskCreateOptions, ISubTaskManager, ISubTaskResult };
 
 /**
@@ -62,6 +65,12 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 	private readonly _onDidCompleteSubTask = this._register(new Emitter<ISubTask>());
 	readonly onDidCompleteSubTask = this._onDidCompleteSubTask.event;
 
+	/** Map of subtask ID to orchestrator task ID for UI-enabled subtasks */
+	private readonly _subtaskToOrchestratorTask = new Map<string, string>();
+
+	/** Orchestrator service for UI-enabled subtasks (optional, set via setOrchestratorService) */
+	private _orchestratorService: IOrchestratorService | undefined;
+
 	constructor(
 		@IAgentRunner private readonly _agentRunner: IAgentRunner,
 		@IWorkerToolsService private readonly _workerToolsService: IWorkerToolsService,
@@ -73,6 +82,37 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 		// Listen to emergency stop events
 		this._register(this._safetyLimitsService.onEmergencyStop(options => {
 			this._handleEmergencyStop(options);
+		}));
+	}
+
+	/**
+	 * Set the orchestrator service for UI-enabled subtask execution.
+	 * This is set lazily to avoid circular dependency at import time.
+	 */
+	setOrchestratorService(orchestratorService: IOrchestratorService): void {
+		if (this._orchestratorService) {
+			return; // Already set
+		}
+		this._orchestratorService = orchestratorService;
+
+		// Listen for orchestrator task completion to update subtask status
+		this._register(this._orchestratorService.onOrchestratorEvent(event => {
+			if (event.type === 'task.completed' || event.type === 'task.failed') {
+				// Find the subtask that maps to this orchestrator task
+				for (const [subtaskId, taskId] of this._subtaskToOrchestratorTask) {
+					if (taskId === event.taskId) {
+						const status = event.type === 'task.completed' ? 'completed' : 'failed';
+						const error = event.type === 'task.failed' ? (event as any).error : undefined;
+						this.updateStatus(subtaskId, status, {
+							taskId: subtaskId,
+							status: status === 'completed' ? 'success' : 'failed',
+							output: '',
+							error,
+						});
+						break;
+					}
+				}
+			}
 		}));
 	}
 
@@ -273,25 +313,167 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 		this.updateStatus(id, 'running');
 
 		try {
-			const result = await this._executeSubTaskInternal(subTask, cts.token);
-			this.updateStatus(id, result.status === 'success' ? 'completed' : 'failed', result);
-			return result;
+			// Use the orchestrator infrastructure for full chat UI support if available
+			// This creates a real WorkerSession that appears in the sessions panel
+			// with thinking bubbles, tool confirmations, etc.
+			if (this._orchestratorService) {
+				return await this._executeSubTaskWithOrchestratorUI(subTask, cts.token);
+			} else {
+				// Orchestrator not available, use headless execution
+				const result = await this._executeSubTaskHeadless(subTask, cts.token);
+				this.updateStatus(id, result.status === 'success' ? 'completed' : 'failed', result);
+				return result;
+			}
 		} catch (error) {
-			const result: ISubTaskResult = {
-				taskId: id,
-				status: 'failed',
-				output: '',
-				error: error instanceof Error ? error.message : String(error),
-			};
-			this.updateStatus(id, 'failed', result);
-			return result;
+			// Fallback to headless execution if orchestrator fails
+			this._logService.warn(`[SubTaskManager] Orchestrator UI execution failed, falling back to headless: ${error}`);
+			try {
+				const result = await this._executeSubTaskHeadless(subTask, cts.token);
+				this.updateStatus(id, result.status === 'success' ? 'completed' : 'failed', result);
+				return result;
+			} catch (fallbackError) {
+				const result: ISubTaskResult = {
+					taskId: id,
+					status: 'failed',
+					output: '',
+					error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+				};
+				this.updateStatus(id, 'failed', result);
+				return result;
+			}
 		} finally {
 			this._cancellationSources.delete(id);
 			this._runningSubTasks.delete(id);
 		}
 	}
 
-	private async _executeSubTaskInternal(subTask: ISubTask, token: CancellationToken): Promise<ISubTaskResult> {
+	/**
+	 * Execute a subtask using the orchestrator's WorkerSession infrastructure.
+	 * This provides full chat UI support with thinking bubbles, tool confirmations,
+	 * and the subtask appearing in the sessions panel.
+	 *
+	 * @precondition this._orchestratorService is defined
+	 */
+	private async _executeSubTaskWithOrchestratorUI(subTask: ISubTask, token: CancellationToken): Promise<ISubTaskResult> {
+		const orchestratorService = this._orchestratorService!;
+
+		// Create an orchestrator task for this subtask
+		const taskName = `[SubTask] ${subTask.agentType} (${subTask.id.slice(-6)})`;
+		const taskDescription = `${subTask.prompt}\n\n---\n**Expected Output:** ${subTask.expectedOutput}`;
+
+		const orchestratorTask = orchestratorService.addTask(taskDescription, {
+			name: taskName,
+			planId: subTask.planId,
+			modelId: subTask.model,
+			// Don't create a new worktree - reuse parent's worktree
+			baseBranch: undefined,
+			targetFiles: subTask.targetFiles,
+		});
+
+		// Map subtask ID to orchestrator task ID
+		this._subtaskToOrchestratorTask.set(subTask.id, orchestratorTask.id);
+
+		this._logService.info(`[SubTaskManager] Created orchestrator task ${orchestratorTask.id} for subtask ${subTask.id}`);
+
+		try {
+			// Deploy the task - this creates a WorkerSession with full UI
+			const workerSession = await orchestratorService.deploy(orchestratorTask.id, {
+				modelId: subTask.model,
+			});
+
+			// Wait for the task to complete
+			return await this._waitForOrchestratorTaskCompletion(orchestratorTask.id, workerSession.id, token);
+		} catch (error) {
+			// Clean up the orchestrator task on failure
+			try {
+				orchestratorService.removeTask(orchestratorTask.id);
+			} catch {
+				// Ignore cleanup errors
+			}
+			throw error;
+		}
+	}
+
+	/**
+	 * Wait for an orchestrator task to complete and return the result.
+	 *
+	 * @precondition this._orchestratorService is defined
+	 */
+	private async _waitForOrchestratorTaskCompletion(
+		taskId: string,
+		workerId: string,
+		token: CancellationToken
+	): Promise<ISubTaskResult> {
+		const orchestratorService = this._orchestratorService!;
+
+		return new Promise<ISubTaskResult>((resolve) => {
+			const disposables: vscode.Disposable[] = [];
+
+			const cleanup = () => {
+				disposables.forEach(d => d.dispose());
+			};
+
+			// Listen for task completion
+			disposables.push(orchestratorService.onOrchestratorEvent(event => {
+				if (!('taskId' in event) || event.taskId !== taskId) {
+					return;
+				}
+
+				if (event.type === 'task.completed') {
+					cleanup();
+					const workerState = orchestratorService.getWorkerState(workerId);
+					resolve({
+						taskId,
+						status: 'success',
+						output: workerState?.messages?.map(m => m.content).join('\n') || 'Task completed successfully',
+					});
+				} else if (event.type === 'task.failed') {
+					cleanup();
+					resolve({
+						taskId,
+						status: 'failed',
+						output: '',
+						error: event.error || 'Task failed',
+					});
+				}
+			}));
+
+			// Handle cancellation
+			token.onCancellationRequested(() => {
+				cleanup();
+				orchestratorService.interruptWorker(workerId);
+				resolve({
+					taskId,
+					status: 'failed',
+					output: '',
+					error: 'Task was cancelled',
+				});
+			});
+		});
+	}
+
+	/**
+	 * Execute a subtask without UI (headless mode).
+	 * This is the fallback when orchestrator UI is not available.
+	 */
+	private async _executeSubTaskHeadless(subTask: ISubTask, token: CancellationToken): Promise<ISubTaskResult> {
+		return await vscode.window.withProgress({
+			location: vscode.ProgressLocation.Notification,
+			title: `Executing Sub-Task: ${subTask.agentType}`,
+			cancellable: true
+		}, async (progress, _token) => {
+			const cts = new CancellationTokenSource(token);
+			_token.onCancellationRequested(() => cts.cancel());
+
+			const streamCollector = new SubTaskStreamCollector((message) => {
+				progress.report({ message });
+			});
+
+			return await this._executeSubTaskInternal(subTask, cts.token, streamCollector);
+		});
+	}
+
+	private async _executeSubTaskInternal(subTask: ISubTask, token: CancellationToken, streamCollector?: SubTaskStreamCollector): Promise<ISubTaskResult> {
 		// Get or create worker tool set for the parent worker
 		let toolSet = this._workerToolsService.getWorkerToolSet(subTask.parentWorkerId);
 		if (!toolSet) {
@@ -302,13 +484,38 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			);
 		}
 
-		// Select the model
-		const models = await vscode.lm.selectChatModels({
-			vendor: 'copilot',
-			family: subTask.model ?? 'gpt-4o',
-		});
+		// Select the model - try specific model first, then fallback
+		let model: vscode.LanguageModelChat | undefined;
 
-		if (models.length === 0) {
+		if (subTask.model) {
+			// Try by ID first (e.g., 'claude-sonnet-4-20250514')
+			const byId = await vscode.lm.selectChatModels({ id: subTask.model });
+			if (byId.length > 0) {
+				model = byId[0];
+			} else {
+				// Try by family (e.g., 'claude-opus-4.5')
+				const byFamily = await vscode.lm.selectChatModels({ vendor: 'copilot', family: subTask.model });
+				if (byFamily.length > 0) {
+					model = byFamily[0];
+				}
+			}
+		}
+
+		// Fallback to any copilot model if specific model not found
+		if (!model) {
+			const copilotModels = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+			if (copilotModels.length > 0) {
+				model = copilotModels[0];
+			}
+		}
+
+		// Last resort: any available model
+		if (!model) {
+			const allModels = await vscode.lm.selectChatModels();
+			model = allModels[0];
+		}
+
+		if (!model) {
 			return {
 				taskId: subTask.id,
 				status: 'failed',
@@ -317,13 +524,13 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			};
 		}
 
-		const model = models[0];
-
 		// Build the prompt with sub-task context
 		const contextPrompt = this._buildSubTaskPrompt(subTask);
 
-		// Create a simple stream collector
-		const streamCollector = new SubTaskStreamCollector();
+		// Create a simple stream collector if not provided
+		if (!streamCollector) {
+			streamCollector = new SubTaskStreamCollector();
+		}
 
 		// Build agent run options
 		const runOptions: IAgentRunOptions = {
@@ -562,6 +769,8 @@ class SubTaskStreamCollector implements vscode.ChatResponseStream {
 	private _bufferedEdits = new Map<string, vscode.TextEdit[]>();
 	private _bufferedNotebookEdits = new Map<string, vscode.NotebookEdit[]>();
 
+	constructor(private readonly _onProgress?: (message: string) => void) { }
+
 	getContent(): string {
 		return this._content || this._parts.join('\n');
 	}
@@ -614,6 +823,7 @@ class SubTaskStreamCollector implements vscode.ChatResponseStream {
 
 	progress(value: string, _task?: any): void {
 		this._parts.push(`[Progress] ${value}`);
+		this._onProgress?.(value);
 	}
 
 	reference(_value: vscode.Uri | vscode.Location | { variableName: string; value?: vscode.Uri | vscode.Location }, _iconPath?: any): void {
@@ -639,31 +849,39 @@ class SubTaskStreamCollector implements vscode.ChatResponseStream {
 		// Not collected for sub-tasks
 	}
 
-	textEdit(target: vscode.Uri, edits: vscode.TextEdit | vscode.TextEdit[]): void {
+	textEdit(target: vscode.Uri, editsOrIsDone: vscode.TextEdit | vscode.TextEdit[] | true): void {
+		if (editsOrIsDone === true) {
+			// Signal that editing is done for this target - no-op for collector
+			return;
+		}
 		const uriStr = target.toString();
 		let existing = this._bufferedEdits.get(uriStr) || [];
-		if (Array.isArray(edits)) {
-			existing.push(...edits);
+		if (Array.isArray(editsOrIsDone)) {
+			existing.push(...editsOrIsDone);
 		} else {
-			existing.push(edits);
+			existing.push(editsOrIsDone);
 		}
 		this._bufferedEdits.set(uriStr, existing);
 	}
 
-	notebookEdit(target: vscode.Uri, edits: vscode.NotebookEdit | vscode.NotebookEdit[]): void {
+	notebookEdit(target: vscode.Uri, editsOrIsDone: vscode.NotebookEdit | vscode.NotebookEdit[] | true): void {
+		if (editsOrIsDone === true) {
+			// Signal that editing is done for this target - no-op for collector
+			return;
+		}
 		const uriStr = target.toString();
 		let existing = this._bufferedNotebookEdits.get(uriStr) || [];
-		if (Array.isArray(edits)) {
-			existing.push(...edits);
+		if (Array.isArray(editsOrIsDone)) {
+			existing.push(...editsOrIsDone);
 		} else {
-			existing.push(edits);
+			existing.push(editsOrIsDone);
 		}
 		this._bufferedNotebookEdits.set(uriStr, existing);
 	}
 
-	externalEdit<T>(_target: vscode.Uri | vscode.Uri[], callback: () => Thenable<T>): Thenable<T> {
-		// Execute callback but don't track changes
-		return callback();
+	externalEdit(_target: vscode.Uri | vscode.Uri[], callback: () => Thenable<void>): Thenable<string> {
+		// Execute callback but don't track changes - return empty string as edit id
+		return callback().then(() => '');
 	}
 
 	markdownWithVulnerabilities(value: string | vscode.MarkdownString, _vulnerabilities: any[]): void {

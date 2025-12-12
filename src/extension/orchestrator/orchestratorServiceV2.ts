@@ -552,6 +552,8 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		this._restoreState();
 		// Detect default branch
 		this._detectDefaultBranch();
+		// Connect SubTaskManager to this orchestrator service for UI-enabled subtasks
+		this._subTaskManager.setOrchestratorService(this);
 	}
 
 	// --- Queue Handling ---
@@ -2242,6 +2244,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 				// Run the agent using the proper IAgentRunner service
 				// Use the worker's cancellation token so interrupt() can stop it
+				// Pass the toolInvocationToken if available for inline confirmations
 				const result = await this._agentRunner.run(
 					{
 						prompt: currentPrompt,
@@ -2255,6 +2258,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 						workerToolSet,
 						worktreePath: worker.worktreePath, // Kept for prompt context
 						history, // Pass conversation history for context
+						toolInvocationToken: worker.toolInvocationToken, // For inline tool confirmations
 					},
 					stream as unknown as vscode.ChatResponseStream
 				);

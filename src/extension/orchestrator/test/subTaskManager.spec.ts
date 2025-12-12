@@ -50,7 +50,7 @@ const createMockSafetyLimitsService = () => ({
 		maxParallelSubTasks: 5,
 		subTaskSpawnRateLimit: 20,
 	},
-	onEmergencyStop: vi.fn(() => ({ dispose: () => {} })),
+	onEmergencyStop: vi.fn(() => ({ dispose: () => { } })),
 	// Methods required by SubTaskManager.createSubTask
 	enforceDepthLimit: vi.fn(), // Does nothing by default, can be configured to throw
 	checkRateLimit: vi.fn().mockReturnValue(true),
@@ -73,6 +73,47 @@ const createMockSafetyLimitsService = () => ({
 	resetWorkerTracking: vi.fn(),
 });
 
+const createMockOrchestratorService = () => ({
+	_serviceBrand: undefined,
+	onDidChangeWorkers: vi.fn(() => ({ dispose: () => { } })),
+	onOrchestratorEvent: vi.fn(() => ({ dispose: () => { } })),
+	getPlans: vi.fn().mockReturnValue([]),
+	getPlanById: vi.fn(),
+	getActivePlanId: vi.fn(),
+	setActivePlan: vi.fn(),
+	createPlan: vi.fn(),
+	deletePlan: vi.fn(),
+	startPlan: vi.fn(),
+	pausePlan: vi.fn(),
+	resumePlan: vi.fn(),
+	getWorkerStates: vi.fn().mockReturnValue([]),
+	getWorkerState: vi.fn(),
+	getTasks: vi.fn().mockReturnValue([]),
+	getTaskById: vi.fn(),
+	getPlan: vi.fn().mockReturnValue([]),
+	addTask: vi.fn().mockReturnValue({ id: 'mock-task-id', status: 'pending' }),
+	clearTasks: vi.fn(),
+	clearPlan: vi.fn(),
+	removeTask: vi.fn(),
+	getReadyTasks: vi.fn().mockReturnValue([]),
+	deploy: vi.fn().mockResolvedValue({ id: 'mock-worker-id' }),
+	deployAll: vi.fn().mockResolvedValue([]),
+	sendMessageToWorker: vi.fn(),
+	handleApproval: vi.fn(),
+	pauseWorker: vi.fn(),
+	resumeWorker: vi.fn(),
+	interruptWorker: vi.fn(),
+	stopWorker: vi.fn(),
+	concludeWorker: vi.fn(),
+	completeWorker: vi.fn(),
+	killWorker: vi.fn(),
+	cancelTask: vi.fn(),
+	completeTask: vi.fn(),
+	retryTask: vi.fn(),
+	setWorkerModel: vi.fn(),
+	getWorkerModel: vi.fn(),
+});
+
 describe('SubTaskManager', () => {
 	let disposables: DisposableStore;
 	let subTaskManager: SubTaskManager;
@@ -80,6 +121,7 @@ describe('SubTaskManager', () => {
 	let mockWorkerToolsService: ReturnType<typeof createMockWorkerToolsService>;
 	let mockLogService: ReturnType<typeof createMockLogService>;
 	let mockSafetyLimitsService: ReturnType<typeof createMockSafetyLimitsService>;
+	let mockOrchestratorService: ReturnType<typeof createMockOrchestratorService>;
 
 	beforeEach(() => {
 		disposables = new DisposableStore();
@@ -87,6 +129,7 @@ describe('SubTaskManager', () => {
 		mockWorkerToolsService = createMockWorkerToolsService();
 		mockLogService = createMockLogService();
 		mockSafetyLimitsService = createMockSafetyLimitsService();
+		mockOrchestratorService = createMockOrchestratorService();
 
 		subTaskManager = new SubTaskManager(
 			mockAgentRunner as any,
@@ -94,6 +137,8 @@ describe('SubTaskManager', () => {
 			mockLogService as any,
 			mockSafetyLimitsService as any,
 		);
+		// Set orchestrator service after construction to match runtime behavior
+		subTaskManager.setOrchestratorService(mockOrchestratorService as any);
 		disposables.add(subTaskManager);
 	});
 

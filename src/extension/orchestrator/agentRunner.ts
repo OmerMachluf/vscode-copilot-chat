@@ -5,11 +5,10 @@
 
 import * as vscode from 'vscode';
 import { ChatLocation } from '../../platform/chat/common/commonTypes';
-import { CancellationToken } from '../../util/vs/base/common/cancellation';
 import { Event } from '../../util/vs/base/common/event';
 import { Disposable } from '../../util/vs/base/common/lifecycle';
 import { generateUuid } from '../../util/vs/base/common/uuid';
-import { createDecorator, IInstantiationService } from '../../util/vs/platform/instantiation/common/instantiation';
+import { IInstantiationService } from '../../util/vs/platform/instantiation/common/instantiation';
 import { Intent } from '../common/constants';
 import { IIntentService } from '../intents/node/intentService';
 import { Conversation, Turn, TurnStatus } from '../prompt/common/conversation';
@@ -17,10 +16,9 @@ import { ChatTelemetryBuilder } from '../prompt/node/chatParticipantTelemetry';
 import { DefaultIntentRequestHandler, IDefaultIntentRequestHandlerOptions } from '../prompt/node/defaultIntentRequestHandler';
 import { getContributedToolName } from '../tools/common/toolNames';
 import { IToolsService } from '../tools/common/toolsService';
-import { WorkerToolSet } from './workerToolsService';
 import { injectSubTaskResultsIntoContext } from './injectSubTaskResults';
-import { SubTaskResultAggregator } from './subTaskAggregator';
 import { IAgentHistoryEntry, IAgentRunner, IAgentRunOptions, IAgentRunResult, ISubTaskManager } from './orchestratorInterfaces';
+import { SubTaskResultAggregator } from './subTaskAggregator';
 export { IAgentHistoryEntry, IAgentRunner, IAgentRunOptions, IAgentRunResult };
 
 /**
@@ -50,6 +48,7 @@ export class AgentRunnerService extends Disposable implements IAgentRunner {
 			workerToolSet,
 			worktreePath,
 			history,
+			toolInvocationToken,
 		} = options;
 
 		// Determine the effective worktree path (from workerToolSet or legacy option)
@@ -85,7 +84,8 @@ Do NOT use paths relative to any other workspace folder.`);
 			const finalPrompt = promptParts.join('\n\n');
 
 			// Create a synthetic ChatRequest with all tools enabled
-			const request = this._createRequest(finalPrompt, model, toolsService, suggestedFiles, effectiveWorktreePath);
+			// Pass toolInvocationToken if available for inline confirmations
+			const request = this._createRequest(finalPrompt, model, toolsService, suggestedFiles, effectiveWorktreePath, toolInvocationToken);
 
 			// Get the agent intent at Agent location (for headless/orchestrator execution)
 			const intent = this._intentService.getIntent(Intent.Agent, ChatLocation.Agent);
@@ -227,13 +227,15 @@ Do NOT use paths relative to any other workspace folder.`);
 	 * Creates a synthetic ChatRequest for programmatic agent execution.
 	 * This populates all required fields and enables all available tools.
 	 * If worktreePath is provided, file operations will target that directory.
+	 * If toolInvocationToken is provided, tool confirmations will show inline in chat.
 	 */
 	private _createRequest(
 		prompt: string,
 		model: vscode.LanguageModelChat,
 		toolsService: IToolsService,
 		suggestedFiles?: string[],
-		worktreePath?: string
+		worktreePath?: string,
+		toolInvocationToken?: vscode.ChatParticipantToolToken
 	): vscode.ChatRequest {
 		const sessionId = generateUuid();
 		// Use worktreePath if provided, otherwise fall back to main workspace
@@ -291,7 +293,7 @@ Do NOT use paths relative to any other workspace folder.`);
 			acceptedConfirmationData: undefined,
 			editedFileEvents: undefined,
 			isParticipantDetected: false,
-			toolInvocationToken: undefined as never,
+			toolInvocationToken: toolInvocationToken as never,
 		} as unknown as vscode.ChatRequest;
 	}
 

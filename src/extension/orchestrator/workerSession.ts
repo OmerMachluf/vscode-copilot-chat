@@ -166,6 +166,13 @@ export class WorkerSession extends Disposable {
 	private _cancellationTokenSource: CancellationTokenSource;
 
 	/**
+	 * Tool invocation token from a real VS Code ChatRequest.
+	 * When attached, tool confirmations show inline in the chat UI
+	 * instead of as modal dialogs.
+	 */
+	private _toolInvocationToken?: vscode.ChatParticipantToolToken;
+
+	/**
 	 * Attached real VS Code ChatResponseStream.
 	 * When set, the WorkerResponseStream will write to this real stream
 	 * in addition to storing parts, providing the true VS Code UI experience.
@@ -285,6 +292,22 @@ export class WorkerSession extends Disposable {
 				}
 			}
 		};
+	}
+
+	/**
+	 * Get the current tool invocation token.
+	 * When available, tool confirmations show inline in the chat UI.
+	 */
+	public get toolInvocationToken(): vscode.ChatParticipantToolToken | undefined {
+		return this._toolInvocationToken;
+	}
+
+	/**
+	 * Set the tool invocation token from a real VS Code ChatRequest.
+	 * This enables inline tool confirmations instead of modal dialogs.
+	 */
+	public setToolInvocationToken(token: vscode.ChatParticipantToolToken | undefined): void {
+		this._toolInvocationToken = token;
 	}
 
 	/**

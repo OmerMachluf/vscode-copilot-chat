@@ -4,9 +4,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
+import { AuditEventType, IAuditLogFilter, IAuditLogService } from '../auditLog';
 import { IOrchestratorService } from '../orchestratorServiceV2';
 import { WorkerChatPanel } from './WorkerChatPanel';
-import { IAuditLogService, IAuditLogFilter, AuditEventType } from '../auditLog';
 
 /**
  * Enhanced Worker Dashboard that provides full conversation view,
@@ -175,7 +175,15 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 					this._orchestrator.createPlan(data.name, data.description, data.baseBranch);
 					break;
 				case 'deletePlan':
-					this._orchestrator.deletePlan(data.planId);
+					// Show VS Code confirmation dialog before deleting
+					const confirmDelete = await vscode.window.showWarningMessage(
+						'Delete this plan and all its pending tasks?',
+						{ modal: true },
+						'Yes'
+					);
+					if (confirmDelete === 'Yes') {
+						this._orchestrator.deletePlan(data.planId);
+					}
 					break;
 				case 'setActivePlan':
 					this._orchestrator.setActivePlan(data.planId);
@@ -1193,6 +1201,7 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 		let currentActivePlanId = null;
 		let currentPlan = null;
 		let allTasks = [];
+		let currentWorkers = [];
 		let currentInboxItems = [];
 		let currentAuditLogs = [];
 		let currentAuditStats = {};
@@ -1383,18 +1392,20 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 				currentActivePlanId = message.activePlanId;
 				currentPlan = currentPlans.find(p => p.id === currentActivePlanId);
 				allTasks = message.allTasks || [];
+				currentWorkers = message.workers || [];
 				renderPlansDropdown(message.plans, message.activePlanId);
 				renderPlanControls(currentPlan);
 				renderWorkers(message.workers);
 				renderPlan(message.allTasks || message.plan, message.readyTasks);
-				// Re-populate worker model selectors with current models
+				// Re-populate worker model selectors with current models and worker data
 				if (currentModels.length > 0) {
-					populateWorkerModelSelectors(currentModels);
+					populateWorkerModelSelectors(currentModels, currentWorkers);
 				}
 			} else if (message.type === 'models') {
 				currentModels = message.models || [];
 				renderModelsDropdown(currentModels);
-				populateWorkerModelSelectors(currentModels);
+				// Note: workers data is available from last update message
+				populateWorkerModelSelectors(currentModels, currentWorkers);
 			} else if (message.type === 'inboxItems') {
 				currentInboxItems = message.items || [];
 				renderInbox(currentInboxItems);
@@ -1893,7 +1904,8 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 		}
 
 		function deletePlan() {
-			if (currentActivePlanId && confirm('Delete this plan and all its pending tasks?')) {
+			if (currentActivePlanId) {
+				// Send message to extension to show VS Code confirmation dialog
 				vscode.postMessage({ type: 'deletePlan', planId: currentActivePlanId });
 			}
 		}
@@ -1963,10 +1975,22 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 		}
 
 		// Populate model selectors after workers render
-		function populateWorkerModelSelectors(models) {
+		function populateWorkerModelSelectors(models, workers) {
+			// Build a map of worker ID to their current modelId
+			const workerModelMap = new Map();
+			if (workers) {
+				workers.forEach(worker => {
+					if (worker.modelId) {
+						workerModelMap.set(worker.id, worker.modelId);
+					}
+				});
+			}
+
 			document.querySelectorAll('[id^="model-"]').forEach(select => {
 				if (!select.dataset.action) return; // Skip if not a model selector
-				const currentValue = select.value;
+				const workerId = select.dataset.workerId;
+				// Get the worker's current model from the map, not from the select's current value
+				const workerModelId = workerModelMap.get(workerId);
 				select.innerHTML = '<option value="">Default</option>';
 				(models || []).forEach(model => {
 					const option = document.createElement('option');
@@ -1974,8 +1998,9 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 					option.textContent = model.name + ' (' + model.vendor + ')';
 					select.appendChild(option);
 				});
-				if (currentValue) {
-					select.value = currentValue;
+				// Set the select to the worker's actual model
+				if (workerModelId) {
+					select.value = workerModelId;
 				}
 			});
 		}

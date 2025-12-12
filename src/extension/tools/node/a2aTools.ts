@@ -22,7 +22,11 @@ interface SpawnSubTaskParams {
 	prompt: string;
 	/** Description of what output is expected */
 	expectedOutput: string;
-	/** Optional model override (e.g., 'gpt-4o', 'claude-sonnet-4-20250514') */
+	/**
+	 * Optional model override (e.g., 'gpt-4o', 'claude-sonnet-4-20250514', 'claude-opus-4.5').
+	 * If not provided, uses the first available copilot model.
+	 * Can be a model ID or family name.
+	 */
 	model?: string;
 	/** Files this task intends to modify (for conflict detection) */
 	targetFiles?: string[];

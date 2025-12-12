@@ -4,8 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { Disposable } from '../../util/vs/base/common/lifecycle';
 import { Emitter } from '../../util/vs/base/common/event';
+import { Disposable } from '../../util/vs/base/common/lifecycle';
 
 export interface IAgentCapability {
 	skills?: string[];
@@ -161,7 +161,7 @@ export class WorkspaceConfigLoader extends Disposable {
 				maxSubtasksPerWorker: 10
 			},
 			modelPreferences: {
-				default: 'gpt-4o',
+				default: 'claude-opus-4.5',
 				byTaskType: {},
 				byAgent: {}
 			}
@@ -186,7 +186,7 @@ export class WorkspaceConfigLoader extends Disposable {
 		const changeListener = watcher.onDidChange(() => this.loadConfig());
 		const createListener = watcher.onDidCreate(() => this.loadConfig());
 		const deleteListener = watcher.onDidDelete(() => this.loadConfig());
-		
+
 		const settingsListener = vscode.workspace.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration('github.copilot')) {
 				this.loadConfig();
@@ -203,7 +203,7 @@ export class WorkspaceConfigLoader extends Disposable {
 	async loadAgentOverrides(): Promise<Partial<IAgentCapability>[]> {
 		// Implementation for specific requirement
 		// This might be redundant if loadConfig does everything, but keeping it for the interface requirement
-		return []; 
+		return [];
 	}
 
 	async loadPermissionOverrides(): Promise<Partial<IOrchestratorPermissions>> {
@@ -250,7 +250,7 @@ export class WorkspaceConfigLoader extends Disposable {
 
 	private _loadUserConfig(): Partial<IWorkspaceConfiguration> {
 		const config = vscode.workspace.getConfiguration('github.copilot');
-		
+
 		return {
 			agentCapabilities: config.get('agents.capabilities'),
 			permissions: config.get('orchestrator.permissions'),
