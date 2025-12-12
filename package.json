@@ -1793,11 +1793,10 @@
 				"inputSchema": {
 					"type": "object",
 					"properties": {
-						"workerId": { "type": "string", "description": "The worker ID whose changes to pull" },
 						"subtaskWorktree": { "type": "string", "description": "The path to the subtask's worktree" },
-						"files": { "type": "array", "items": { "type": "string" }, "description": "Optional: specific files to pull. If omitted, pulls all changed files." }
+						"cleanup": { "type": "boolean", "description": "Whether to cleanup/remove the subtask worktree after pulling (default: false)" }
 					},
-					"required": ["workerId", "subtaskWorktree"]
+					"required": ["subtaskWorktree"]
 				}
 			},
 			{

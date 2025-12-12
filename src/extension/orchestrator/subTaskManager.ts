@@ -993,6 +993,18 @@ Focus on your assigned task and provide a clear, actionable result.`,
 		parts.push(`## Expected Deliverable`);
 		parts.push(subTask.expectedOutput);
 		parts.push('');
+
+		// Add CRITICAL commit instruction
+		parts.push(`## ⚠️ CRITICAL: Commit Your Changes`);
+		parts.push(`**YOU MUST COMMIT YOUR CHANGES BEFORE COMPLETING THIS TASK.**`);
+		parts.push('');
+		parts.push(`When you have finished making changes:`);
+		parts.push(`1. Stage all your changes: \`git add -A\``);
+		parts.push(`2. Commit with a descriptive message: \`git commit -m "Your descriptive message"\``);
+		parts.push(`3. Only then is your work complete.`);
+		parts.push('');
+		parts.push(`Your parent agent will merge your branch. Uncommitted changes will be lost!`);
+		parts.push('');
 		parts.push(`When complete, simply finish your work. Your parent will be notified automatically and will decide next steps.`);
 
 		return parts.join('\n');

@@ -889,8 +889,6 @@ export class A2ANotifyOrchestratorTool implements ICopilotTool<NotifyOrchestrato
 interface PullSubTaskChangesParams {
 	/** The subtask's worktree path (from the spawn result metadata) */
 	subtaskWorktree: string;
-	/** The files to pull (optional - if not specified, pulls all changed files) */
-	files?: string[];
 	/** Whether to also cleanup/remove the subtask worktree after pulling (default: false) */
 	cleanup?: boolean;
 }
@@ -920,7 +918,7 @@ export class A2APullSubTaskChangesTool implements ICopilotTool<PullSubTaskChange
 		options: vscode.LanguageModelToolInvocationOptions<PullSubTaskChangesParams>,
 		_token: CancellationToken
 	): Promise<LanguageModelToolResult> {
-		const { subtaskWorktree, files, cleanup = false } = options.input;
+		const { subtaskWorktree, cleanup = false } = options.input;
 
 		// Determine parent's worktree
 		const parentWorktree = this._workerContext?.worktreePath ||
@@ -948,7 +946,6 @@ export class A2APullSubTaskChangesTool implements ICopilotTool<PullSubTaskChange
 
 		// Verify paths exist
 		const fs = await import('fs');
-		const path = await import('path');
 
 		if (!fs.existsSync(subtaskWorktree)) {
 			this._logService.error(`[A2APullSubTaskChangesTool] Subtask worktree does not exist: ${subtaskWorktree}`);
@@ -957,125 +954,79 @@ export class A2APullSubTaskChangesTool implements ICopilotTool<PullSubTaskChange
 			]);
 		}
 
-		// Check if it's a git worktree
-		const gitDir = path.join(subtaskWorktree, '.git');
-		const isGitWorktree = fs.existsSync(gitDir);
-		this._logService.info(`[A2APullSubTaskChangesTool] Is git worktree: ${isGitWorktree}, .git exists: ${fs.existsSync(gitDir)}`);
-
 		try {
-			// First check for uncommitted changes (git status)
-			this._logService.info(`[A2APullSubTaskChangesTool] Running git status in: ${subtaskWorktree}`);
+			// Step 1: Get the subtask's branch name
+			const subtaskBranch = (await this._execGit(['rev-parse', '--abbrev-ref', 'HEAD'], subtaskWorktree)).trim();
+			this._logService.info(`[A2APullSubTaskChangesTool] Subtask branch: ${subtaskBranch}`);
+
+			// Step 2: Check if subtask has uncommitted changes - if so, commit them first
 			const statusOutput = await this._execGit(['status', '--porcelain'], subtaskWorktree);
-			this._logService.info(`[A2APullSubTaskChangesTool] git status output (${statusOutput.length} chars): "${statusOutput.slice(0, 500)}"`);
+			if (statusOutput.trim()) {
+				this._logService.info(`[A2APullSubTaskChangesTool] Subtask has uncommitted changes, committing them first`);
+				await this._execGit(['add', '-A'], subtaskWorktree);
+				await this._execGit(['commit', '-m', 'Subtask work - auto-committed for merge'], subtaskWorktree);
+			}
 
+			// Step 3: Get parent's current branch
+			const parentBranch = (await this._execGit(['rev-parse', '--abbrev-ref', 'HEAD'], parentWorktree)).trim();
+			this._logService.info(`[A2APullSubTaskChangesTool] Parent branch: ${parentBranch}`);
+
+			// Step 4: Fetch the subtask branch in parent worktree (they share the same repo)
+			// Since worktrees share the git directory, branches are already visible
+			// Just need to merge
+
+			// Step 5: Get list of files that will change (for reporting)
 			let changedFiles: string[] = [];
-
-			for (const line of statusOutput.split(/\r?\n/).filter(Boolean)) {
-				const file = line.slice(3).trim();
-				if (file) {
-					changedFiles.push(file);
-				}
-			}
-
-			this._logService.info(`[A2APullSubTaskChangesTool] Found ${changedFiles.length} uncommitted files`);
-
-			// If no uncommitted changes, check for committed differences from parent branch
-			if (changedFiles.length === 0) {
-				this._logService.info(`[A2APullSubTaskChangesTool] No uncommitted changes, checking committed diffs...`);
+			try {
+				const diffFiles = await this._execGit(['diff', '--name-only', `${parentBranch}...${subtaskBranch}`], parentWorktree);
+				changedFiles = diffFiles.split(/\r?\n/).filter(Boolean);
+			} catch {
+				// If that fails, try simpler diff
 				try {
-					// Get the current branch in the subtask worktree
-					const currentBranch = (await this._execGit(['rev-parse', '--abbrev-ref', 'HEAD'], subtaskWorktree)).trim();
-					this._logService.info(`[A2APullSubTaskChangesTool] Subtask branch: ${currentBranch}`);
-
-					// Try to find common base branches (main, master, or parent's branch)
-					const parentBranch = (await this._execGit(['rev-parse', '--abbrev-ref', 'HEAD'], parentWorktree)).trim();
-					this._logService.info(`[A2APullSubTaskChangesTool] Parent branch: ${parentBranch}`);
-
-					// Get files changed between parent branch and subtask branch
-					// Use merge-base to find common ancestor
-					let diffOutput = '';
-					try {
-						const mergeBase = (await this._execGit(['merge-base', parentBranch, 'HEAD'], subtaskWorktree)).trim();
-						diffOutput = await this._execGit(['diff', '--name-only', mergeBase, 'HEAD'], subtaskWorktree);
-					} catch {
-						// If merge-base fails, just diff against parent branch directly
-						diffOutput = await this._execGit(['diff', '--name-only', parentBranch, 'HEAD'], subtaskWorktree);
-					}
-
-					for (const file of diffOutput.split(/\r?\n/).filter(Boolean)) {
-						if (file.trim()) {
-							changedFiles.push(file.trim());
-						}
-					}
-					this._logService.info(`[A2APullSubTaskChangesTool] Found ${changedFiles.length} committed files different from parent`);
-				} catch (diffError) {
-					this._logService.warn(`[A2APullSubTaskChangesTool] Could not get committed diffs: ${diffError}`);
-				}
-			}
-
-			if (changedFiles.length === 0) {
-				this._logService.info(`[A2APullSubTaskChangesTool] No files to pull - listing all files in subtask worktree for debugging`);
-				// Last resort: list all tracked files for debugging
-				try {
-					const allFiles = await this._execGit(['ls-files'], subtaskWorktree);
-					this._logService.debug(`[A2APullSubTaskChangesTool] All tracked files: ${allFiles.slice(0, 500)}...`);
+					const diffFiles = await this._execGit(['diff', '--name-only', subtaskBranch], parentWorktree);
+					changedFiles = diffFiles.split(/\r?\n/).filter(Boolean);
 				} catch { /* ignore */ }
-
-				return new LanguageModelToolResult([
-					new LanguageModelTextPart(
-						'No changed files found in subtask worktree to pull.\n\n' +
-						'This could mean:\n' +
-						'1. The subtask did not make any changes\n' +
-						'2. The subtask worked in the same worktree (changes already present)\n' +
-						'3. The worktree path may be incorrect\n\n' +
-						`Subtask worktree: ${subtaskWorktree}\n` +
-						`Parent worktree: ${parentWorktree}`
-					),
-				]);
 			}
 
-			// Filter files if specific ones requested
-			const filesToPull = files?.length
-				? changedFiles.filter(f => files.some(requested => f.includes(requested)))
-				: changedFiles;
+			this._logService.info(`[A2APullSubTaskChangesTool] Files to merge: ${changedFiles.length}`);
 
-			if (filesToPull.length === 0) {
-				return new LanguageModelToolResult([
-					new LanguageModelTextPart(`No matching files found. Available changed files: ${changedFiles.join(', ')}`),
-				]);
-			}
+			// Step 6: Merge the subtask branch into parent
+			let mergeResult: { success: boolean; message: string; hasConflicts: boolean; conflictFiles?: string[] } = {
+				success: false,
+				message: '',
+				hasConflicts: false
+			};
 
-			// Copy files from subtask worktree to parent worktree
-			const pulledFiles: string[] = [];
-
-			for (const file of filesToPull) {
-				const sourcePath = path.join(subtaskWorktree, file);
-				const targetPath = path.join(parentWorktree, file);
-
-				try {
-					if (fs.existsSync(sourcePath)) {
-						// Ensure target directory exists
-						const targetDir = path.dirname(targetPath);
-						if (!fs.existsSync(targetDir)) {
-							fs.mkdirSync(targetDir, { recursive: true });
-						}
-						fs.copyFileSync(sourcePath, targetPath);
-						pulledFiles.push(file);
-					} else {
-						// File was deleted in subtask
-						if (fs.existsSync(targetPath)) {
-							fs.unlinkSync(targetPath);
-							pulledFiles.push(`(deleted) ${file}`);
-						}
-					}
-				} catch (fileError) {
-					this._logService.warn(`[A2APullSubTaskChangesTool] Failed to pull file ${file}: ${fileError}`);
+			try {
+				// Try merge with --no-commit first so parent can review
+				const mergeOutput = await this._execGit(
+					['merge', subtaskBranch, '--no-commit', '--no-ff', '-m', `Merge subtask branch ${subtaskBranch}`],
+					parentWorktree
+				);
+				mergeResult = { success: true, message: mergeOutput, hasConflicts: false };
+				this._logService.info(`[A2APullSubTaskChangesTool] Merge successful (staged, not committed)`);
+			} catch (mergeError) {
+				const errorStr = String(mergeError);
+				// Check if it's a conflict
+				if (errorStr.includes('CONFLICT') || errorStr.includes('Automatic merge failed')) {
+					// Get list of conflicted files
+					const conflictStatus = await this._execGit(['diff', '--name-only', '--diff-filter=U'], parentWorktree);
+					const conflictFiles = conflictStatus.split(/\r?\n/).filter(Boolean);
+					mergeResult = {
+						success: false,
+						message: errorStr,
+						hasConflicts: true,
+						conflictFiles
+					};
+					this._logService.info(`[A2APullSubTaskChangesTool] Merge has conflicts in ${conflictFiles.length} files`);
+				} else {
+					throw mergeError;
 				}
 			}
 
-			// Cleanup worktree if requested
+			// Cleanup worktree if requested AND merge was clean
 			let cleanupMessage = '';
-			if (cleanup) {
+			if (cleanup && mergeResult.success && !mergeResult.hasConflicts) {
 				try {
 					const workspaceRoot = this._workspaceService.getWorkspaceFolders()?.[0]?.fsPath;
 					if (workspaceRoot) {
@@ -1087,10 +1038,27 @@ export class A2APullSubTaskChangesTool implements ICopilotTool<PullSubTaskChange
 				}
 			}
 
+			// Build response
+			if (mergeResult.hasConflicts) {
+				return new LanguageModelToolResult([
+					new LanguageModelTextPart(
+						`⚠️ **Merge has conflicts that need resolution**\n\n` +
+						`The subtask branch \`${subtaskBranch}\` was merged but has conflicts.\n\n` +
+						`**Conflicted files:**\n${mergeResult.conflictFiles?.map(f => `- ${f}`).join('\n') || 'Unknown'}\n\n` +
+						`**To resolve:**\n` +
+						`1. Edit the conflicted files to resolve conflicts\n` +
+						`2. Run \`git add <file>\` for each resolved file\n` +
+						`3. Run \`git commit\` to complete the merge\n\n` +
+						`Or to abort: \`git merge --abort\``
+					),
+				]);
+			}
+
 			return new LanguageModelToolResult([
 				new LanguageModelTextPart(
-					`Successfully pulled ${pulledFiles.length} files from subtask worktree.\n\n` +
-					`**Pulled files:**\n${pulledFiles.map(f => `- ${f}`).join('\n')}${cleanupMessage}`
+					`✅ Successfully merged subtask branch \`${subtaskBranch}\` into \`${parentBranch}\`.\n\n` +
+					`**Merged files (${changedFiles.length}):**\n${changedFiles.map(f => `- ${f}`).join('\n') || '(no files listed)'}\n\n` +
+					`Changes are staged but **not committed**. Review and commit when ready.${cleanupMessage}`
 				),
 			]);
 
