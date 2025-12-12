@@ -946,10 +946,30 @@ export class A2APullSubTaskChangesTool implements ICopilotTool<PullSubTaskChange
 
 		this._logService.info(`[A2APullSubTaskChangesTool] Pulling changes from ${subtaskWorktree} to ${parentWorktree}`);
 
+		// Verify paths exist
+		const fs = await import('fs');
+		const path = await import('path');
+
+		if (!fs.existsSync(subtaskWorktree)) {
+			this._logService.error(`[A2APullSubTaskChangesTool] Subtask worktree does not exist: ${subtaskWorktree}`);
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`ERROR: Subtask worktree path does not exist: ${subtaskWorktree}`),
+			]);
+		}
+
+		// Check if it's a git worktree
+		const gitDir = path.join(subtaskWorktree, '.git');
+		const isGitWorktree = fs.existsSync(gitDir);
+		this._logService.info(`[A2APullSubTaskChangesTool] Is git worktree: ${isGitWorktree}, .git exists: ${fs.existsSync(gitDir)}`);
+
 		try {
-			// Get list of changed files in subtask worktree
+			// First check for uncommitted changes (git status)
+			this._logService.info(`[A2APullSubTaskChangesTool] Running git status in: ${subtaskWorktree}`);
 			const statusOutput = await this._execGit(['status', '--porcelain'], subtaskWorktree);
-			const changedFiles: string[] = [];
+			this._logService.info(`[A2APullSubTaskChangesTool] git status output (${statusOutput.length} chars): "${statusOutput.slice(0, 500)}"`);
+
+			let changedFiles: string[] = [];
+
 			for (const line of statusOutput.split(/\r?\n/).filter(Boolean)) {
 				const file = line.slice(3).trim();
 				if (file) {
@@ -957,9 +977,60 @@ export class A2APullSubTaskChangesTool implements ICopilotTool<PullSubTaskChange
 				}
 			}
 
+			this._logService.info(`[A2APullSubTaskChangesTool] Found ${changedFiles.length} uncommitted files`);
+
+			// If no uncommitted changes, check for committed differences from parent branch
 			if (changedFiles.length === 0) {
+				this._logService.info(`[A2APullSubTaskChangesTool] No uncommitted changes, checking committed diffs...`);
+				try {
+					// Get the current branch in the subtask worktree
+					const currentBranch = (await this._execGit(['rev-parse', '--abbrev-ref', 'HEAD'], subtaskWorktree)).trim();
+					this._logService.info(`[A2APullSubTaskChangesTool] Subtask branch: ${currentBranch}`);
+
+					// Try to find common base branches (main, master, or parent's branch)
+					const parentBranch = (await this._execGit(['rev-parse', '--abbrev-ref', 'HEAD'], parentWorktree)).trim();
+					this._logService.info(`[A2APullSubTaskChangesTool] Parent branch: ${parentBranch}`);
+
+					// Get files changed between parent branch and subtask branch
+					// Use merge-base to find common ancestor
+					let diffOutput = '';
+					try {
+						const mergeBase = (await this._execGit(['merge-base', parentBranch, 'HEAD'], subtaskWorktree)).trim();
+						diffOutput = await this._execGit(['diff', '--name-only', mergeBase, 'HEAD'], subtaskWorktree);
+					} catch {
+						// If merge-base fails, just diff against parent branch directly
+						diffOutput = await this._execGit(['diff', '--name-only', parentBranch, 'HEAD'], subtaskWorktree);
+					}
+
+					for (const file of diffOutput.split(/\r?\n/).filter(Boolean)) {
+						if (file.trim()) {
+							changedFiles.push(file.trim());
+						}
+					}
+					this._logService.info(`[A2APullSubTaskChangesTool] Found ${changedFiles.length} committed files different from parent`);
+				} catch (diffError) {
+					this._logService.warn(`[A2APullSubTaskChangesTool] Could not get committed diffs: ${diffError}`);
+				}
+			}
+
+			if (changedFiles.length === 0) {
+				this._logService.info(`[A2APullSubTaskChangesTool] No files to pull - listing all files in subtask worktree for debugging`);
+				// Last resort: list all tracked files for debugging
+				try {
+					const allFiles = await this._execGit(['ls-files'], subtaskWorktree);
+					this._logService.debug(`[A2APullSubTaskChangesTool] All tracked files: ${allFiles.slice(0, 500)}...`);
+				} catch { /* ignore */ }
+
 				return new LanguageModelToolResult([
-					new LanguageModelTextPart('No changed files in subtask worktree to pull.'),
+					new LanguageModelTextPart(
+						'No changed files found in subtask worktree to pull.\n\n' +
+						'This could mean:\n' +
+						'1. The subtask did not make any changes\n' +
+						'2. The subtask worked in the same worktree (changes already present)\n' +
+						'3. The worktree path may be incorrect\n\n' +
+						`Subtask worktree: ${subtaskWorktree}\n` +
+						`Parent worktree: ${parentWorktree}`
+					),
 				]);
 			}
 
@@ -976,8 +1047,6 @@ export class A2APullSubTaskChangesTool implements ICopilotTool<PullSubTaskChange
 
 			// Copy files from subtask worktree to parent worktree
 			const pulledFiles: string[] = [];
-			const fs = await import('fs');
-			const path = await import('path');
 
 			for (const file of filesToPull) {
 				const sourcePath = path.join(subtaskWorktree, file);
