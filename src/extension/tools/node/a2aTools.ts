@@ -28,9 +28,13 @@ interface SpawnSubTaskParams {
 	/** Description of what output is expected */
 	expectedOutput: string;
 	/**
-	 * Optional model override (e.g., 'gpt-4o', 'claude-sonnet-4-20250514', 'claude-opus-4.5').
-	 * If not provided, uses the first available copilot model.
-	 * Can be a model ID or family name.
+	 * Optional model override. Recommended Copilot models (in priority order):
+	 * - 'claude-3.7-sonnet' or 'claude-3.5-sonnet' - Anthropic Claude (best for complex reasoning)
+	 * - 'gemini-2.5-pro' - Google Gemini Pro (good balance of speed/quality)
+	 * - 'gpt-4.1' or 'gpt-4o' - OpenAI GPT models
+	 *
+	 * If not provided, defaults to the best available premium copilot model.
+	 * Models must have vendor 'copilot' to use your Copilot subscription.
 	 */
 	model?: string;
 	/** Files this task intends to modify (for conflict detection) */
@@ -109,13 +113,16 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 
 		const taskId = this._workerContext?.taskId ?? 'user-task';
 		const planId = this._workerContext?.planId ?? 'user-plan';
-		const worktreePath = this._workerContext?.worktreePath ?? this._workspaceService.getWorkspaceFolders()?.[0]?.fsPath ?? '';
+		// Get worktree path: from worker context, or from workspace folder, or empty (orchestrator will create one)
+		const workspaceFolders = this._workspaceService.getWorkspaceFolders();
+		const worktreePath = this._workerContext?.worktreePath || workspaceFolders?.[0]?.fsPath || '';
 		const currentDepth = this._workerContext?.depth ?? 0;
 
 		const { agentType, prompt, expectedOutput, model, targetFiles, blocking = true } = options.input;
 
 		this._logService.info(`[A2ASpawnSubTaskTool] Input params: agentType=${agentType}, blocking=${blocking}, model=${model || 'default'}, currentDepth=${currentDepth}`);
-		this._logService.info(`[A2ASpawnSubTaskTool] Context: taskId=${taskId}, planId=${planId}, worktreePath=${worktreePath}`);
+		this._logService.info(`[A2ASpawnSubTaskTool] Context: taskId=${taskId}, planId=${planId}`);
+		this._logService.info(`[A2ASpawnSubTaskTool] Worktree: workerContext.worktreePath=${this._workerContext?.worktreePath || 'none'}, workspaceFolders=${workspaceFolders?.length ?? 0}, resolved=${worktreePath || '(empty - orchestrator will create)'}`);
 		this._logService.info(`[A2ASpawnSubTaskTool] Prompt preview: ${prompt.slice(0, 100)}...`);
 
 		// Get spawn context from worker context (inherited from parent)

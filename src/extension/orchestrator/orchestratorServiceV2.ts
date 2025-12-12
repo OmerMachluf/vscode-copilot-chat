@@ -1318,7 +1318,8 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			const baseBranch = this._getBaseBranch(task, plan);
 
 			// Use provided worktree path (for subtasks) or create new one
-			const worktreePath = options?.worktreePath ?? await this._createWorktree(task.name, baseBranch);
+			// Note: Use || instead of ?? to treat empty string as falsy
+			const worktreePath = options?.worktreePath || await this._createWorktree(task.name, baseBranch);
 
 			// Load agent instructions
 			// Normalize agent ID: strip @ prefix and lowercase
@@ -2518,22 +2519,73 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 	}
 
 	private async _selectModel(preferredModelId?: string): Promise<vscode.LanguageModelChat | undefined> {
+		// Premium models preferred for workers (in priority order based on capability)
+		// These patterns match model families/IDs available in Copilot subscription
+		const PREFERRED_MODEL_PATTERNS = [
+			// Claude models (best for complex reasoning)
+			'claude-opus',          // Claude Opus (any version)
+			'claude-3.7-sonnet',    // Claude 3.7 Sonnet
+			'claude-3.5-sonnet',    // Claude 3.5 Sonnet
+			'claude-sonnet',        // Any Claude Sonnet
+			// Gemini models (good balance)
+			'gemini-2.5-pro',       // Gemini 2.5 Pro
+			'gemini-2.0-pro',       // Gemini 2.0 Pro
+			'gemini-pro',           // Any Gemini Pro
+			// GPT models (reliable)
+			'gpt-4.1',              // GPT 4.1
+			'gpt-4o',               // GPT-4o
+			'o3',                   // O3 models
+			'o1',                   // O1 models
+		];
+
+		this._logService.info(`[OrchestratorService] _selectModel called, preferredModelId=${preferredModelId || 'none'}`);
+
 		// If a specific model is requested, try to find it
 		if (preferredModelId) {
 			const models = await vscode.lm.selectChatModels({ id: preferredModelId });
 			if (models.length > 0) {
+				this._logService.info(`[OrchestratorService] Found model by ID: ${models[0].id} (vendor: ${models[0].vendor}, family: ${models[0].family})`);
 				return models[0];
+			}
+			// Also try by family
+			const byFamily = await vscode.lm.selectChatModels({ vendor: 'copilot', family: preferredModelId });
+			if (byFamily.length > 0) {
+				this._logService.info(`[OrchestratorService] Found model by family: ${byFamily[0].id} (vendor: ${byFamily[0].vendor}, family: ${byFamily[0].family})`);
+				return byFamily[0];
+			}
+			this._logService.warn(`[OrchestratorService] Requested model '${preferredModelId}' not found, trying preferred models...`);
+		}
+
+		// Get all copilot models and try to find a preferred one
+		const copilotModels = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+		this._logService.info(`[OrchestratorService] Available copilot models: ${copilotModels.map(m => `${m.id} (${m.family})`).join(', ')}`);
+
+		// Try each preferred model pattern in order
+		for (const preferredPattern of PREFERRED_MODEL_PATTERNS) {
+			const match = copilotModels.find(m =>
+				m.family?.toLowerCase().includes(preferredPattern.toLowerCase()) ||
+				m.id?.toLowerCase().includes(preferredPattern.toLowerCase())
+			);
+			if (match) {
+				this._logService.info(`[OrchestratorService] Selected preferred model: ${match.id} (vendor: ${match.vendor}, family: ${match.family})`);
+				return match;
 			}
 		}
 
-		// Fallback to any available model (prefer copilot vendor)
-		const copilotModels = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+		// If no preferred model found, use any copilot model
 		if (copilotModels.length > 0) {
+			this._logService.warn(`[OrchestratorService] No preferred model found, falling back to: ${copilotModels[0].id} (vendor: ${copilotModels[0].vendor}, family: ${copilotModels[0].family})`);
 			return copilotModels[0];
 		}
 
-		// Last resort: any model
+		// Last resort: any model (may cause rate limiting!)
 		const allModels = await vscode.lm.selectChatModels();
-		return allModels[0];
+		if (allModels.length > 0) {
+			this._logService.warn(`[OrchestratorService] FALLBACK to non-copilot model: ${allModels[0].id} (vendor: ${allModels[0].vendor}) - this may cause rate limiting!`);
+			return allModels[0];
+		}
+
+		this._logService.error(`[OrchestratorService] No models available at all!`);
+		return undefined;
 	}
 }

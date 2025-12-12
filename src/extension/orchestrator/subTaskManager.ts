@@ -722,35 +722,78 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			);
 		}
 
-		// Select the model - try specific model first, then fallback
+		// Select the model - try specific model first, then fallback to preferred premium models
+		// Premium models preferred for sub-tasks (in priority order based on capability)
+		// These patterns match model families/IDs that are available in Copilot subscription
+		const PREFERRED_MODEL_PATTERNS = [
+			// Claude models (best for complex reasoning)
+			'claude-opus',          // Claude Opus (any version)
+			'claude-3.7-sonnet',    // Claude 3.7 Sonnet
+			'claude-3.5-sonnet',    // Claude 3.5 Sonnet
+			'claude-sonnet',        // Any Claude Sonnet
+			// Gemini models (good balance)
+			'gemini-2.5-pro',       // Gemini 2.5 Pro
+			'gemini-2.0-pro',       // Gemini 2.0 Pro
+			'gemini-pro',           // Any Gemini Pro
+			// GPT models (reliable)
+			'gpt-4.1',              // GPT 4.1
+			'gpt-4o',               // GPT-4o
+			'o3',                   // O3 models
+			'o1',                   // O1 models
+		];
+
 		let model: vscode.LanguageModelChat | undefined;
+		this._logService.info(`[SubTaskManager] Selecting model for subtask ${subTask.id}, requested: ${subTask.model || 'none'}`);
 
 		if (subTask.model) {
-			// Try by ID first (e.g., 'claude-sonnet-4-20250514')
+			// Try by exact ID first (e.g., 'claude-sonnet-4-20250514')
 			const byId = await vscode.lm.selectChatModels({ id: subTask.model });
 			if (byId.length > 0) {
 				model = byId[0];
+				this._logService.info(`[SubTaskManager] Found model by ID: ${model.id} (vendor: ${model.vendor}, family: ${model.family})`);
 			} else {
-				// Try by family (e.g., 'claude-opus-4.5')
+				// Try by family with copilot vendor (e.g., 'claude-opus-4.5')
 				const byFamily = await vscode.lm.selectChatModels({ vendor: 'copilot', family: subTask.model });
 				if (byFamily.length > 0) {
 					model = byFamily[0];
+					this._logService.info(`[SubTaskManager] Found model by family: ${model.id} (vendor: ${model.vendor}, family: ${model.family})`);
 				}
 			}
 		}
 
-		// Fallback to any copilot model if specific model not found
+		// Fallback to preferred premium models (in priority order)
 		if (!model) {
+			this._logService.info(`[SubTaskManager] No specific model found, trying preferred premium models...`);
 			const copilotModels = await vscode.lm.selectChatModels({ vendor: 'copilot' });
-			if (copilotModels.length > 0) {
+			this._logService.info(`[SubTaskManager] Available copilot models: ${copilotModels.map(m => `${m.id} (${m.family})`).join(', ')}`);
+
+			// Try each preferred model pattern in order
+			for (const preferredPattern of PREFERRED_MODEL_PATTERNS) {
+				const match = copilotModels.find(m =>
+					m.family?.toLowerCase().includes(preferredPattern.toLowerCase()) ||
+					m.id?.toLowerCase().includes(preferredPattern.toLowerCase())
+				);
+				if (match) {
+					model = match;
+					this._logService.info(`[SubTaskManager] Selected preferred model: ${model.id} (vendor: ${model.vendor}, family: ${model.family})`);
+					break;
+				}
+			}
+
+			// If no preferred model found, use any copilot model
+			if (!model && copilotModels.length > 0) {
 				model = copilotModels[0];
+				this._logService.warn(`[SubTaskManager] No preferred model found, falling back to: ${model.id} (vendor: ${model.vendor}, family: ${model.family})`);
 			}
 		}
 
-		// Last resort: any available model
+		// Last resort: any available model (this may not use Copilot subscription!)
 		if (!model) {
 			const allModels = await vscode.lm.selectChatModels();
-			model = allModels[0];
+			if (allModels.length > 0) {
+				model = allModels[0];
+				this._logService.warn(`[SubTaskManager] FALLBACK to non-copilot model: ${model.id} (vendor: ${model.vendor}) - this may cause rate limiting!`);
+			}
 		}
 
 		if (!model) {
