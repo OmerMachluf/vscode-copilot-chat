@@ -308,6 +308,8 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 	}
 
 	async executeSubTask(id: string, token: CancellationToken): Promise<ISubTaskResult> {
+		this._logService.info(`[SubTaskManager] ========== executeSubTask STARTED for ${id} ==========`);
+
 		const subTask = this._subTasks.get(id);
 		if (!subTask) {
 			const result: ISubTaskResult = {
@@ -316,14 +318,16 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 				output: '',
 				error: `Sub-task ${id} not found`,
 			};
-			// Fire completion event even for not-found case
-			this._logService.warn(`[SubTaskManager] Sub-task ${id} not found during execution`);
+			this._logService.error(`[SubTaskManager] Sub-task ${id} NOT FOUND in _subTasks map`);
 			return result;
 		}
+
+		this._logService.info(`[SubTaskManager] Found subtask: agentType=${subTask.agentType}, parentWorkerId=${subTask.parentWorkerId}, status=${subTask.status}`);
 
 		// Check for conflicts before starting
 		const conflicts = this.checkFileConflicts(subTask.targetFiles ?? [], id);
 		if (conflicts.length > 0) {
+			this._logService.error(`[SubTaskManager] File conflicts detected: ${conflicts.join(', ')}`);
 			const result: ISubTaskResult = {
 				taskId: id,
 				status: 'failed',
@@ -333,12 +337,14 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			this.updateStatus(id, 'failed', result);
 			return result;
 		}
+		this._logService.info(`[SubTaskManager] No file conflicts detected`);
 
 		// Create cancellation source for this sub-task
 		const cts = new CancellationTokenSource(token);
 		this._cancellationSources.set(id, cts);
 
 		this.updateStatus(id, 'running');
+		this._logService.info(`[SubTaskManager] Status updated to 'running'`);
 
 		let result: ISubTaskResult;
 
@@ -347,27 +353,39 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			// This creates a real WorkerSession that appears in the sessions panel
 			// with thinking bubbles, tool confirmations, etc.
 			if (this._orchestratorService) {
+				this._logService.info(`[SubTaskManager] Orchestrator service AVAILABLE - using _executeSubTaskWithOrchestratorUI`);
 				result = await this._executeSubTaskWithOrchestratorUI(subTask, cts.token);
+				this._logService.info(`[SubTaskManager] _executeSubTaskWithOrchestratorUI RETURNED: status=${result.status}, error=${result.error || 'none'}`);
 			} else {
 				// Orchestrator not available, use headless execution
+				this._logService.info(`[SubTaskManager] Orchestrator service NOT AVAILABLE - using _executeSubTaskHeadless`);
 				result = await this._executeSubTaskHeadless(subTask, cts.token);
+				this._logService.info(`[SubTaskManager] _executeSubTaskHeadless RETURNED: status=${result.status}, error=${result.error || 'none'}`);
 			}
 
 			// Ensure status is updated (may have already been updated by orchestrator events)
 			const currentSubTask = this._subTasks.get(id);
+			this._logService.info(`[SubTaskManager] Current subtask status after execution: ${currentSubTask?.status}`);
 			if (currentSubTask && !['completed', 'failed', 'cancelled'].includes(currentSubTask.status)) {
+				this._logService.info(`[SubTaskManager] Updating status to ${result.status === 'success' ? 'completed' : 'failed'}`);
 				this.updateStatus(id, result.status === 'success' ? 'completed' : 'failed', result);
+			} else {
+				this._logService.info(`[SubTaskManager] Status already in terminal state, not updating`);
 			}
 
+			this._logService.info(`[SubTaskManager] ========== executeSubTask COMPLETED for ${id} ==========`);
 			return result;
 		} catch (error) {
 			// Fallback to headless execution if orchestrator fails
-			this._logService.warn(`[SubTaskManager] Orchestrator UI execution failed, falling back to headless: ${error}`);
+			this._logService.warn(`[SubTaskManager] Orchestrator UI execution FAILED with error: ${error instanceof Error ? error.message : String(error)}`);
+			this._logService.info(`[SubTaskManager] Falling back to headless execution...`);
 			try {
 				result = await this._executeSubTaskHeadless(subTask, cts.token);
+				this._logService.info(`[SubTaskManager] Headless fallback SUCCEEDED: status=${result.status}`);
 				this.updateStatus(id, result.status === 'success' ? 'completed' : 'failed', result);
 				return result;
 			} catch (fallbackError) {
+				this._logService.error(`[SubTaskManager] Headless fallback ALSO FAILED: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`);
 				result = {
 					taskId: id,
 					status: 'failed',
@@ -378,6 +396,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 				return result;
 			}
 		} finally {
+			this._logService.info(`[SubTaskManager] Cleanup: removing cancellation source and running subtask entry for ${id}`);
 			this._cancellationSources.delete(id);
 			this._runningSubTasks.delete(id);
 
@@ -386,9 +405,10 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			// The updateStatus call above (or in catch blocks) will have fired onDidCompleteSubTask
 			// which ParentCompletionService listens to. This comment documents the guarantee.
 			const finalSubTask = this._subTasks.get(id);
+			this._logService.info(`[SubTaskManager] Final subtask status check: ${finalSubTask?.status}`);
 			if (finalSubTask && finalSubTask.status === 'running') {
 				// If we got here and status is still 'running', something went very wrong
-				this._logService.error(`[SubTaskManager] Sub-task ${id} finished execution but status is still 'running' - forcing completion`);
+				this._logService.error(`[SubTaskManager] CRITICAL: Sub-task ${id} finished execution but status is still 'running' - forcing completion`);
 				const fallbackResult: ISubTaskResult = {
 					taskId: id,
 					status: 'failed',
@@ -397,6 +417,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 				};
 				this.updateStatus(id, 'failed', fallbackResult);
 			}
+			this._logService.info(`[SubTaskManager] ========== executeSubTask FINALLY block done for ${id} ==========`);
 		}
 	}
 
@@ -408,12 +429,14 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 	 * @precondition this._orchestratorService is defined
 	 */
 	private async _executeSubTaskWithOrchestratorUI(subTask: ISubTask, token: CancellationToken): Promise<ISubTaskResult> {
+		this._logService.info(`[SubTaskManager] ========== _executeSubTaskWithOrchestratorUI STARTED for ${subTask.id} ==========`);
 		const orchestratorService = this._orchestratorService!;
 
 		// Create an orchestrator task for this subtask
 		const taskName = `[SubTask] ${subTask.agentType} (${subTask.id.slice(-6)})`;
 		const taskDescription = `${subTask.prompt}\n\n---\n**Expected Output:** ${subTask.expectedOutput}`;
 
+		this._logService.info(`[SubTaskManager] Creating orchestrator task: name="${taskName}", parentWorkerId=${subTask.parentWorkerId}`);
 		const orchestratorTask = orchestratorService.addTask(taskDescription, {
 			name: taskName,
 			planId: subTask.planId,
@@ -421,6 +444,9 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			// Don't create a new worktree - reuse parent's worktree
 			baseBranch: undefined,
 			targetFiles: subTask.targetFiles,
+			// CRITICAL: Set parentWorkerId so messages from this subtask route to parent
+			// This enables the parent worker to receive notifications via registerOwnerHandler
+			parentWorkerId: subTask.parentWorkerId,
 		});
 
 		// Map subtask ID to orchestrator task ID
@@ -430,13 +456,22 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 
 		try {
 			// Deploy the task - this creates a WorkerSession with full UI
+			// Reuse the parent's worktree to avoid creating redundant worktrees
+			this._logService.info(`[SubTaskManager] Deploying task ${orchestratorTask.id} with worktreePath=${subTask.worktreePath}`);
 			const workerSession = await orchestratorService.deploy(orchestratorTask.id, {
 				modelId: subTask.model,
+				worktreePath: subTask.worktreePath,
 			});
+			this._logService.info(`[SubTaskManager] Deploy returned workerSession.id=${workerSession.id}`);
 
 			// Wait for the task to complete
-			return await this._waitForOrchestratorTaskCompletion(orchestratorTask.id, workerSession.id, token);
+			this._logService.info(`[SubTaskManager] Now calling _waitForOrchestratorTaskCompletion for task ${orchestratorTask.id}, worker ${workerSession.id}`);
+			const result = await this._waitForOrchestratorTaskCompletion(orchestratorTask.id, workerSession.id, token);
+			this._logService.info(`[SubTaskManager] _waitForOrchestratorTaskCompletion RETURNED: status=${result.status}, error=${result.error || 'none'}`);
+			this._logService.info(`[SubTaskManager] ========== _executeSubTaskWithOrchestratorUI COMPLETED for ${subTask.id} ==========`);
+			return result;
 		} catch (error) {
+			this._logService.error(`[SubTaskManager] _executeSubTaskWithOrchestratorUI FAILED: ${error instanceof Error ? error.message : String(error)}`);
 			// Clean up the orchestrator task on failure
 			try {
 				orchestratorService.removeTask(orchestratorTask.id);
@@ -449,81 +484,220 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 
 	/**
 	 * Wait for an orchestrator task to complete and return the result.
+	 * Listens for task.completed, task.failed, and worker.idle events.
+	 * Also has a timeout to prevent waiting forever if something goes wrong.
 	 *
 	 * @precondition this._orchestratorService is defined
 	 */
 	private async _waitForOrchestratorTaskCompletion(
 		taskId: string,
 		workerId: string,
-		token: CancellationToken
+		token: CancellationToken,
+		timeoutMs: number = 5 * 60 * 1000 // 5 minutes default
 	): Promise<ISubTaskResult> {
+		this._logService.info(`[SubTaskManager] ========== _waitForOrchestratorTaskCompletion STARTED ==========`);
+		this._logService.info(`[SubTaskManager] Waiting for taskId=${taskId}, workerId=${workerId}, timeout=${timeoutMs}ms`);
 		const orchestratorService = this._orchestratorService!;
 
 		return new Promise<ISubTaskResult>((resolve) => {
 			const disposables: vscode.Disposable[] = [];
+			let resolved = false;
 
 			const cleanup = () => {
-				disposables.forEach(d => d.dispose());
+				if (!resolved) {
+					resolved = true;
+					disposables.forEach(d => d.dispose());
+				}
 			};
 
-			// Listen for task completion
+			const resolveOnce = (result: ISubTaskResult, reason: string) => {
+				if (!resolved) {
+					this._logService.info(`[SubTaskManager] RESOLVING via: ${reason}`);
+					this._logService.info(`[SubTaskManager] Result: status=${result.status}, error=${result.error || 'none'}`);
+					cleanup();
+					resolve(result);
+				} else {
+					this._logService.info(`[SubTaskManager] IGNORING duplicate resolution via: ${reason} (already resolved)`);
+				}
+			};
+
+			// Timeout - don't wait forever
+			this._logService.info(`[SubTaskManager] Setting up ${timeoutMs}ms timeout`);
+			const timeoutId = setTimeout(() => {
+				this._logService.warn(`[SubTaskManager] TIMEOUT TRIGGERED after ${timeoutMs}ms`);
+				const workerState = orchestratorService.getWorkerState(workerId);
+				this._logService.warn(`[SubTaskManager] Worker state at timeout: status=${workerState?.status}, errorMessage=${workerState?.errorMessage}`);
+				resolveOnce({
+					taskId,
+					status: 'failed',
+					output: workerState?.messages?.map(m => m.content).join('\n') || '',
+					error: `Timeout waiting for subtask completion (${timeoutMs}ms)`,
+				}, 'TIMEOUT');
+			}, timeoutMs);
+			disposables.push({ dispose: () => clearTimeout(timeoutId) });
+
+			// Listen for task/worker events
+			this._logService.info(`[SubTaskManager] Registering orchestrator event listener`);
 			disposables.push(orchestratorService.onOrchestratorEvent(event => {
-				if (!('taskId' in event) || event.taskId !== taskId) {
-					return;
+				this._logService.info(`[SubTaskManager] Received orchestrator event: type=${event.type}, taskId=${'taskId' in event ? event.taskId : 'N/A'}, workerId=${'workerId' in event ? event.workerId : 'N/A'}`);
+
+				// Handle task-specific events
+				if ('taskId' in event && event.taskId === taskId) {
+					if (event.type === 'task.completed') {
+						this._logService.info(`[SubTaskManager] EVENT: task.completed for our task ${taskId}`);
+						const workerState = orchestratorService.getWorkerState(workerId);
+						resolveOnce({
+							taskId,
+							status: 'success',
+							output: workerState?.messages?.map(m => m.content).join('\n') || 'Task completed successfully',
+						}, 'task.completed event');
+					} else if (event.type === 'task.failed') {
+						this._logService.info(`[SubTaskManager] EVENT: task.failed for our task ${taskId}, error=${(event as any).error}`);
+						resolveOnce({
+							taskId,
+							status: 'failed',
+							output: '',
+							error: (event as any).error || 'Task failed',
+						}, 'task.failed event');
+					}
 				}
 
-				if (event.type === 'task.completed') {
-					cleanup();
+				// Handle worker.idle - worker finished its autonomous loop
+				// This is a fallback for when a2a_subtask_complete wasn't called
+				if (event.type === 'worker.idle' && 'workerId' in event && event.workerId === workerId) {
+					this._logService.info(`[SubTaskManager] EVENT: worker.idle for our worker ${workerId}`);
 					const workerState = orchestratorService.getWorkerState(workerId);
-					resolve({
-						taskId,
-						status: 'success',
-						output: workerState?.messages?.map(m => m.content).join('\n') || 'Task completed successfully',
-					});
-				} else if (event.type === 'task.failed') {
-					cleanup();
-					resolve({
-						taskId,
-						status: 'failed',
-						output: '',
-						error: event.error || 'Task failed',
-					});
+					// Check if task was already marked with an error
+					const task = orchestratorService.getTaskById(taskId);
+					this._logService.info(`[SubTaskManager] Task error state: ${task?.error || 'none'}`);
+					if (task?.error) {
+						resolveOnce({
+							taskId,
+							status: 'failed',
+							output: workerState?.messages?.map(m => m.content).join('\n') || '',
+							error: task.error,
+						}, 'worker.idle event (with task error)');
+					} else {
+						resolveOnce({
+							taskId,
+							status: 'success',
+							output: workerState?.messages?.map(m => m.content).join('\n') || 'Task completed (worker idle)',
+						}, 'worker.idle event');
+					}
 				}
 			}));
 
+			// Listen for worker session completion directly
+			const workerSession = orchestratorService.getWorkerSession(workerId);
+			this._logService.info(`[SubTaskManager] Got worker session: ${workerSession ? 'YES' : 'NO'}`);
+			if (workerSession) {
+				this._logService.info(`[SubTaskManager] Registering worker session event listeners`);
+
+				disposables.push(workerSession.onDidComplete(() => {
+					this._logService.info(`[SubTaskManager] EVENT: workerSession.onDidComplete for ${workerId}`);
+					const workerState = orchestratorService.getWorkerState(workerId);
+					resolveOnce({
+						taskId,
+						status: 'success',
+						output: workerState?.messages?.map(m => m.content).join('\n') || 'Task completed',
+					}, 'workerSession.onDidComplete');
+				}));
+
+				// Also listen for stop (error/cancellation)
+				disposables.push(workerSession.onDidStop(() => {
+					this._logService.info(`[SubTaskManager] EVENT: workerSession.onDidStop for ${workerId}`);
+					const workerState = orchestratorService.getWorkerState(workerId);
+					this._logService.info(`[SubTaskManager] Worker state at stop: status=${workerState?.status}, errorMessage=${workerState?.errorMessage}`);
+					resolveOnce({
+						taskId,
+						status: 'failed',
+						output: workerState?.messages?.map(m => m.content).join('\n') || '',
+						error: workerState?.errorMessage || 'Worker stopped unexpectedly',
+					}, 'workerSession.onDidStop');
+				}));
+
+				// Listen for any state change and check for terminal states (error, completed, idle)
+				disposables.push(workerSession.onDidChange(() => {
+					const workerState = orchestratorService.getWorkerState(workerId);
+					if (!workerState) {
+						return;
+					}
+					this._logService.info(`[SubTaskManager] EVENT: workerSession.onDidChange - status=${workerState.status}`);
+
+					// Terminal states: completed, error, idle (idle means task finished)
+					if (workerState.status === 'completed') {
+						this._logService.info(`[SubTaskManager] Worker status is 'completed' - resolving success`);
+						resolveOnce({
+							taskId,
+							status: 'success',
+							output: workerState.messages?.map(m => m.content).join('\n') || 'Task completed',
+						}, 'workerSession.onDidChange (status=completed)');
+					} else if (workerState.status === 'error') {
+						this._logService.info(`[SubTaskManager] Worker status is 'error' - resolving failure`);
+						resolveOnce({
+							taskId,
+							status: 'failed',
+							output: workerState.messages?.map(m => m.content).join('\n') || '',
+							error: workerState.errorMessage || 'Worker error',
+						}, 'workerSession.onDidChange (status=error)');
+					} else if (workerState.status === 'idle') {
+						// Worker finished its task but didn't explicitly complete
+						this._logService.info(`[SubTaskManager] Worker status is 'idle' - treating as completion`);
+						const task = orchestratorService.getTaskById(taskId);
+						if (task?.error) {
+							resolveOnce({
+								taskId,
+								status: 'failed',
+								output: workerState.messages?.map(m => m.content).join('\n') || '',
+								error: task.error,
+							}, 'workerSession.onDidChange (status=idle, task has error)');
+						} else {
+							resolveOnce({
+								taskId,
+								status: 'success',
+								output: workerState.messages?.map(m => m.content).join('\n') || 'Task completed (worker idle)',
+							}, 'workerSession.onDidChange (status=idle)');
+						}
+					}
+				}));
+			} else {
+				this._logService.warn(`[SubTaskManager] NO WORKER SESSION FOUND for ${workerId} - cannot register session event listeners!`);
+			}
+
 			// Handle cancellation
 			token.onCancellationRequested(() => {
-				cleanup();
+				this._logService.info(`[SubTaskManager] CANCELLATION REQUESTED - interrupting worker`);
 				orchestratorService.interruptWorker(workerId);
-				resolve({
+				resolveOnce({
 					taskId,
 					status: 'failed',
 					output: '',
 					error: 'Task was cancelled',
-				});
+				}, 'cancellation requested');
 			});
+
+			this._logService.info(`[SubTaskManager] All event listeners registered, now waiting for completion...`);
 		});
 	}
 
 	/**
 	 * Execute a subtask without UI (headless mode).
 	 * This is the fallback when orchestrator UI is not available.
+	 * Executes silently without notifications - results returned via tool response.
 	 */
 	private async _executeSubTaskHeadless(subTask: ISubTask, token: CancellationToken): Promise<ISubTaskResult> {
-		return await vscode.window.withProgress({
-			location: vscode.ProgressLocation.Notification,
-			title: `Executing Sub-Task: ${subTask.agentType}`,
-			cancellable: true
-		}, async (progress, _token) => {
-			const cts = new CancellationTokenSource(token);
-			_token.onCancellationRequested(() => cts.cancel());
+		// NO notifications - execute silently
+		// Progress is tracked internally, results returned via tool response
+		this._logService.debug(`[SubTaskManager] Executing subtask ${subTask.id} headlessly (no UI notifications)`);
 
-			const streamCollector = new SubTaskStreamCollector((message) => {
-				progress.report({ message });
-			});
+		const cts = new CancellationTokenSource(token);
 
-			return await this._executeSubTaskInternal(subTask, cts.token, streamCollector);
+		const streamCollector = new SubTaskStreamCollector((message) => {
+			// Just log progress, no UI
+			this._logService.debug(`[SubTaskManager] Subtask ${subTask.id} progress: ${message}`);
 		});
+
+		return await this._executeSubTaskInternal(subTask, cts.token, streamCollector);
 	}
 
 	private async _executeSubTaskInternal(subTask: ISubTask, token: CancellationToken, streamCollector?: SubTaskStreamCollector): Promise<ISubTaskResult> {

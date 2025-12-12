@@ -216,6 +216,21 @@ describe('Orchestrator Permission Flow', () => {
 			deliverCompletion: vi.fn(),
 		};
 
+		const mockSubtaskProgressService = {
+			_serviceBrand: undefined,
+			registerStream: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+			getStream: vi.fn().mockReturnValue(undefined),
+			createProgress: vi.fn().mockReturnValue({
+				update: vi.fn(),
+				complete: vi.fn(),
+				fail: vi.fn(),
+				dispose: vi.fn(),
+			}),
+			createParallelRenderer: vi.fn(),
+			onProgressCreated: { dispose: vi.fn() },
+			onProgressUpdated: { dispose: vi.fn() },
+		};
+
 		// Initialize services
 		queueService = new OrchestratorQueueService(createMockLogService() as any);
 		disposables.add(queueService);
@@ -243,6 +258,7 @@ describe('Orchestrator Permission Flow', () => {
 			subTaskManager,
 			permissionService,
 			mockParentCompletionService,
+			mockSubtaskProgressService as any,
 			createMockLogService() as any
 		);
 		disposables.add(orchestratorService);

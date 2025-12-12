@@ -33,6 +33,7 @@ import { getAgentForIntent, Intent } from '../../common/constants';
 import { IConversationStore } from '../../conversationStore/node/conversationStore';
 import { IIntentService } from '../../intents/node/intentService';
 import { UnknownIntent } from '../../intents/node/unknownIntent';
+import { ISubtaskProgressService } from '../../orchestrator/subtaskProgressService';
 import { ContributedToolName } from '../../tools/common/toolNames';
 import { ChatVariablesCollection } from '../common/chatVariablesCollection';
 import { Conversation, getGlobalContextCacheKey, GlobalContextMessageMetadata, ICopilotChatResult, ICopilotChatResultIn, normalizeSummariesOnRounds, RenderedUserMessageMetadata, Turn, TurnStatus } from '../common/conversation';
@@ -84,6 +85,7 @@ export class ChatParticipantRequestHandler {
 		@ILogService private readonly _logService: ILogService,
 		@IAuthenticationService private readonly _authService: IAuthenticationService,
 		@IAuthenticationChatUpgradeService private readonly _authenticationUpgradeService: IAuthenticationChatUpgradeService,
+		@ISubtaskProgressService private readonly _subtaskProgressService: ISubtaskProgressService,
 	) {
 		this.location = this.getLocation(request);
 
@@ -201,84 +203,96 @@ export class ChatParticipantRequestHandler {
 	}
 
 	async getResult(): Promise<ICopilotChatResult> {
-		if (await this._shouldAskForPermissiveAuth()) {
-			// Return a random response
-			return {
-				metadata: {
-					modelMessageId: this.turn.responseId ?? '',
-					responseId: this.turn.id,
-					sessionId: this.conversation.sessionId,
-					agentId: this.chatAgentArgs.agentId,
-					command: this.request.command,
-				}
-			};
-		}
-		this._logService.trace(`[${ChatLocation.toStringShorter(this.location)}] chat request received from extension host`);
+		// Register the chat stream for A2A subtask progress bubbles
+		// This allows A2A tools (a2a_spawn_subtask, etc.) to show progress
+		// in the same chat panel that spawned them
+		const streamRegistration = this._subtaskProgressService.registerStream('user-session-v3', this.stream);
+		this._logService.info(`[ChatParticipantRequestHandler] Registered stream for 'user-session-v3' to enable A2A subtask progress bubbles`);
+
 		try {
-
-			// sanitize the variables of all requests
-			// this is done here because all intents must honor ignored files
-			this.request = await this.sanitizeVariables();
-
-			const command = this.chatAgentArgs.intentId ?
-				this._commandService.getCommand(this.chatAgentArgs.intentId, this.location) :
-				undefined;
-
-			let result = this.checkCommandUsage(command);
-
-			if (!result) {
-				// this is norm-case, e.g checkCommandUsage didn't produce an error-result
-				// and we proceed with the actual intent invocation
-
-				const history = this.conversation.turns.slice(0, -1);
-				const intent = await this.selectIntent(command, history);
-
-				let chatResult: Promise<ChatResult>;
-				if (typeof intent.handleRequest === 'function') {
-					chatResult = intent.handleRequest(this.conversation, this.request, this.stream, this.token, this.documentContext, this.chatAgentArgs.agentName, this.location, this.chatTelemetry, this.onPaused);
-				} else {
-					const intentHandler = this._instantiationService.createInstance(DefaultIntentRequestHandler, intent, this.conversation, this.request, this.stream, this.token, this.documentContext, this.location, this.chatTelemetry, undefined, this.onPaused, this.chatAgentArgs.agentName);
-					chatResult = intentHandler.getResult();
-				}
-
-				if (!this.request.isParticipantDetected) {
-					this.intentDetector.collectIntentDetectionContextInternal(
-						this.turn.request.message,
-						this.request.enableCommandDetection ? intent.id : 'none',
-						new ChatVariablesCollection(this.request.references),
-						this.location,
-						history,
-						this.documentContext?.document
-					);
-				}
-
-				result = await chatResult;
-				const endpoint = await this._endpointProvider.getChatEndpoint(this.request);
-				result.details = this._authService.copilotToken?.isNoAuthUser ?
-					`${endpoint.name}` :
-					`${endpoint.name} • ${endpoint.multiplier ?? 0}x`;
+			if (await this._shouldAskForPermissiveAuth()) {
+				// Return a random response
+				return {
+					metadata: {
+						modelMessageId: this.turn.responseId ?? '',
+						responseId: this.turn.id,
+						sessionId: this.conversation.sessionId,
+						agentId: this.chatAgentArgs.agentId,
+						command: this.request.command,
+					}
+				};
 			}
+			this._logService.trace(`[${ChatLocation.toStringShorter(this.location)}] chat request received from extension host`);
+			try {
 
-			this._conversationStore.addConversation(this.turn.id, this.conversation);
+				// sanitize the variables of all requests
+				// this is done here because all intents must honor ignored files
+				this.request = await this.sanitizeVariables();
 
-			// mixin fixed metadata shape into result. Modified in place because the object is already
-			// cached in the conversation store and we want the full information when looking this up
-			// later
-			mixin(result, {
-				metadata: {
-					modelMessageId: this.turn.responseId ?? '',
-					responseId: this.turn.id,
-					sessionId: this.conversation.sessionId,
-					agentId: this.chatAgentArgs.agentId,
-					command: this.request.command
+				const command = this.chatAgentArgs.intentId ?
+					this._commandService.getCommand(this.chatAgentArgs.intentId, this.location) :
+					undefined;
+
+				let result = this.checkCommandUsage(command);
+
+				if (!result) {
+					// this is norm-case, e.g checkCommandUsage didn't produce an error-result
+					// and we proceed with the actual intent invocation
+
+					const history = this.conversation.turns.slice(0, -1);
+					const intent = await this.selectIntent(command, history);
+
+					let chatResult: Promise<ChatResult>;
+					if (typeof intent.handleRequest === 'function') {
+						chatResult = intent.handleRequest(this.conversation, this.request, this.stream, this.token, this.documentContext, this.chatAgentArgs.agentName, this.location, this.chatTelemetry, this.onPaused);
+					} else {
+						const intentHandler = this._instantiationService.createInstance(DefaultIntentRequestHandler, intent, this.conversation, this.request, this.stream, this.token, this.documentContext, this.location, this.chatTelemetry, undefined, this.onPaused, this.chatAgentArgs.agentName);
+						chatResult = intentHandler.getResult();
+					}
+
+					if (!this.request.isParticipantDetected) {
+						this.intentDetector.collectIntentDetectionContextInternal(
+							this.turn.request.message,
+							this.request.enableCommandDetection ? intent.id : 'none',
+							new ChatVariablesCollection(this.request.references),
+							this.location,
+							history,
+							this.documentContext?.document
+						);
+					}
+
+					result = await chatResult;
+					const endpoint = await this._endpointProvider.getChatEndpoint(this.request);
+					result.details = this._authService.copilotToken?.isNoAuthUser ?
+						`${endpoint.name}` :
+						`${endpoint.name} • ${endpoint.multiplier ?? 0}x`;
 				}
-			} satisfies ICopilotChatResult, true);
 
-			return <ICopilotChatResult>result;
+				this._conversationStore.addConversation(this.turn.id, this.conversation);
 
-		} catch (err) {
-			// TODO This method should not throw at all, but return a result with errorDetails, and call the IConversationStore
-			throw err;
+				// mixin fixed metadata shape into result. Modified in place because the object is already
+				// cached in the conversation store and we want the full information when looking this up
+				// later
+				mixin(result, {
+					metadata: {
+						modelMessageId: this.turn.responseId ?? '',
+						responseId: this.turn.id,
+						sessionId: this.conversation.sessionId,
+						agentId: this.chatAgentArgs.agentId,
+						command: this.request.command
+					}
+				} satisfies ICopilotChatResult, true);
+
+				return <ICopilotChatResult>result;
+
+			} catch (err) {
+				// TODO This method should not throw at all, but return a result with errorDetails, and call the IConversationStore
+				throw err;
+			}
+		} finally {
+			// Always unregister the stream when the request completes
+			this._logService.info(`[ChatParticipantRequestHandler] Unregistering stream for 'user-session-v3'`);
+			streamRegistration.dispose();
 		}
 	}
 

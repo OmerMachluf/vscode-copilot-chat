@@ -52,11 +52,11 @@ export interface ISubtaskProgressOptions {
 
 /**
  * Service for managing subtask progress UI.
- * 
+ *
  * This service abstracts progress reporting, providing:
  * 1. In-chat progress "bubbles" when a chat stream is available
  * 2. VS Code notification progress when no stream is available
- * 
+ *
  * The service listens to SubTaskManager lifecycle events and automatically
  * updates progress items when subtasks complete/fail.
  */
@@ -146,22 +146,30 @@ export class SubtaskProgressService extends Disposable implements ISubtaskProgre
 	}
 
 	registerStream(ownerId: string, stream: vscode.ChatResponseStream): IDisposable {
+		this._logService.info(`[SubtaskProgressService] registerStream called for ownerId='${ownerId}'`);
 		this._streams.set(ownerId, stream);
-		this._logService.debug(`[SubtaskProgressService] Registered stream for owner ${ownerId}`);
+		this._logService.info(`[SubtaskProgressService] Stream registered. Total streams: ${this._streams.size}`);
 
 		return toDisposable(() => {
 			if (this._streams.get(ownerId) === stream) {
+				this._logService.info(`[SubtaskProgressService] Unregistering stream for ownerId='${ownerId}'`);
 				this._streams.delete(ownerId);
 			}
 		});
 	}
 
 	getStream(ownerId: string): vscode.ChatResponseStream | undefined {
-		return this._streams.get(ownerId);
+		const stream = this._streams.get(ownerId);
+		this._logService.info(`[SubtaskProgressService] getStream('${ownerId}'): ${stream ? 'FOUND' : 'NOT FOUND'}`);
+		if (!stream) {
+			this._logService.info(`[SubtaskProgressService] Available stream ownerIds: [${Array.from(this._streams.keys()).join(', ')}]`);
+		}
+		return stream;
 	}
 
 	createProgress(options: ISubtaskProgressOptions): ISubtaskProgressHandle {
 		const { subtaskId, agentType, message, stream } = options;
+		this._logService.info(`[SubtaskProgressService] createProgress called: subtaskId=${subtaskId}, agentType=${agentType}, stream=${stream ? 'PROVIDED' : 'NOT PROVIDED'}`);
 
 		const item: ISubtaskProgressItem = {
 			id: subtaskId,
@@ -176,6 +184,7 @@ export class SubtaskProgressService extends Disposable implements ISubtaskProgre
 
 		// Try to use chat stream progress if available
 		const effectiveStream = stream ?? this._findStreamForSubtask(subtaskId);
+		this._logService.info(`[SubtaskProgressService] Effective stream: ${effectiveStream ? 'FOUND' : 'NOT FOUND'}`);
 
 		if (effectiveStream) {
 			// Use in-chat progress bubble
@@ -185,7 +194,7 @@ export class SubtaskProgressService extends Disposable implements ISubtaskProgre
 			this._createNotificationProgress(item);
 		}
 
-		this._logService.debug(`[SubtaskProgressService] Created progress for subtask ${subtaskId} (${agentType})`);
+		this._logService.info(`[SubtaskProgressService] Created progress for subtask ${subtaskId} (${agentType})`);
 
 		const handle: ISubtaskProgressHandle = {
 			item,
@@ -194,6 +203,7 @@ export class SubtaskProgressService extends Disposable implements ISubtaskProgre
 				this._onProgressUpdated.fire(item);
 			},
 			complete: (result: ISubTaskResult) => {
+				this._logService.info(`[SubtaskProgressService] Progress complete for subtask ${subtaskId}: status=${result.status}`);
 				item.status = result.status === 'success' ? 'completed' : 'failed';
 				item.message = result.status === 'success' ? 'Completed' : (result.error ?? 'Failed');
 				item.result = result;
@@ -201,6 +211,7 @@ export class SubtaskProgressService extends Disposable implements ISubtaskProgre
 				this._cleanupProgress(subtaskId);
 			},
 			fail: (error: string) => {
+				this._logService.info(`[SubtaskProgressService] Progress failed for subtask ${subtaskId}: ${error}`);
 				item.status = 'failed';
 				item.message = error;
 				this._onProgressUpdated.fire(item);
@@ -215,10 +226,14 @@ export class SubtaskProgressService extends Disposable implements ISubtaskProgre
 	}
 
 	private _findStreamForSubtask(subtaskId: string): vscode.ChatResponseStream | undefined {
+		this._logService.info(`[SubtaskProgressService] _findStreamForSubtask called for ${subtaskId}`);
 		// Look up the subtask to find its parent
 		const subTask = this._subTaskManager.getSubTask(subtaskId);
+		this._logService.info(`[SubtaskProgressService] SubTask found: ${subTask ? 'YES' : 'NO'}, parentWorkerId=${subTask?.parentWorkerId}`);
 		if (subTask?.parentWorkerId) {
-			return this._streams.get(subTask.parentWorkerId);
+			const stream = this._streams.get(subTask.parentWorkerId);
+			this._logService.info(`[SubtaskProgressService] Stream for parentWorkerId '${subTask.parentWorkerId}': ${stream ? 'FOUND' : 'NOT FOUND'}`);
+			return stream;
 		}
 		return undefined;
 	}
@@ -236,40 +251,16 @@ export class SubtaskProgressService extends Disposable implements ISubtaskProgre
 	}
 
 	private _createNotificationProgress(item: ISubtaskProgressItem): void {
-		// Create VS Code notification progress
-		const progressPromise = vscode.window.withProgress({
-			location: vscode.ProgressLocation.Notification,
-			title: `🤖 Sub-task: ${item.agentType}`,
-			cancellable: false,
-		}, async (progress) => {
-			progress.report({ message: item.message });
-
-			// Wait for completion
-			return new Promise<void>((resolve) => {
-				const checkCompletion = () => {
-					const current = this._progressItems.get(item.subtaskId);
-					if (!current || current.status !== 'running') {
-						resolve();
-					} else {
-						// Check again in 500ms
-						setTimeout(checkCompletion, 500);
-					}
-				};
-				checkCompletion();
-			});
-		});
-
-		// Store a disposable that we can use to clean up
-		const disposable = toDisposable(() => {
-			// The progress will complete naturally when status changes
-		});
-		this._notificationProgress.set(item.subtaskId, disposable);
-
-		// Ensure the promise doesn't cause unhandled rejection
-		// Convert Thenable to Promise for proper .catch() support
-		Promise.resolve(progressPromise).catch((err: unknown) => {
-			this._logService.error(`[SubtaskProgressService] Notification progress error: ${String(err)}`);
-		});
+		// NO-OP: We intentionally do NOT create VS Code notification progress.
+		// Notifications are intrusive and the user has requested no notifications.
+		//
+		// Progress tracking still works - items are tracked in _progressItems,
+		// events are fired, and results are returned when complete.
+		// The parent agent will receive the results via the tool return value.
+		//
+		// If the user opens an orchestrator session, the chat UI will show
+		// the buffered progress via WorkerResponseStream replay.
+		this._logService.debug(`[SubtaskProgressService] Skipping notification progress for subtask ${item.subtaskId} (${item.agentType}) - progress tracked internally only`);
 	}
 
 	private _cleanupProgress(subtaskId: string): void {

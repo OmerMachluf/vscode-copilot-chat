@@ -179,6 +179,12 @@ export class WorkerSession extends Disposable {
 	 */
 	private _attachedStream: vscode.ChatResponseStream | undefined;
 
+	/**
+	 * Buffer for stream parts that were written before a real stream was attached.
+	 * These will be replayed when attachStream is called.
+	 */
+	private readonly _pendingStreamParts: SerializedChatPart[] = [];
+
 	private readonly _onDidChange = this._register(new Emitter<void>());
 	public readonly onDidChange: Event<void> = this._onDidChange.event;
 
@@ -281,10 +287,17 @@ export class WorkerSession extends Disposable {
 	 * When attached, all stream writes will go to the REAL VS Code stream,
 	 * providing the exact same UI experience as local agent sessions.
 	 *
+	 * Also replays any buffered parts that were written before the stream was attached,
+	 * ensuring that progress and other messages are visible to the user.
+	 *
 	 * Returns a disposable that detaches the stream when disposed.
 	 */
 	public attachStream(stream: vscode.ChatResponseStream): vscode.Disposable {
 		this._attachedStream = stream;
+
+		// Replay any buffered parts that were written before the stream was attached
+		this._replayPendingParts(stream);
+
 		return {
 			dispose: () => {
 				if (this._attachedStream === stream) {
@@ -292,6 +305,68 @@ export class WorkerSession extends Disposable {
 				}
 			}
 		};
+	}
+
+	/**
+	 * Replay buffered stream parts to a real stream.
+	 * Called when attachStream is invoked to ensure all previous content is visible.
+	 */
+	private _replayPendingParts(stream: vscode.ChatResponseStream): void {
+		for (const part of this._pendingStreamParts) {
+			this._replayPart(stream, part);
+		}
+		// Clear the buffer after replaying
+		this._pendingStreamParts.length = 0;
+	}
+
+	/**
+	 * Replay a single serialized part to a real stream.
+	 */
+	private _replayPart(stream: vscode.ChatResponseStream, part: SerializedChatPart): void {
+		switch (part.type) {
+			case 'markdown':
+				if (part.content) {
+					stream.markdown(part.content);
+				}
+				break;
+			case 'progress':
+				if (part.progressMessage) {
+					stream.progress(part.progressMessage);
+				}
+				break;
+			case 'anchor':
+			case 'reference':
+				if (part.uri) {
+					const uri = vscode.Uri.parse(part.uri);
+					if (part.range) {
+						const location = new vscode.Location(uri, new vscode.Range(
+							part.range.startLine, part.range.startChar,
+							part.range.endLine, part.range.endChar
+						));
+						if (part.type === 'anchor') {
+							stream.anchor(location);
+						} else {
+							stream.reference(location);
+						}
+					} else {
+						if (part.type === 'anchor') {
+							stream.anchor(uri);
+						} else {
+							stream.reference(uri);
+						}
+					}
+				}
+				break;
+			// Other part types are less critical for replay
+		}
+	}
+
+	/**
+	 * Buffer a stream part for later replay when a real stream attaches.
+	 * Called by WorkerResponseStream when writing without an attached stream.
+	 */
+	public bufferStreamPart(part: SerializedChatPart): void {
+		this._pendingStreamParts.push(part);
 	}
 
 	/**
@@ -1050,6 +1125,8 @@ export class WorkerSession extends Disposable {
  *   all writes go DIRECTLY to the real stream (providing the true VS Code UI)
  * - Parts are also stored for history/replay purposes
  * - Emits real-time stream events for any additional subscribers
+ * - When NO real stream is attached, parts are buffered on the WorkerSession
+ *   for later replay when a stream IS attached (ensures progress is visible)
  */
 export class WorkerResponseStream implements vscode.ChatResponseStream {
 	private _currentContent = '';
@@ -1071,7 +1148,8 @@ export class WorkerResponseStream implements vscode.ChatResponseStream {
 	}
 
 	/**
-	 * Emit a part - writes to REAL stream if attached, emits events, and stores for history
+	 * Emit a part - writes to REAL stream if attached, emits events, and stores for history.
+	 * If NO real stream is attached, also buffers the part for later replay.
 	 */
 	private _emitPart(part: SerializedChatPart): void {
 		// Start streaming if not already
@@ -1083,6 +1161,13 @@ export class WorkerResponseStream implements vscode.ChatResponseStream {
 		(this._session as any)._onStreamPart?.fire(part);
 		// Accumulate for message storage/history
 		this._currentParts.push(part);
+
+		// Buffer for replay if no real stream is attached yet
+		// This ensures progress and other messages are visible when user opens the chat
+		if (!this._realStream) {
+			this._session.bufferStreamPart(part);
+		}
+
 		this._scheduleFlush();
 	}
 

@@ -94,6 +94,21 @@ describe('Orchestrator Communication', () => {
 		} as any;
 		parentCompletionService = parentCompletionServiceMock;
 
+		const subtaskProgressServiceMock = {
+			_serviceBrand: undefined,
+			registerStream: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+			getStream: vi.fn().mockReturnValue(undefined),
+			createProgress: vi.fn().mockReturnValue({
+				update: vi.fn(),
+				complete: vi.fn(),
+				fail: vi.fn(),
+				dispose: vi.fn(),
+			}),
+			createParallelRenderer: vi.fn(),
+			onProgressCreated: new Emitter().event,
+			onProgressUpdated: new Emitter().event,
+		} as any;
+
 		mockVscodeWindow = {
 			showInformationMessage: vi.fn(),
 			showWarningMessage: vi.fn(),
@@ -152,6 +167,7 @@ describe('Orchestrator Communication', () => {
 			subTaskManager,
 			permissionService,
 			parentCompletionService,
+			subtaskProgressServiceMock,
 			logService
 		);
 

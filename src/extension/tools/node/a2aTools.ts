@@ -96,11 +96,17 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 		options: vscode.LanguageModelToolInvocationOptions<SpawnSubTaskParams>,
 		token: CancellationToken
 	): Promise<LanguageModelToolResult> {
+		this._logService.info(`[A2ASpawnSubTaskTool] ========== INVOKE STARTED ==========`);
+
 		// Use worker context if available, otherwise default to user session
 		let workerId = this._workerContext?.workerId;
 		if (!workerId) {
 			workerId = 'user-session-v3';
+			this._logService.info(`[A2ASpawnSubTaskTool] No worker context, using default workerId: ${workerId}`);
+		} else {
+			this._logService.info(`[A2ASpawnSubTaskTool] Using worker context workerId: ${workerId}`);
 		}
+
 		const taskId = this._workerContext?.taskId ?? 'user-task';
 		const planId = this._workerContext?.planId ?? 'user-plan';
 		const worktreePath = this._workerContext?.worktreePath ?? this._workspaceService.getWorkspaceFolders()?.[0]?.fsPath ?? '';
@@ -108,14 +114,21 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 
 		const { agentType, prompt, expectedOutput, model, targetFiles, blocking = true } = options.input;
 
+		this._logService.info(`[A2ASpawnSubTaskTool] Input params: agentType=${agentType}, blocking=${blocking}, model=${model || 'default'}, currentDepth=${currentDepth}`);
+		this._logService.info(`[A2ASpawnSubTaskTool] Context: taskId=${taskId}, planId=${planId}, worktreePath=${worktreePath}`);
+		this._logService.info(`[A2ASpawnSubTaskTool] Prompt preview: ${prompt.slice(0, 100)}...`);
+
 		// Get spawn context from worker context (inherited from parent)
 		// Normalize to 'orchestrator' | 'agent' (subtask is only used internally for depth checking)
 		const rawSpawnContext = this._workerContext?.spawnContext ?? 'agent';
 		const spawnContext: 'orchestrator' | 'agent' = rawSpawnContext === 'orchestrator' ? 'orchestrator' : 'agent';
 		const effectiveMaxDepth = this._subTaskManager.getMaxDepthForContext(spawnContext);
 
+		this._logService.info(`[A2ASpawnSubTaskTool] Spawn context: ${spawnContext}, effectiveMaxDepth=${effectiveMaxDepth}`);
+
 		// Check depth limit before creating
 		if (currentDepth >= effectiveMaxDepth) {
+			this._logService.warn(`[A2ASpawnSubTaskTool] DEPTH LIMIT EXCEEDED: currentDepth=${currentDepth} >= maxDepth=${effectiveMaxDepth}`);
 			const contextLabel = spawnContext === 'orchestrator' ? 'orchestrator-deployed worker' : 'standalone agent';
 			return new LanguageModelToolResult([
 				new LanguageModelTextPart(
@@ -130,8 +143,10 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 
 		// Check for file conflicts
 		if (targetFiles && targetFiles.length > 0) {
+			this._logService.info(`[A2ASpawnSubTaskTool] Checking file conflicts for: ${targetFiles.join(', ')}`);
 			const conflicts = this._subTaskManager.checkFileConflicts(targetFiles);
 			if (conflicts.length > 0) {
+				this._logService.warn(`[A2ASpawnSubTaskTool] FILE CONFLICTS DETECTED: ${conflicts.join(', ')}`);
 				return new LanguageModelToolResult([
 					new LanguageModelTextPart(
 						`ERROR: File conflicts detected. The following sub-tasks are already modifying the target files: ${conflicts.join(', ')}. ` +
@@ -160,12 +175,15 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 
 		// Create the sub-task
 		const subTask = this._subTaskManager.createSubTask(createOptions);
+		this._logService.info(`[A2ASpawnSubTaskTool] SubTask CREATED: id=${subTask.id}, status=${subTask.status}`);
 
 		// Get chat stream for progress (if available through progress service)
 		const parentStream = this._progressService.getStream(workerId);
+		this._logService.info(`[A2ASpawnSubTaskTool] Parent stream for workerId '${workerId}': ${parentStream ? 'FOUND' : 'NOT FOUND (no chat bubbles)'}`);
 
 		// Non-blocking mode: return immediately with task ID
 		if (!blocking) {
+			this._logService.info(`[A2ASpawnSubTaskTool] NON-BLOCKING MODE: returning immediately, subtask will run in background`);
 			// Create progress tracking for the background task
 			const progressHandle = this._progressService.createProgress({
 				subtaskId: subTask.id,
@@ -181,7 +199,7 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 				})
 				.catch(error => {
 					progressHandle.fail(error instanceof Error ? error.message : String(error));
-					this._logService.error(`[A2ASpawnSubTaskTool] Background sub-task ${subTask.id} failed:`, error);
+					this._logService.error(`[A2ASpawnSubTaskTool] Background sub-task ${subTask.id} failed: ${error instanceof Error ? error.message : String(error)}`);
 				});
 
 			return new LanguageModelToolResult([
@@ -200,10 +218,12 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 		}
 
 		// Blocking mode: wait for completion with progress indicator
+		this._logService.info(`[A2ASpawnSubTaskTool] BLOCKING MODE: will wait for subtask ${subTask.id} to complete`);
 		const collectedMessages: IOrchestratorQueueMessage[] = [];
 		let handlerDisposable: IDisposable | undefined;
 
 		// Create progress tracking
+		this._logService.info(`[A2ASpawnSubTaskTool] Creating progress handle for subtask ${subTask.id}`);
 		const progressHandle = this._progressService.createProgress({
 			subtaskId: subTask.id,
 			agentType,
@@ -213,26 +233,33 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 
 		try {
 			// Register this worker as owner handler to receive messages from subtask
+			this._logService.info(`[A2ASpawnSubTaskTool] Registering owner handler for workerId '${workerId}'`);
 			handlerDisposable = this._queueService.registerOwnerHandler(workerId, async (message) => {
-				this._logService.debug(`[A2ASpawnSubTaskTool] Received message from subtask: ${message.type}`);
+				this._logService.info(`[A2ASpawnSubTaskTool] RECEIVED MESSAGE from subtask: type=${message.type}, taskId=${message.taskId}`);
 				collectedMessages.push(message);
 				const content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
 				progressHandle.update(`[${message.type}] ${content.slice(0, 50)}...`);
 			});
 
 			// Execute the sub-task and wait for result
+			this._logService.info(`[A2ASpawnSubTaskTool] CALLING executeSubTask for subtask ${subTask.id}...`);
 			const result = await this._subTaskManager.executeSubTask(subTask.id, token);
+			this._logService.info(`[A2ASpawnSubTaskTool] executeSubTask RETURNED: status=${result.status}, error=${result.error || 'none'}`);
+			this._logService.info(`[A2ASpawnSubTaskTool] Result output preview: ${(result.output || '').slice(0, 200)}...`);
 
 			// Mark progress as complete
 			progressHandle.complete(result);
+			this._logService.info(`[A2ASpawnSubTaskTool] Progress marked complete`);
 
 			// Format collected messages as additional context
 			const messagesSummary = collectedMessages.length > 0
 				? `\n\n**Sub-Task Communications (${collectedMessages.length} messages):**\n${collectedMessages.map(m => `- [${m.type}] ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`).join('\n')}`
 				: '';
+			this._logService.info(`[A2ASpawnSubTaskTool] Collected ${collectedMessages.length} messages from subtask`);
 
 			// Return the result
 			if (result.status === 'success') {
+				this._logService.info(`[A2ASpawnSubTaskTool] ========== INVOKE COMPLETED (SUCCESS) ==========`);
 				return new LanguageModelToolResult([
 					new LanguageModelTextPart(
 						`Sub-task completed successfully.\n\n` +
@@ -243,6 +270,7 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 					),
 				]);
 			} else {
+				this._logService.info(`[A2ASpawnSubTaskTool] ========== INVOKE COMPLETED (FAILED) ==========`);
 				return new LanguageModelToolResult([
 					new LanguageModelTextPart(
 						`Sub-task failed.\n\n` +
@@ -255,8 +283,9 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 				]);
 			}
 		} catch (error) {
+			this._logService.error(`[A2ASpawnSubTaskTool] EXCEPTION in invoke: ${error instanceof Error ? error.message : String(error)}`);
 			progressHandle.fail(error instanceof Error ? error.message : String(error));
-			this._logService.error(`[A2ASpawnSubTaskTool] Failed to spawn sub-task:`, error);
+			this._logService.error(`[A2ASpawnSubTaskTool] Failed to spawn sub-task: ${error instanceof Error ? error.message : String(error)}`);
 			return new LanguageModelToolResult([
 				new LanguageModelTextPart(
 					`ERROR: Failed to spawn sub-task: ${error instanceof Error ? error.message : String(error)}`
@@ -264,6 +293,7 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 			]);
 		} finally {
 			// Always unregister the handler when done
+			this._logService.info(`[A2ASpawnSubTaskTool] Cleaning up: disposing handler`);
 			handlerDisposable?.dispose();
 		}
 	}
@@ -424,7 +454,7 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 					.catch((error) => {
 						handle.fail(error instanceof Error ? error.message : String(error));
 						progressRenderer.reportSummary();
-						this._logService.error(`[A2ASpawnParallelSubTasksTool] Background task ${task.id} failed:`, error);
+						this._logService.error(`[A2ASpawnParallelSubTasksTool] Background task ${task.id} failed: ${error instanceof Error ? error.message : String(error)}`);
 					});
 			}
 
@@ -532,7 +562,7 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 
 		} catch (error) {
 			progressRenderer.dispose();
-			this._logService.error(`[A2ASpawnParallelSubTasksTool] Failed:`, error);
+			this._logService.error(`[A2ASpawnParallelSubTasksTool] Failed: ${error instanceof Error ? error.message : String(error)}`);
 			return new LanguageModelToolResult([
 				new LanguageModelTextPart(
 					`ERROR: Failed to execute parallel sub-tasks: ${error instanceof Error ? error.message : String(error)}`
@@ -774,7 +804,7 @@ export class A2ANotifyOrchestratorTool implements ICopilotTool<NotifyOrchestrato
 				new LanguageModelTextPart(`Notification sent to ${targetDescription}.`),
 			]);
 		} catch (error) {
-			this._logService.error(`[A2ANotifyOrchestratorTool] Failed to send notification:`, error);
+			this._logService.error(`[A2ANotifyOrchestratorTool] Failed to send notification: ${error instanceof Error ? error.message : String(error)}`);
 			return new LanguageModelToolResult([
 				new LanguageModelTextPart(
 					`ERROR: Failed to send notification: ${error instanceof Error ? error.message : String(error)}`

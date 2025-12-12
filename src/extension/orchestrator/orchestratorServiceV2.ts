@@ -29,6 +29,7 @@ import { IOrchestratorPermissionService, IPermissionRequest } from './orchestrat
 import { IOrchestratorQueueMessage, IOrchestratorQueueService } from './orchestratorQueue';
 import { IParentCompletionService, WorkerSessionWakeUpAdapter } from './parentCompletionService';
 import { ISubTaskManager } from './subTaskManager';
+import { ISubtaskProgressService } from './subtaskProgressService';
 import { WorkerHealthMonitor } from './workerHealthMonitor';
 import { SerializedWorkerState, WorkerResponseStream, WorkerSession, WorkerSessionState } from './workerSession';
 import { IWorkerToolsService, WorkerToolSet } from './workerToolsService';
@@ -97,6 +98,8 @@ export interface WorkerTask {
 	readonly agent?: string;
 	/** Target files this task will touch (for parallelization detection) */
 	readonly targetFiles?: string[];
+	/** Parent worker ID for subtasks - messages route to parent instead of orchestrator */
+	readonly parentWorkerId?: string;
 	/** Current execution status */
 	status: TaskStatus;
 	/** Worker ID if assigned */
@@ -155,6 +158,8 @@ export interface CreateTaskOptions {
 	agent?: string;
 	/** Target files this task will touch */
 	targetFiles?: string[];
+	/** Parent worker ID for subtasks - messages route to parent instead of orchestrator */
+	parentWorkerId?: string;
 }
 
 /**
@@ -437,6 +442,8 @@ export class OrchestratorInbox {
 export interface DeployOptions {
 	/** Language model ID to use for this worker (overrides task's modelId) */
 	modelId?: string;
+	/** Existing worktree path to reuse (for subtasks sharing parent's worktree) */
+	worktreePath?: string;
 }
 
 /**
@@ -546,6 +553,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		@ISubTaskManager private readonly _subTaskManager: ISubTaskManager,
 		@IOrchestratorPermissionService private readonly _permissionService: IOrchestratorPermissionService,
 		@IParentCompletionService private readonly _parentCompletionService: IParentCompletionService,
+		@ISubtaskProgressService private readonly _subtaskProgressService: ISubtaskProgressService,
 		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
@@ -1064,6 +1072,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			parallelGroup,
 			agent = '@agent',
 			targetFiles,
+			parentWorkerId,
 		} = options;
 
 		const task: WorkerTask = {
@@ -1079,6 +1088,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			modelId,
 			agent,
 			targetFiles,
+			parentWorkerId,
 			status: 'pending',
 		};
 		this._tasks.push(task);
@@ -1307,8 +1317,8 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			const plan = task.planId ? this._plans.find(p => p.id === task.planId) : undefined;
 			const baseBranch = this._getBaseBranch(task, plan);
 
-			// Create worktree
-			const worktreePath = await this._createWorktree(task.name, baseBranch);
+			// Use provided worktree path (for subtasks) or create new one
+			const worktreePath = options?.worktreePath ?? await this._createWorktree(task.name, baseBranch);
 
 			// Load agent instructions
 			// Normalize agent ID: strip @ prefix and lowercase
@@ -1333,14 +1343,18 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 			// Create scoped tool set for this worker
 			// This ensures tools operate within the worker's worktree
-			// Workers deployed by orchestrator have owner = orchestrator, spawnContext = orchestrator
+			// For subtasks (parentWorkerId set): owner = parent worker, so messages route back
+			// For regular tasks: owner = orchestrator
+			const ownerContext = task.parentWorkerId
+				? { ownerType: 'worker' as const, ownerId: task.parentWorkerId }
+				: { ownerType: 'orchestrator' as const, ownerId: 'orchestrator' };
 			const workerToolSet = this._workerToolsService.createWorkerToolSet(
 				worker.id,
 				worktreePath,
 				task.planId,
 				task.id,
-				0, // depth = 0 for orchestrator-deployed workers
-				{ ownerType: 'orchestrator', ownerId: 'orchestrator' },
+				task.parentWorkerId ? 1 : 0, // depth = 1 for subtasks, 0 for orchestrator-deployed workers
+				ownerContext,
 				'orchestrator' // spawnContext = orchestrator allows depth up to 2
 			);
 			this._workerToolSets.set(worker.id, workerToolSet);
@@ -1366,6 +1380,14 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			const adapterDisposable = wakeUpAdapter.register();
 			this._wakeUpAdapters.set(worker.id, adapterDisposable);
 			this._register(adapterDisposable);
+
+			// Register a proxy stream for subtask progress reporting
+			// This creates a WorkerResponseStream that proxies progress updates.
+			// When a real VS Code stream is attached later (via orchestratorChatSessionParticipant),
+			// progress will flow through to the UI. Until then, progress is still tracked internally.
+			const workerStream = new WorkerResponseStream(worker);
+			const streamDisposable = this._subtaskProgressService.registerStream(worker.id, workerStream);
+			this._register(streamDisposable);
 
 			this._onOrchestratorEvent.fire({
 				type: 'task.started',
