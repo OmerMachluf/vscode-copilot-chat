@@ -46,7 +46,7 @@ export interface IOrchestratorQueueMessage {
 	owner?: IOwnerContext;
 
 	// Message content
-	type: 'status_update' | 'permission_request' | 'question' | 'completion' | 'error' | 'answer' | 'refinement' | 'retry_request';
+	type: 'status_update' | 'permission_request' | 'question' | 'completion' | 'error' | 'answer' | 'refinement' | 'retry_request' | 'approval_request' | 'approval_response';
 	content: unknown;
 }
 

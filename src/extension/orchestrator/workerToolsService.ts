@@ -449,6 +449,24 @@ export class WorkerToolSet extends Disposable implements IToolsService {
 		// Get the tool name without the contributed prefix
 		const toolName = getToolName(name) as ToolName;
 
+		// CRITICAL: Validate that any file paths in the input are within the worktree
+		// This prevents subtask agents from operating outside their designated worktree
+		const pathValidation = this._validateInputPathsAreInWorktree(options.input);
+		if (!pathValidation.valid) {
+			this._logService.error(`[WorkerToolSet] WORKTREE BOUNDARY VIOLATION: Worker ${this.workerId} attempted to access paths outside worktree ${this.worktreePath}: ${pathValidation.violations.join(', ')}`);
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(
+					`❌ **WORKTREE BOUNDARY VIOLATION**\n\n` +
+					`You attempted to access files outside your designated worktree.\n\n` +
+					`**Your worktree:** \`${this.worktreePath}\`\n\n` +
+					`**Forbidden paths:**\n${pathValidation.violations.map(v => `- \`${v}\``).join('\n')}\n\n` +
+					`**Working outside your worktree is EXPLICITLY FORBIDDEN.**\n\n` +
+					`You can ONLY read, write, or modify files within: \`${this.worktreePath}\`\n\n` +
+					`Please correct the file paths to be within your worktree and try again.`
+				)
+			]);
+		}
+
 		// Try to invoke using our scoped tool instance first
 		// This ensures the tool uses the ScopedWorkspaceService bound to the worktree
 		const scopedTool = this._copilotTools.get(toolName);
@@ -471,6 +489,94 @@ export class WorkerToolSet extends Disposable implements IToolsService {
 		// (e.g., VS Code built-in tools like terminal, or third-party tools)
 		this._logService.debug(`[WorkerToolSet] Falling back to vscode.lm.invokeTool for ${toolName} (no scoped implementation)`);
 		return vscode.lm.invokeTool(getContributedToolName(name), options, token);
+	}
+
+	/**
+	 * Validate that all file paths in the tool input are within the worktree.
+	 * This prevents subtask agents from accidentally or intentionally operating
+	 * on files outside their designated worktree.
+	 */
+	private _validateInputPathsAreInWorktree(input: Object): { valid: boolean; violations: string[] } {
+		if (!this.worktreePath) {
+			// No worktree restriction - allow all paths
+			return { valid: true, violations: [] };
+		}
+
+		const violations: string[] = [];
+		const worktreeUri = URI.file(this.worktreePath);
+
+		// Recursively extract all potential file paths from the input
+		const extractPaths = (obj: any, keyPath: string = ''): string[] => {
+			const paths: string[] = [];
+			if (!obj || typeof obj !== 'object') {
+				return paths;
+			}
+
+			for (const [key, value] of Object.entries(obj)) {
+				const currentPath = keyPath ? `${keyPath}.${key}` : key;
+
+				// Check if this key looks like a file path parameter
+				const isPathKey = /^(file)?path$/i.test(key) ||
+					/path$/i.test(key) ||
+					key === 'directory' ||
+					key === 'dirPath' ||
+					key === 'cwd' ||
+					key === 'workingDirectory' ||
+					key === 'uri';
+
+				if (typeof value === 'string' && isPathKey) {
+					// This is a potential file path
+					paths.push(value);
+				} else if (Array.isArray(value)) {
+					// Check array elements for paths (e.g., filePaths: [...])
+					const isPathArray = /^(file)?paths$/i.test(key) || /paths$/i.test(key);
+					if (isPathArray) {
+						for (const item of value) {
+							if (typeof item === 'string') {
+								paths.push(item);
+							}
+						}
+					}
+					// Recurse into array elements that are objects
+					for (const item of value) {
+						if (typeof item === 'object') {
+							paths.push(...extractPaths(item, currentPath));
+						}
+					}
+				} else if (typeof value === 'object') {
+					// Recurse into nested objects
+					paths.push(...extractPaths(value, currentPath));
+				}
+			}
+
+			return paths;
+		};
+
+		const paths = extractPaths(input);
+
+		for (const pathStr of paths) {
+			// Skip relative paths (they'll be resolved against the worktree anyway)
+			// and skip special schemes (like untitled:)
+			if (!pathStr || pathStr.includes(':') && !pathStr.startsWith('/')) {
+				continue;
+			}
+
+			try {
+				const pathUri = URI.file(pathStr);
+				// Check if this path is within the worktree
+				if (!extUriBiasedIgnorePathCase.isEqualOrParent(pathUri, worktreeUri)) {
+					violations.push(pathStr);
+				}
+			} catch {
+				// If we can't parse the path, skip validation for it
+				continue;
+			}
+		}
+
+		return {
+			valid: violations.length === 0,
+			violations
+		};
 	}
 
 	// From BaseToolsService - validation methods

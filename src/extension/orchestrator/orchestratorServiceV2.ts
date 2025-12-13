@@ -667,7 +667,78 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				}
 				break;
 			}
+
+			case 'approval_request': {
+				// Handle approval requests from subtasks
+				// These are requests that need to bubble up to the parent or user
+				await this._handleApprovalRequest(message);
+				break;
+			}
 		}
+	}
+
+	/**
+	 * Handle an approval request from a subtask/worker.
+	 * Approvals bubble up through the parent chain until reaching the orchestrator or user.
+	 */
+	private async _handleApprovalRequest(message: IOrchestratorQueueMessage): Promise<void> {
+		const content = message.content as {
+			approvalId: string;
+			action: string;
+			description: string;
+			parameters?: Record<string, unknown>;
+		};
+
+		this._logService.info(`[Orchestrator] Approval request from worker ${message.workerId}: ${content.action} - ${content.description}`);
+
+		// If message came from a subtask with a parent owner, route to parent first
+		if (message.owner?.ownerType === 'worker') {
+			const parentWorkerId = message.owner.ownerId;
+			const parentWorker = this._workers.get(parentWorkerId);
+
+			if (parentWorker) {
+				// Create a pending approval on the parent worker
+				this._logService.info(`[Orchestrator] Routing approval request to parent worker ${parentWorkerId}`);
+
+				// The parent worker receives the approval request
+				// Add to parent's pending approvals
+				const approval = await parentWorker.requestApproval(
+					content.action,
+					content.approvalId,
+					`[Subtask ${message.workerId}] ${content.description}`,
+					content.parameters || {}
+				);
+
+				// Send response back to the requesting worker
+				this._queueService.enqueueMessage({
+					id: generateUuid(),
+					timestamp: Date.now(),
+					priority: 'high',
+					planId: message.planId,
+					taskId: message.taskId,
+					workerId: message.workerId,
+					worktreePath: message.worktreePath,
+					type: 'approval_response',
+					content: {
+						approvalId: content.approvalId,
+						approved: approval.approved,
+						clarification: approval.clarification,
+					}
+				});
+				return;
+			}
+		}
+
+		// No parent or parent not found - handle at orchestrator level
+		// Add to inbox for user decision
+		this._inbox.addItem({
+			id: generateUuid(),
+			message,
+			status: 'pending',
+			requiresUserAction: true,
+			createdAt: Date.now()
+		});
+		vscode.window.showInformationMessage(`Orchestrator: Approval request from ${message.workerId}: ${content.action}`);
 	}
 
 	private _isStructuredPermissionRequest(content: unknown): content is IPermissionRequest {

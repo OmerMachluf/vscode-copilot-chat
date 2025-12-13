@@ -913,22 +913,37 @@ ${subTask.targetFiles?.length ? `- **Target Files:** ${subTask.targetFiles.join(
 You are working in your own dedicated worktree at: ${subTask.worktreePath}
 This is separate from your parent's worktree. Your parent will merge your branch when you're done.
 
-## ⚠️ CRITICAL: YOU MUST COMMIT YOUR CHANGES
-**Before completing your task, you MUST commit all your changes:**
-1. Stage all changes: \`git add -A\`
-2. Commit with a descriptive message: \`git commit -m "Your descriptive commit message"\`
+## ⚠️ CRITICAL: YOU MUST COMMIT YOUR CHANGES WHEN COMPLETING
+**When you finish your task, you MUST call \`a2a_subtask_complete\` with a \`commitMessage\` parameter.**
 
-**Uncommitted changes will NOT be merged!** Your parent merges your branch, not your working directory.
+Example completion:
+\`\`\`json
+{
+  "subTaskId": "${subTask.id}",
+  "status": "success",
+  "output": "Summary of what was accomplished",
+  "commitMessage": "feat: descriptive message of your changes"
+}
+\`\`\`
+
+**⚠️ WARNING: If you call a2a_subtask_complete WITHOUT a commitMessage, your changes will NOT be committed and will be LOST!**
+**⚠️ WARNING: If you simply stop without calling a2a_subtask_complete with commitMessage, your work will be LOST!**
+
+## WORKTREE RESTRICTION
+**You can ONLY modify files within your worktree: ${subTask.worktreePath}**
+Any attempt to read, write, or modify files outside this path is forbidden and will fail.
 
 ## COMMUNICATION WITH PARENT
 - Use \`a2a_notify_orchestrator\` to send status updates, questions, or progress reports to your parent.
+- **For approval requests**: Use \`a2a_notify_orchestrator\` with type \`approval_request\` to request approval from your parent for sensitive operations.
+  - Include metadata: \`{ "approvalId": "<unique-id>", "action": "<what-you-want-to-do>", "description": "<why>" }\`
+  - Your parent will approve or deny, and the response will be routed back to you.
 - **DO NOT** try to communicate with the user directly - route everything through your parent.
 
 ## YOUR RESPONSIBILITIES
 1. Complete the specific task assigned to you.
 2. Make file changes directly in your worktree using standard tools (create_file, replace_string_in_file, etc.).
-3. **COMMIT your changes** with git add and git commit.
-4. When done, simply stop. Your parent will be notified and will merge your branch.
+3. **When done, call a2a_subtask_complete with status, output, AND commitMessage.**
 
 ## SUB-TASK SPAWNING
 ${subTaskGuidance}
@@ -1001,14 +1016,24 @@ Focus on your assigned task and provide a clear, actionable result.`,
 		parts.push(subTask.expectedOutput);
 		parts.push('');
 
-		// Add CRITICAL commit reminder (main instructions are in additionalInstructions)
-		parts.push(`## ⚠️ REMINDER: Commit Before Finishing`);
-		parts.push(`When you complete your work, **you MUST commit your changes**:`);
-		parts.push('```bash');
-		parts.push('git add -A');
-		parts.push('git commit -m "Your descriptive message"');
+		// Add CRITICAL completion requirement
+		parts.push(`## ⚠️ CRITICAL: You MUST Commit Your Changes When Done`);
+		parts.push('');
+		parts.push(`**When you have finished your work, you MUST call the \`a2a_subtask_complete\` tool with a \`commitMessage\` parameter.**`);
+		parts.push('');
+		parts.push(`This is REQUIRED - your changes will NOT be merged to the parent unless you commit them.`);
+		parts.push('');
+		parts.push(`Example completion call:`);
+		parts.push('```json');
+		parts.push(`{`);
+		parts.push(`  "subTaskId": "${subTask.id}",`);
+		parts.push(`  "status": "success",`);
+		parts.push(`  "output": "Summary of what was accomplished",`);
+		parts.push(`  "commitMessage": "feat: descriptive message of your changes"`);
+		parts.push(`}`);
 		parts.push('```');
-		parts.push(`Your parent will merge your committed branch. Uncommitted work will be lost!`);
+		parts.push('');
+		parts.push(`**DO NOT just stop working or call a2a_subtask_complete without a commitMessage - your work will be lost!**`);
 
 		return parts.join('\n');
 	}

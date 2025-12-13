@@ -801,7 +801,7 @@ export class A2AAwaitSubTasksTool implements ICopilotTool<AwaitSubTasksParams> {
  */
 interface NotifyOrchestratorParams {
 	/** The type of notification */
-	type: 'status_update' | 'question' | 'completion' | 'error';
+	type: 'status_update' | 'question' | 'completion' | 'error' | 'approval_request';
 	/** The content of the notification */
 	content: string;
 	/** Optional metadata */
