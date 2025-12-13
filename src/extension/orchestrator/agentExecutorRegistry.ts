@@ -5,12 +5,15 @@
 
 import { ILogService } from '../../platform/log/common/logService';
 import { Disposable } from '../../util/vs/base/common/lifecycle';
+import { IInstantiationService } from '../../util/vs/platform/instantiation/common/instantiation';
 import {
-AgentBackendType,
-IAgentExecutor,
-IAgentExecutorRegistry,
-ParsedAgentType,
+	AgentBackendType,
+	IAgentExecutor,
+	IAgentExecutorRegistry,
+	ParsedAgentType,
 } from './agentExecutor';
+import { ClaudeCodeAgentExecutor } from './executors/claudeCodeAgentExecutor';
+import { CopilotAgentExecutor } from './executors/copilotAgentExecutor';
 
 export class AgentExecutorRegistry extends Disposable implements IAgentExecutorRegistry {
 readonly _serviceBrand: undefined;
@@ -72,4 +75,48 @@ override dispose(): void {
 this._executors.clear();
 super.dispose();
 }
+}
+/**
+ * Registers all built-in agent executors with the registry.
+ * This should be called during extension initialization after
+ * the registry and required services are available.
+ *
+ * @param registry - The executor registry to register executors with
+ * @param instantiationService - The instantiation service for creating executor instances
+ */
+export function registerBuiltInExecutors(
+	registry: IAgentExecutorRegistry,
+	instantiationService: IInstantiationService
+): void {
+	// Register Copilot executor (default for @agent, @architect, @reviewer)
+	const copilotExecutor = instantiationService.createInstance(CopilotAgentExecutor);
+	registry.register(copilotExecutor);
+
+	// Register Claude executor (for claude:* agent types)
+	try {
+		const claudeExecutor = instantiationService.createInstance(ClaudeCodeAgentExecutor);
+		registry.register(claudeExecutor);
+	} catch (error) {
+		// Claude executor may not be available in all environments (e.g., web)
+		// Log and continue without it
+		const logService = instantiationService.invokeFunction(accessor => accessor.get(ILogService));
+		logService.info(`[AgentExecutorRegistry] Claude executor not available: ${error}`);
+	}
+}
+
+/**
+ * Registers only the Claude executor with the registry.
+ * Useful when the Copilot executor is already registered elsewhere.
+ *
+ * @param registry - The executor registry to register the executor with
+ * @param instantiationService - The instantiation service for creating the executor instance
+ * @returns The registered ClaudeCodeAgentExecutor instance
+ */
+export function registerClaudeExecutor(
+	registry: IAgentExecutorRegistry,
+	instantiationService: IInstantiationService
+): ClaudeCodeAgentExecutor {
+	const claudeExecutor = instantiationService.createInstance(ClaudeCodeAgentExecutor);
+	registry.register(claudeExecutor);
+	return claudeExecutor;
 }
