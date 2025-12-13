@@ -17,7 +17,6 @@
 
 // Message types and protocols
 export {
-	deserializeMessage,
 	IA2AMessage,
 	IA2AMessageContent,
 	IA2AMessageContentBase,
@@ -37,8 +36,9 @@ export {
 	IRefinementContent,
 	IRetryRequestContent,
 	ISerializedA2AMessage,
-	IStatusUpdateContent,
-	isApprovalRequestContent,
+	IStatusUpdateContent, MessagePriority,
+	MessageStatus,
+	MessageType, deserializeMessage, isApprovalRequestContent,
 	isApprovalResponseContent,
 	isCancellationContent,
 	isCompletionContent,
@@ -47,11 +47,7 @@ export {
 	isQuestionContent,
 	isRefinementContent,
 	isRetryRequestContent,
-	isStatusUpdateContent,
-	MessagePriority,
-	MessageStatus,
-	MessageType,
-	serializeMessage,
+	isStatusUpdateContent, serializeMessage
 } from './messageTypes';
 
 // Message queue
@@ -60,7 +56,7 @@ export {
 	IA2AMessageQueue,
 	IMessageQueueConfig,
 	IMessageQueueMetrics,
-	MessageHandler,
+	MessageHandler
 } from './messageQueue';
 
 // Message router
@@ -71,97 +67,56 @@ export {
 	IRouteHop,
 	IRouterConfig,
 	IRouterMetrics,
-	IRoutingRule,
+	IRoutingRule
 } from './messageRouter';
 
 // Git operations - low-level git command execution
 export {
+	GitBranchInfo, GitExecOptions,
 	// Types
-	GitOperationResult,
-	GitExecOptions,
-	GitBranchInfo,
-	GitWorktreeInfo,
-
+	GitOperationResult, GitWorktreeInfo,
+	// Merge/rebase state
+	abortMerge,
+	abortRebase, branchExists, checkout, clean, commit, createBranch, createWorktree, deleteBranch,
+	deleteRemoteBranch,
 	// Core operations
 	execGit,
 	execGitOrThrow,
-
+	// Remote operations
+	fetch, getChangedFiles, getConflictedFiles,
 	// Branch operations
 	getCurrentBranch,
 	getCurrentCommit,
-	getDefaultBranch,
-	branchExists,
-	createBranch,
-	checkout,
-	deleteBranch,
-	deleteRemoteBranch,
-
+	getDefaultBranch, getDiffStats,
+	getFilesBetweenRefs, getLog, getMainRepoPath, getMergeBase,
 	// Change tracking
-	hasUncommittedChanges,
-	getChangedFiles,
-	getDiffStats,
-	getFilesBetweenRefs,
-
-	// Staging and committing
-	stageAllChanges,
-	commit,
-
-	// Remote operations
-	fetch,
-	pull,
-	push,
-	getMergeBase,
-
+	hasUncommittedChanges, isInMerge,
+	isInRebase, isWorktree,
 	// Worktree operations
-	listWorktrees,
-	createWorktree,
-	removeWorktree,
-	pruneWorktrees,
-	getMainRepoPath,
-	isWorktree,
-
-	// Merge/rebase state
-	abortMerge,
-	abortRebase,
-	isInMerge,
-	isInRebase,
-	getConflictedFiles,
-
+	listWorktrees, pruneWorktrees, pull,
+	push, removeWorktree,
 	// Utility operations
 	reset,
-	clean,
-	stash,
-	stashPop,
-	getLog,
+	// Staging and committing
+	stageAllChanges, stash,
+	stashPop
 } from './gitOperations';
 
 // Merge utilities - high-level merge operations with conflict detection
 export {
+	ConflictDetectionResult, MergeOptions, MergeResult,
 	// Types
-	MergeStrategy,
-	MergeResult,
-	MergeOptions,
-	WorktreeCleanupResult,
-	WorktreeCleanupOptions,
-	ConflictDetectionResult,
-	PreMergeCheckResult,
-
-	// Conflict detection
-	detectConflicts,
-	performPreMergeChecks,
-
-	// Merge operations
-	mergeBranches,
-	mergeWorktreeAndCleanup,
-
+	MergeStrategy, PreMergeCheckResult, WorktreeCleanupOptions, WorktreeCleanupResult, abortInProgressOperation,
 	// Cleanup operations
 	cleanupWorktree,
-	abortInProgressOperation,
-
-	// Conflict resolution
-	resolveAllConflicts,
-
+	// Conflict detection
+	detectConflicts,
 	// State inspection
 	getMergeState,
-	prepareWorktreeForMerge,
+	// Merge operations
+	mergeBranches,
+	mergeWorktreeAndCleanup, performPreMergeChecks, prepareWorktreeForMerge,
+	// Conflict resolution
+	resolveAllConflicts
 } from './mergeUtils';
+
