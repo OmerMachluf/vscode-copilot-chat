@@ -1478,41 +1478,6 @@
 				}
 			},
 			{
-				"name": "copilot_orchestratorDeploy",
-				"toolReferenceName": "orchestrator_deploy",
-				"displayName": "Deploy Plan",
-				"modelDescription": "Deploys tasks for execution. Use planId to deploy ALL ready tasks in a plan (tasks with no unsatisfied dependencies). Use taskId to deploy a specific task. One of planId or taskId must be provided. Optionally specify modelId to override the language model for deployed workers.",
-				"userDescription": "Deploy tasks for execution",
-				"icon": "$(rocket)",
-				"tags": ["vscode_codesearch"],
-				"inputSchema": {
-					"type": "object",
-					"properties": {
-						"planId": {
-							"type": "string",
-							"description": "The ID of the plan to deploy. When provided, deploys ALL ready tasks (tasks whose dependencies are satisfied) in the plan."
-						},
-						"taskId": {
-							"type": "string",
-							"description": "The ID of a specific task to deploy. Use this to deploy a single task regardless of plan."
-						},
-						"modelId": {
-							"type": "string",
-							"description": "The language model ID to use for the deployed worker(s). Overrides the task's default model. Examples: 'gpt-4o', 'claude-sonnet-4-20250514', 'gemini-2.5-pro'."
-						},
-						"blocking": {
-							"type": "boolean",
-							"description": "Whether to wait for the task to complete before returning (default: true). If true (blocking mode): Shows progress bubbles, waits for completion, returns result. If false (async mode): Returns immediately after deploying."
-						},
-						"timeout": {
-							"type": "number",
-							"description": "Timeout in milliseconds for blocking mode (default: 10 minutes = 600000ms)."
-						}
-					},
-					"required": []
-				}
-			},
-			{
 				"name": "copilot_orchestratorListWorkers",
 				"toolReferenceName": "orchestrator_listWorkers",
 				"displayName": "List Workers",
@@ -1524,94 +1489,6 @@
 					"type": "object",
 					"properties": {},
 					"required": []
-				}
-			},
-			{
-				"name": "copilot_orchestratorSendMessage",
-				"toolReferenceName": "orchestrator_sendMessage",
-				"displayName": "Send Message",
-				"modelDescription": "Sends a message to a worker agent.",
-				"userDescription": "Send a message to a worker",
-				"icon": "$(comment-discussion)",
-				"tags": ["vscode_codesearch"],
-				"inputSchema": {
-					"type": "object",
-					"properties": {
-						"receiver": {
-							"type": "string",
-							"description": "The name of the worker agent to receive the message."
-						},
-						"message": {
-							"type": "string",
-							"description": "The message content to send."
-						}
-					},
-					"required": [
-						"receiver",
-						"message"
-					]
-				}
-			},
-			{
-				"name": "copilot_orchestratorExpandImplementation",
-				"toolReferenceName": "orchestrator_expandImplementation",
-				"displayName": "Expand Implementation",
-				"modelDescription": "Creates implementation sub-tasks from Architect output. Takes the Architect's design output and creates concrete implementation tasks that can be assigned to workers. Use this after an Architect stage completes to break down the implementation into parallelizable tasks.",
-				"userDescription": "Create implementation tasks from Architect design",
-				"icon": "$(split-horizontal)",
-				"tags": ["vscode_codesearch"],
-				"inputSchema": {
-					"type": "object",
-					"properties": {
-						"parentTaskId": {
-							"type": "string",
-							"description": "The ID of the parent 'implement' task to expand into sub-tasks."
-						},
-						"planId": {
-							"type": "string",
-							"description": "The plan ID containing the task."
-						},
-						"architectOutput": {
-							"type": "object",
-							"description": "The parsed YAML output from the Architect agent containing files_to_modify, parallelization groups, etc."
-						},
-						"strategy": {
-							"type": "string",
-							"enum": ["balanced", "max-parallel", "sequential"],
-							"description": "How to split the work: 'balanced' (smart grouping), 'max-parallel' (one task per parallel group), 'sequential' (all in one task)."
-						}
-					},
-					"required": [
-						"parentTaskId",
-						"architectOutput"
-					]
-				}
-			},
-			{
-				"name": "copilot_orchestratorKillWorker",
-				"toolReferenceName": "orchestrator_killWorker",
-				"displayName": "Kill Worker",
-				"modelDescription": "Kills a running worker: stops the process, removes the worktree, and optionally resets the associated task to pending status.",
-				"userDescription": "Kill a worker and clean up",
-				"icon": "$(close)",
-				"tags": ["vscode_codesearch"],
-				"inputSchema": {
-					"type": "object",
-					"properties": {
-						"workerId": {
-							"type": "string",
-							"description": "The ID of the worker to kill."
-						},
-						"removeWorktree": {
-							"type": "boolean",
-							"description": "Whether to remove the worktree (default: true)."
-						},
-						"resetTask": {
-							"type": "boolean",
-							"description": "Whether to reset the task status to pending (default: true)."
-						}
-					},
-					"required": ["workerId"]
 				}
 			},
 			{
@@ -1823,78 +1700,6 @@
 					},
 					"required": ["workerId", "message"]
 				}
-			},
-			{
-				"name": "copilot_orchestratorReassignAgent",
-				"toolReferenceName": "orchestrator_reassignAgent",
-				"displayName": "Reassign Agent",
-				"modelDescription": "Reassign a worker to a different agent type.",
-				"userDescription": "Reassign agent",
-				"icon": "$(person)",
-				"tags": ["vscode_codesearch"],
-				"inputSchema": {
-					"type": "object",
-					"properties": {
-						"workerId": { "type": "string" },
-						"newAgentType": { "type": "string" },
-						"reason": { "type": "string" }
-					},
-					"required": ["workerId", "newAgentType"]
-				}
-			},
-			{
-				"name": "copilot_orchestratorChangeModel",
-				"toolReferenceName": "orchestrator_changeModel",
-				"displayName": "Change Model",
-				"modelDescription": "Change the AI model for a worker.",
-				"userDescription": "Change model",
-				"icon": "$(server)",
-				"tags": ["vscode_codesearch"],
-				"inputSchema": {
-					"type": "object",
-					"properties": {
-						"workerId": { "type": "string" },
-						"newModelId": { "type": "string" },
-						"reason": { "type": "string" }
-					},
-					"required": ["workerId", "newModelId"]
-				}
-			},
-			{
-				"name": "copilot_orchestratorReinitializeWorker",
-				"toolReferenceName": "orchestrator_reinitializeWorker",
-				"displayName": "Reinitialize Worker",
-				"modelDescription": "Reinitialize a worker to a clean state.",
-				"userDescription": "Reinitialize worker",
-				"icon": "$(refresh)",
-				"tags": ["vscode_codesearch"],
-				"inputSchema": {
-					"type": "object",
-					"properties": {
-						"workerId": { "type": "string" },
-						"newInstructions": { "type": "string" },
-						"clearHistory": { "type": "boolean" }
-					},
-					"required": ["workerId"]
-				}
-			},
-			{
-				"name": "copilot_orchestratorRedirectWorker",
-				"toolReferenceName": "orchestrator_redirectWorker",
-				"displayName": "Redirect Worker",
-				"modelDescription": "Redirect a worker with new instructions.",
-				"userDescription": "Redirect worker",
-				"icon": "$(arrow-right)",
-				"tags": ["vscode_codesearch"],
-				"inputSchema": {
-					"type": "object",
-					"properties": {
-						"workerId": { "type": "string" },
-						"redirectPrompt": { "type": "string" },
-						"preserveHistory": { "type": "boolean" }
-					},
-					"required": ["workerId", "redirectPrompt"]
-				}
 			}
 		],
 		"languageModelToolSets": [
@@ -1955,13 +1760,9 @@
 				"icon": "$(organization)",
 				"tools": [
 					"orchestrator_addPlanTask",
-					"orchestrator_expandImplementation",
 					"orchestrator_savePlan",
 					"orchestrator_listAgents",
 					"orchestrator_listWorkers",
-					"orchestrator_sendMessage",
-					"orchestrator_deploy",
-					"orchestrator_killWorker",
 					"orchestrator_cancelTask",
 					"orchestrator_retryTask",
 					"orchestrator_completeTask"

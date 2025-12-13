@@ -1116,9 +1116,10 @@ interface IOrchestratorService {
 
 ### Tools Integration
 
-The orchestrator tools now expose session URIs:
-- `orchestrator_deploy` returns session URI for the deployed task
-- `orchestrator_listWorkers` shows session URIs in task lists and "Active Sessions" section
+The orchestrator now uses A2A tools for deployment:
+- `a2a_spawnSubTask` / `a2a_spawnParallelSubTasks` for task deployment
+- `orchestrator_listWorkers` shows task status and worker information
+- `orchestrator_completeTask` to mark tasks done after A2A completion
 
 ---
 

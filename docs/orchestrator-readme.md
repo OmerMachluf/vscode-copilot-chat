@@ -100,25 +100,18 @@ Use `@stepplanner` when you need a deep dive into a single topic or a detailed p
 
 Starts executing the plan. Tasks are deployed based on their dependencies.
 
-**Blocking Mode (Default)**
+**How Deployment Works**
 
-By default, `orchestrator_deploy` runs in **blocking mode**:
-- Shows progress bubbles directly in your chat (same UI as A2A subtasks)
-- Waits for task completion before returning
+The Orchestrator uses **A2A tools** (`a2a_spawnSubTask`, `a2a_spawnParallelSubTasks`) for deployment:
+- Shows progress bubbles directly in your chat
+- Automatically blocks until task completion
 - Returns structured results with success/failure, output, and changed files
+- Workers use `a2a_subtask_complete` for automatic commit/merge
 
 ```
-@orchestrator deploy task-123
+@orchestrator deploy <plan-name>
 ```
-→ Shows progress, waits for completion, returns result
-
-**Non-Blocking Mode**
-
-For fire-and-forget deployment:
-```
-@orchestrator deploy task-123 --no-blocking
-```
-→ Starts the task and returns immediately
+→ Deploys ready tasks, shows progress, waits for completion
 
 ### Check Worker Status
 
@@ -130,11 +123,7 @@ Shows all active workers and their current status.
 
 ### Send Message to Worker
 
-```
-@orchestrator send <worker-id> <message>
-```
-
-Sends instructions or context to a specific worker.
+Use `a2a_send_message_to_worker` to communicate with active workers.
 
 ---
 

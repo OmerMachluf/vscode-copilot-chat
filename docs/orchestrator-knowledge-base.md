@@ -61,7 +61,7 @@ The Multi-Agent Orchestrator is a sophisticated system for **parallel execution 
         │  Sets dependencies│           │  Handles events   │
         └───────────────────┘           └───────────────────┘
                     │                               │
-                    │ orchestrator_savePlan         │ orchestrator_deploy
+                    │ orchestrator_savePlan         │ a2a_spawnSubTask
                     ▼                               ▼
         ┌─────────────────────────────────────────────────────┐
         │                 ORCHESTRATOR SERVICE                 │
@@ -281,18 +281,21 @@ You are the WorkflowPlanner...
 **Purpose:** Manages execution of multi-agent workflows
 
 **Responsibilities:**
-1. **Plan Deployment** - Deploy plans created by WorkflowPlanner
-2. **Implementation Expansion** - Create tasks from Architect output
-3. **Parallelization Decisions** - Decide optimal worker allocation
-4. **Worker Coordination** - Monitor and communicate with workers
-5. **Progressive Execution** - Deploy tasks in dependency order
+1. **Plan Deployment** - Deploy plans created by WorkflowPlanner using A2A tools
+2. **Parallelization Decisions** - Decide optimal worker allocation
+3. **Worker Coordination** - Monitor and communicate with workers via A2A
+4. **Progressive Execution** - Deploy tasks in dependency order
+5. **Task Completion** - Mark tasks complete after A2A subtasks finish
 
 **Tools Used:**
-- `orchestrator_deploy`
-- `orchestrator_listWorkers`
-- `orchestrator_sendMessage`
-- `orchestrator_expandImplementation`
-- `orchestrator_addPlanTask`
+- `a2a_spawnSubTask` - Deploy individual tasks
+- `a2a_spawnParallelSubTasks` - Deploy multiple tasks in parallel
+- `a2a_send_message_to_worker` - Communicate with workers
+- `orchestrator_listWorkers` - View plan/task status
+- `orchestrator_addPlanTask` - Add tasks to plans
+- `orchestrator_completeTask` - Mark tasks as done
+- `orchestrator_cancelTask` - Cancel tasks
+- `orchestrator_retryTask` - Retry failed tasks
 
 ---
 
@@ -359,15 +362,21 @@ Tools exposed to LLMs for workflow management.
 | Tool Name | Purpose | Key Parameters |
 |-----------|---------|----------------|
 | `orchestrator_addPlanTask` | Add a task to a plan | `description`, `planId?`, `agent?`, `dependencies?`, `targetFiles?` |
-| `orchestrator_deploy` | Deploy plan or specific task | `planId?`, `taskId?`, `modelId?` |
 | `orchestrator_listWorkers` | Show plans, tasks, workers | (none) |
-| `orchestrator_sendMessage` | Communicate with a worker | `receiver`, `message` |
 | `orchestrator_listAgents` | Discover available agents | (none) |
 | `orchestrator_savePlan` | Save a complete workflow plan | `name`, `description`, `tasks[]`, `autoStart?` |
-| `orchestrator_expandImplementation` | Create sub-tasks from Architect | `parentTaskId`, `architectOutput`, `strategy?` |
-| `orchestrator_killWorker` | Stop and clean up a worker | `workerId`, `removeWorktree?`, `resetTask?` |
 | `orchestrator_cancelTask` | Cancel/reset a task | `taskId`, `remove?` |
 | `orchestrator_retryTask` | Retry a failed task | `taskId`, `modelId?` |
+| `orchestrator_completeTask` | Mark a task as completed | `taskId` |
+
+### A2A Tools for Deployment
+
+| Tool Name | Purpose | Key Parameters |
+|-----------|---------|----------------|
+| `a2a_spawnSubTask` | Deploy a single task | `agentType`, `prompt`, `expectedOutput`, `targetFiles?` |
+| `a2a_spawnParallelSubTasks` | Deploy multiple tasks | `subtasks[]`, `waitForAll?` |
+| `a2a_send_message_to_worker` | Send message to worker | `workerId`, `message` |
+| `a2a_pull_subtask_changes` | Pull changes from worker | `subtaskWorktree`, `cleanup?` |
 
 ### Save Plan Tool - Task Structure
 

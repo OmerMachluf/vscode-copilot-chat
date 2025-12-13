@@ -6,6 +6,7 @@
 import * as vscode from 'vscode';
 import { ILogService } from '../../platform/log/common/logService';
 import { IChatEndpoint } from '../../platform/networking/common/networking';
+import { ITabsAndEditorsService, TabChangeEvent, TabInfo } from '../../platform/tabs/common/tabsAndEditorsService';
 import { IWorkspaceService } from '../../platform/workspace/common/workspaceService';
 import { createServiceIdentifier } from '../../util/common/services';
 import { CancellationToken } from '../../util/vs/base/common/cancellation';
@@ -267,6 +268,60 @@ class ScopedWorkspaceService implements IWorkspaceService {
 }
 
 /**
+ * A scoped tabs and editors service that returns undefined for active editors.
+ * Workers should not see the global VS Code editor state since:
+ * 1. Multiple workers can run in parallel, each in their own worktree
+ * 2. The global editor state reflects what the USER has open, not what the worker should focus on
+ * 3. Showing global editor state to a worker can confuse the model (e.g., showing Phase 4's file to Phase 2's worker)
+ *
+ * By returning undefined for activeTextEditor and activeNotebookEditor, we ensure workers
+ * rely solely on their worktree context (from ScopedWorkspaceService) and explicit file operations.
+ */
+class ScopedTabsAndEditorsService implements ITabsAndEditorsService {
+	readonly _serviceBrand: undefined;
+
+	private readonly _emptyTabs: TabInfo[] = [];
+	private readonly _emptyEditors: readonly vscode.TextEditor[] = [];
+	private readonly _emptyNotebookEditors: readonly vscode.NotebookEditor[] = [];
+
+	constructor(
+		private readonly _delegate: ITabsAndEditorsService
+	) { }
+
+	// Workers should not see active editors - they work in their own worktree context
+	get activeTextEditor(): vscode.TextEditor | undefined {
+		return undefined;
+	}
+
+	get activeNotebookEditor(): vscode.NotebookEditor | undefined {
+		return undefined;
+	}
+
+	// Workers should not see visible editors from the global VS Code state
+	get visibleTextEditors(): readonly vscode.TextEditor[] {
+		return this._emptyEditors;
+	}
+
+	get visibleNotebookEditors(): readonly vscode.NotebookEditor[] {
+		return this._emptyNotebookEditors;
+	}
+
+	// Workers should not see tabs from the global VS Code state
+	get tabs(): TabInfo[] {
+		return this._emptyTabs;
+	}
+
+	// Events still delegate to allow for future use, but won't trigger meaningful changes for workers
+	get onDidChangeActiveTextEditor(): vscode.Event<vscode.TextEditor | undefined> {
+		return this._delegate.onDidChangeActiveTextEditor;
+	}
+
+	get onDidChangeTabs(): vscode.Event<TabChangeEvent> {
+		return this._delegate.onDidChangeTabs;
+	}
+}
+
+/**
  * A set of tools scoped to a specific worker and its worktree.
  * Provides tool management capabilities including enabling/disabling tools
  * and future MCP connection management.
@@ -305,12 +360,17 @@ export class WorkerToolSet extends Disposable implements IToolsService {
 		owner: IWorkerOwnerContext | undefined,
 		spawnContext: SpawnContext,
 		@IWorkspaceService workspaceService: IWorkspaceService,
+		@ITabsAndEditorsService tabsAndEditorsService: ITabsAndEditorsService,
 		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
 
 		// Create scoped workspace service for this worktree
 		const scopedWorkspaceService = new ScopedWorkspaceService(workspaceService, worktreePath);
+
+		// Create scoped tabs and editors service to prevent workers from seeing global VS Code editor state
+		// This ensures each worker only sees their own worktree context, not files open in other worktrees
+		const scopedTabsAndEditorsService = new ScopedTabsAndEditorsService(tabsAndEditorsService);
 
 		// Create worker context for this worker
 		this._workerContext = new WorkerContextImpl(workerId, worktreePath, planId, taskId, depth, owner, spawnContext);
@@ -319,6 +379,7 @@ export class WorkerToolSet extends Disposable implements IToolsService {
 		this._scopedInstantiationService = parentInstantiationService.createChild(
 			new ServiceCollection(
 				[IWorkspaceService, scopedWorkspaceService],
+				[ITabsAndEditorsService, scopedTabsAndEditorsService],
 				[IWorkerContext, this._workerContext]
 			)
 		);
@@ -755,6 +816,7 @@ export class WorkerToolsService extends Disposable implements IWorkerToolsServic
 	constructor(
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@IWorkspaceService private readonly _workspaceService: IWorkspaceService,
+		@ITabsAndEditorsService private readonly _tabsAndEditorsService: ITabsAndEditorsService,
 		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
@@ -775,6 +837,7 @@ export class WorkerToolsService extends Disposable implements IWorkerToolsServic
 			owner,
 			spawnContext,
 			this._workspaceService,
+			this._tabsAndEditorsService,
 			this._logService,
 		);
 
