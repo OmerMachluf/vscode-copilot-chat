@@ -1481,6 +1481,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 			// Determine model ID: deploy options override > task's model > undefined
 			const effectiveModelId = options?.modelId ?? task.modelId;
+			this._logService.info(`[OrchestratorService] Deploy task ${task.id}: effectiveModelId=${effectiveModelId || '(will use _selectModel fallback)'}, worktreePath=${worktreePath}`);
 
 			// Create worker session with agent instructions and model
 			const worker = new WorkerSession(

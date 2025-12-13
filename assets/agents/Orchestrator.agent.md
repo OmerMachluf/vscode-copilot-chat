@@ -134,6 +134,21 @@ When using A2A tools, task completion is streamlined:
 
 This updates the plan state and makes dependent tasks ready for deployment.
 
+**Manual Change Integration (when needed):**
+
+If the worker's `a2a_subtask_complete` failed or you need to manually review changes:
+
+1. Use `a2a_pull_subtask_changes` to pull the worker's changes:
+```json
+{
+  "subtaskWorktree": "/path/to/worker/worktree"
+}
+```
+
+2. Resolve any merge conflicts (see Section 6)
+3. Review and commit the merged changes
+4. Call `orchestrator_completeTask` to mark the task done
+
 ### 3. Worker Communication
 
 **When a worker needs help:**
@@ -218,23 +233,37 @@ Then deploy again using A2A tools.
 
 ### 6. Handling Merge Conflicts
 
-If `a2a_subtask_complete` reports merge conflicts:
+When using `a2a_pull_subtask_changes` to pull a worker's changes into your branch, merge conflicts can occur.
+
+**Scenario 1: Pulling from a subtask**
+
+If `a2a_pull_subtask_changes` reports merge conflicts:
 
 ```bash
-# Navigate to the worktree
-cd {worker_worktree_path}
-
-# Check conflict status
+# Changes are already staged with conflicts in the main workspace
+# Check which files have conflicts:
 git status
 
-# For each conflict, choose resolution:
+# For each conflicted file, resolve manually or choose a side:
 git checkout --theirs {file}  # Accept worker's version (most common)
 git checkout --ours {file}    # Keep parent's version (rare)
 
-# After resolving:
+# Or edit the file directly to manually resolve conflicts
+
+# After resolving all conflicts:
 git add .
-git commit -m "Resolved merge conflicts for task: {task_name}"
+git commit -m "Merge changes from task: {task_name}"
 ```
+
+**Scenario 2: Worker's a2a_subtask_complete fails to merge**
+
+Workers call `a2a_subtask_complete` with a commit message to merge their changes.
+If this fails due to conflicts, the worker will report the error.
+
+**Your options:**
+1. Use `a2a_pull_subtask_changes` to manually pull and resolve conflicts
+2. Send guidance to the worker via `a2a_send_message_to_worker`
+3. Retry the task with `orchestrator_retryTask`
 
 **Conflict Resolution Guidelines:**
 
@@ -244,6 +273,10 @@ git commit -m "Resolved merge conflicts for task: {task_name}"
 | Shared imports/exports | Combine both (manual merge) |
 | Config files | Review carefully, usually combine |
 | Conflicting logic in same function | Escalate to user |
+
+**After successful merge:**
+- Call `orchestrator_completeTask` to update the plan state
+- Dependent tasks will become ready for deployment
 
 ### 7. Failure Handling
 

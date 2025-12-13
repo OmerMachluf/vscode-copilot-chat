@@ -114,9 +114,10 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 
 		const taskId = this._workerContext?.taskId ?? 'user-task';
 		const planId = this._workerContext?.planId ?? 'user-plan';
-		// Get worktree path: from worker context, or from workspace folder, or empty (orchestrator will create one)
-		const workspaceFolders = this._workspaceService.getWorkspaceFolders();
-		const worktreePath = this._workerContext?.worktreePath || workspaceFolders?.[0]?.fsPath || '';
+		// Get worktree path: from worker context ONLY
+		// If no worker context (orchestrator calling), pass undefined to force deploy() to create a worktree
+		// This is critical! Passing the main workspace path would cause workers to run on main branch.
+		const worktreePath = this._workerContext?.worktreePath;
 		const currentDepth = this._workerContext?.depth ?? 0;
 
 		const { agentType, prompt, expectedOutput, model, targetFiles, blocking = true } = options.input;
@@ -371,7 +372,9 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 		}
 		const taskId = this._workerContext?.taskId ?? 'user-task';
 		const planId = this._workerContext?.planId ?? 'user-plan';
-		const worktreePath = this._workerContext?.worktreePath ?? this._workspaceService.getWorkspaceFolders()?.[0]?.fsPath ?? '';
+		// Get worktree path: from worker context ONLY
+		// If no worker context (orchestrator calling), pass undefined to force deploy() to create a worktree
+		const worktreePath = this._workerContext?.worktreePath;
 		const currentDepth = this._workerContext?.depth ?? 0;
 
 		const { subtasks } = options.input;
