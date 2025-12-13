@@ -197,6 +197,12 @@ export class AgentDiscoveryService implements IAgentDiscoveryService {
 			const agentsDir = URI.joinPath(folder.uri, '.github', 'agents');
 
 			try {
+				// Check if the directory exists before trying to read it
+				const stat = await this.fileSystemService.stat(agentsDir);
+				if (stat.type !== FileType.Directory) {
+					continue;
+				}
+
 				const entries = await this.fileSystemService.readDirectory(agentsDir);
 
 				for (const [name, type] of entries) {

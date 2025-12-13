@@ -311,13 +311,15 @@ export class ConfigurationServiceImpl extends AbstractConfigurationService {
 			const extensionConfigProps = Object.assign({}, ...propertyGroups);
 			for (const key in extensionConfigProps) {
 				const localKey = key.replace(`${CopilotConfigPrefix}.`, '');
-				const value = localKey.split('.').reduce((o, i) => o[i], this.config);
+				// Use VS Code's .get() method instead of direct property traversal
+				// since config objects don't support nested property access
+				const value = this.config.get(localKey);
 
 				if (typeof value === 'object' && value !== null) {
 					// Dump objects as their properties, filtering secret_key
 					Object.keys(value)
 						.filter(k => k !== 'secret_key')
-						.forEach(k => (configProperties[`${key}.${k}`] = stringOrStringify(value[k])));
+						.forEach(k => (configProperties[`${key}.${k}`] = stringOrStringify((value as Record<string, unknown>)[k])));
 				} else {
 					configProperties[key] = stringOrStringify(value);
 				}

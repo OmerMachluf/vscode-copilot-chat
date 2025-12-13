@@ -68,6 +68,7 @@ export class ChatSessionsContrib extends Disposable implements IExtensionContrib
 		@IOctoKitService private readonly octoKitService: IOctoKitService,
 	) {
 		super();
+		this.logService.info('[ChatSessionsContrib] Constructor started');
 
 		// #region Claude Code Chat Sessions
 		const claudeAgentInstaService = instantiationService.createChild(
@@ -88,6 +89,7 @@ export class ChatSessionsContrib extends Disposable implements IExtensionContrib
 		const claudeChatSessionParticipant = claudeAgentInstaService.createInstance(ClaudeChatSessionParticipant, ClaudeChatSessionItemProvider.claudeSessionType, claudeAgentManager, sessionItemProvider);
 		const chatParticipant = vscode.chat.createChatParticipant(ClaudeChatSessionItemProvider.claudeSessionType, claudeChatSessionParticipant.createHandler());
 		this._register(vscode.chat.registerChatSessionContentProvider(ClaudeChatSessionItemProvider.claudeSessionType, chatSessionContentProvider, chatParticipant));
+		this.logService.info('[ChatSessionsContrib] Claude Code sessions registered');
 
 		// #endregion
 
@@ -102,7 +104,17 @@ export class ChatSessionsContrib extends Disposable implements IExtensionContrib
 			[IChatDelegationSummaryService, delegationSummary],
 			[IPullRequestFileChangesService, new SyncDescriptor(PullRequestFileChangesService)],
 		));
+
+		// #region Orchestrator Chat Sessions
+		try {
+			this._registerOrchestratorSessions(instantiationService);
+		} catch (error) {
+			this.logService.error('[ChatSessionsContrib] Failed to register orchestrator sessions:', error);
+		}
+		this.logService.info('[ChatSessionsContrib] Constructor completed');
+
 		const cloudSessionProvider = this.registerCopilotCloudAgent();
+		this.logService.info(`[ChatSessionsContrib] Cloud Agent registered, provider: ${cloudSessionProvider ? 'created' : 'undefined'}`);
 		const copilotcliAgentInstaService = instantiationService.createChild(
 			new ServiceCollection(
 				[ICopilotCLISessionService, new SyncDescriptor(CopilotCLISessionService)],
@@ -135,9 +147,8 @@ export class ChatSessionsContrib extends Disposable implements IExtensionContrib
 		const copilotcliParticipant = vscode.chat.createChatParticipant(this.copilotcliSessionType, copilotcliChatSessionParticipant.createHandler());
 		this._register(vscode.chat.registerChatSessionContentProvider(this.copilotcliSessionType, copilotcliChatSessionContentProvider, copilotcliParticipant));
 		this._register(registerCLIChatCommands(copilotcliSessionItemProvider, copilotCLISessionService, gitService));
+		this.logService.info('[ChatSessionsContrib] Background Agent (copilotcli) registered');
 
-		// #region Orchestrator Chat Sessions
-		this._registerOrchestratorSessions(instantiationService);
 		// #endregion
 	}
 
@@ -145,6 +156,7 @@ export class ChatSessionsContrib extends Disposable implements IExtensionContrib
 	 * Register orchestrator chat sessions for plan task workers
 	 */
 	private _registerOrchestratorSessions(instantiationService: IInstantiationService): void {
+		this.logService.info('[ChatSessionsContrib] _registerOrchestratorSessions started');
 		const ORCHESTRATOR_SESSION_TYPE = 'orchestrator';
 
 		// Create service collection with unified worktree manager
@@ -152,10 +164,13 @@ export class ChatSessionsContrib extends Disposable implements IExtensionContrib
 			new ServiceCollection(
 				[IUnifiedWorktreeManager, new SyncDescriptor(UnifiedWorktreeManager)],
 			));
+		this.logService.info('[ChatSessionsContrib] Orchestrator child instantiation service created');
 
 		// Get services
 		const orchestratorService = orchestratorInstaService.invokeFunction(accessor => accessor.get(IOrchestratorService));
+		this.logService.info('[ChatSessionsContrib] Got IOrchestratorService');
 		const agentDiscoveryService = orchestratorInstaService.invokeFunction(accessor => accessor.get(IAgentDiscoveryService));
+		this.logService.info('[ChatSessionsContrib] Got IAgentDiscoveryService');
 
 		// Create item provider (lists workers as sessions)
 		const orchestratorSessionItemProvider = this._register(
@@ -194,10 +209,13 @@ export class ChatSessionsContrib extends Disposable implements IExtensionContrib
 		this._register(vscode.commands.registerCommand('github.copilot.orchestrator.sessions.refresh', () => {
 			orchestratorSessionItemProvider.refresh();
 		}));
+		this.logService.info('[ChatSessionsContrib] Orchestrator sessions fully registered');
 	}
 
 	private registerCopilotCloudAgent() {
+		this.logService.info('[ChatSessionsContrib] registerCopilotCloudAgent called');
 		if (!this.copilotAgentInstaService) {
+			this.logService.info('[ChatSessionsContrib] copilotAgentInstaService is undefined, returning early');
 			return;
 		}
 		if (this.copilotCloudRegistrations) {
