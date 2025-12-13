@@ -10,6 +10,7 @@ import { ConfigKey, IConfigurationService } from '../../../../platform/configura
 import { IEnvService } from '../../../../platform/env/common/envService';
 import { ILogService } from '../../../../platform/log/common/logService';
 import { IWorkspaceService } from '../../../../platform/workspace/common/workspaceService';
+import { createServiceIdentifier } from '../../../../util/common/services';
 import { isLocation } from '../../../../util/common/types';
 import { DeferredPromise } from '../../../../util/vs/base/common/async';
 import { CancellationToken } from '../../../../util/vs/base/common/cancellation';
@@ -26,11 +27,84 @@ import { ILanguageModelServerConfig, LanguageModelServer } from '../../node/lang
 import { claudeEditTools, ClaudeToolNames, getAffectedUrisForEditTool, IExitPlanModeInput, ITodoWriteInput } from '../common/claudeTools';
 import { createFormattedToolInvocation } from '../common/toolInvocationFormatter';
 import { IClaudeCodeSdkService } from './claudeCodeSdkService';
+import { ClaudeWorktreeSession, IWorktreeSessionConfig, IWorktreeSessionFactory } from './claudeWorktreeSession';
+
+/**
+ * Service identifier for the Claude Agent Manager
+ */
+export const IClaudeAgentManager = createServiceIdentifier<IClaudeAgentManager>('IClaudeAgentManager');
+
+/**
+ * Interface for the Claude Agent Manager
+ */
+export interface IClaudeAgentManager {
+	readonly _serviceBrand: undefined;
+
+	/**
+	 * Handles a chat request, optionally within a specific worktree context
+	 */
+	handleRequest(
+		claudeSessionId: string | undefined,
+		request: vscode.ChatRequest,
+		context: vscode.ChatContext,
+		stream: vscode.ChatResponseStream,
+		token: vscode.CancellationToken,
+		worktreePath?: string
+	): Promise<vscode.ChatResult & { claudeSessionId?: string }>;
+
+	/**
+	 * Gets or creates a session for the specified worktree path
+	 * If no worktree path is provided, returns the main workspace session
+	 */
+	getOrCreateWorktreeSession(worktreePath: string): Promise<ClaudeWorktreeSession>;
+
+	/**
+	 * Removes and cleans up a worktree session
+	 */
+	removeWorktreeSession(worktreePath: string): boolean;
+
+	/**
+	 * Gets all active worktree paths with sessions
+	 */
+	getActiveWorktreePaths(): readonly string[];
+}
+
+/**
+ * Factory for creating ClaudeWorktreeSession instances.
+ * Lives in this file to avoid circular dependencies with claudeWorktreeSession.ts.
+ */
+export class ClaudeWorktreeSessionFactory implements IWorktreeSessionFactory {
+	constructor(
+		@IInstantiationService private readonly instantiationService: IInstantiationService
+	) { }
+
+	/**
+	 * Creates a new worktree-scoped Claude session
+	 */
+	public createSession(config: IWorktreeSessionConfig): ClaudeWorktreeSession {
+		// Create the underlying Claude code session with worktree as cwd
+		const session = this.instantiationService.createInstance(
+			ClaudeCodeSession,
+			config.serverConfig,
+			config.sessionId
+		);
+
+		const worktreeUri = URI.file(config.worktreePath);
+
+		return new ClaudeWorktreeSession(session, config.worktreePath, worktreeUri);
+	}
+}
 
 // Manages Claude Code agent interactions and language model server lifecycle
-export class ClaudeAgentManager extends Disposable {
+export class ClaudeAgentManager extends Disposable implements IClaudeAgentManager {
+	declare readonly _serviceBrand: undefined;
+
 	private _langModelServer: LanguageModelServer | undefined;
 	private _sessions = this._register(new DisposableMap<string, ClaudeCodeSession>());
+
+	// Worktree-scoped sessions keyed by normalized worktree path
+	private readonly _worktreeSessions = this._register(new DisposableMap<string, ClaudeWorktreeSession>());
+	private _worktreeSessionFactory: ClaudeWorktreeSessionFactory | undefined;
 
 	private async getLangModelServer(): Promise<LanguageModelServer> {
 		if (!this._langModelServer) {
@@ -41,6 +115,13 @@ export class ClaudeAgentManager extends Disposable {
 		return this._langModelServer;
 	}
 
+	private _getWorktreeSessionFactory(): ClaudeWorktreeSessionFactory {
+		if (!this._worktreeSessionFactory) {
+			this._worktreeSessionFactory = this.instantiationService.createInstance(ClaudeWorktreeSessionFactory);
+		}
+		return this._worktreeSessionFactory;
+	}
+
 	constructor(
 		@ILogService private readonly logService: ILogService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
@@ -48,8 +129,79 @@ export class ClaudeAgentManager extends Disposable {
 		super();
 	}
 
-	public async handleRequest(claudeSessionId: string | undefined, request: vscode.ChatRequest, _context: vscode.ChatContext, stream: vscode.ChatResponseStream, token: vscode.CancellationToken): Promise<vscode.ChatResult & { claudeSessionId?: string }> {
+	/**
+	 * Gets or creates a session scoped to a worktree path.
+	 * Creates a new ClaudeCodeSession with the worktree path as its working directory.
+	 */
+	public async getOrCreateWorktreeSession(worktreePath: string): Promise<ClaudeWorktreeSession> {
+		const normalizedPath = this._normalizeWorktreePath(worktreePath);
+
+		// Check for existing active session
+		const existing = this._worktreeSessions.get(normalizedPath);
+		if (existing && existing.isActive) {
+			this.logService.trace(`[ClaudeAgentManager] Reusing worktree session for: ${normalizedPath}`);
+			return existing;
+		}
+
+		// Get server config for the session
+		const serverConfig = (await this.getLangModelServer()).getConfig();
+
+		this.logService.trace(`[ClaudeAgentManager] Creating worktree session for: ${normalizedPath}`);
+
+		const config: IWorktreeSessionConfig = {
+			worktreePath: worktreePath, // Use original path for the session
+			serverConfig,
+		};
+
+		const session = this._getWorktreeSessionFactory().createSession(config);
+		this._worktreeSessions.set(normalizedPath, session);
+
+		return session;
+	}
+
+	/**
+	 * Removes and disposes a worktree session
+	 */
+	public removeWorktreeSession(worktreePath: string): boolean {
+		const normalizedPath = this._normalizeWorktreePath(worktreePath);
+		const session = this._worktreeSessions.get(normalizedPath);
+
+		if (session) {
+			this.logService.trace(`[ClaudeAgentManager] Removing worktree session for: ${normalizedPath}`);
+			this._worktreeSessions.deleteAndDispose(normalizedPath);
+			return true;
+		}
+
+		return false;
+	}
+
+	/**
+	 * Gets all active worktree paths with sessions
+	 */
+	public getActiveWorktreePaths(): readonly string[] {
+		const paths: string[] = [];
+		for (const [path, session] of this._worktreeSessions) {
+			if (session.isActive) {
+				paths.push(path);
+			}
+		}
+		return paths;
+	}
+
+	public async handleRequest(
+		claudeSessionId: string | undefined,
+		request: vscode.ChatRequest,
+		_context: vscode.ChatContext,
+		stream: vscode.ChatResponseStream,
+		token: vscode.CancellationToken,
+		worktreePath?: string
+	): Promise<vscode.ChatResult & { claudeSessionId?: string }> {
 		try {
+			// If worktree path is specified, use worktree session
+			if (worktreePath) {
+				return await this._handleWorktreeRequest(worktreePath, request, stream, token);
+			}
+
 			// Get server config, start server if needed
 			const serverConfig = (await this.getLangModelServer()).getConfig();
 
@@ -93,6 +245,38 @@ export class ClaudeAgentManager extends Disposable {
 				errorDetails: { message: errorMessage },
 			};
 		}
+	}
+
+	/**
+	 * Handles a request within a worktree context
+	 */
+	private async _handleWorktreeRequest(
+		worktreePath: string,
+		request: vscode.ChatRequest,
+		stream: vscode.ChatResponseStream,
+		token: vscode.CancellationToken
+	): Promise<vscode.ChatResult & { claudeSessionId?: string }> {
+		this.logService.trace(`[ClaudeAgentManager] Handling worktree request for: ${worktreePath}`);
+
+		const worktreeSession = await this.getOrCreateWorktreeSession(worktreePath);
+
+		await worktreeSession.session.invoke(
+			this.resolvePrompt(request),
+			request.toolInvocationToken,
+			stream,
+			token
+		);
+
+		return {
+			claudeSessionId: worktreeSession.sessionId
+		};
+	}
+
+	/**
+	 * Normalizes a worktree path for use as a map key
+	 */
+	private _normalizeWorktreePath(path: string): string {
+		return path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 	}
 
 	private resolvePrompt(request: vscode.ChatRequest): string {
