@@ -28,6 +28,52 @@ User: "Deploy plan fix-enterprise-login"
 2. The system deploys tasks whose dependencies are satisfied
 3. Monitor progress via `orchestrator_listWorkers`
 
+### Blocking Mode (Recommended)
+
+By default, `orchestrator_deploy` now runs in **blocking mode**, similar to A2A subtask spawning:
+
+**Benefits of Blocking Mode:**
+- Shows progress bubbles directly in your chat (same UI as A2A subtasks)
+- Automatically waits for task completion before returning
+- Returns structured results including success/failure, output, and changed files
+- No need to poll `orchestrator_listWorkers` - you get notified when done
+
+**Usage:**
+```json
+// Blocking (default) - waits for completion
+{
+  "taskId": "task-123"
+}
+
+// Non-blocking (fire-and-forget, old behavior)
+{
+  "taskId": "task-123",
+  "blocking": false
+}
+
+// With custom timeout (default: 10 minutes)
+{
+  "taskId": "task-123",
+  "timeout": 1800000  // 30 minutes in ms
+}
+```
+
+**Blocking Mode Response:**
+```json
+{
+  "success": true,
+  "taskId": "task-123",
+  "output": "Worker completed successfully: Fixed authentication bug...",
+  "changedFiles": 3,
+  "message": "Task task-123 completed successfully"
+}
+```
+
+**When to Use Non-Blocking:**
+- Deploying entire plans with many parallel tasks
+- Starting long-running tasks while doing other work
+- When you want manual control over completion timing
+
 ### How Dependencies Work
 
 **Dependencies are defined when plans are created** by WorkflowPlanner using `orchestrator_savePlan`:
@@ -66,6 +112,23 @@ tasks:
 2. Resolving any merge conflicts
 3. Marking the task as complete in the plan
 4. Cleaning up the worker's worktree
+
+#### Automatic Completion (Blocking Mode)
+
+When using `orchestrator_deploy` in **blocking mode** (the default), task completion is largely automatic:
+
+1. **Worker signals completion** via `a2a_subtask_complete` with `commitMessage`
+2. **Changes are automatically** committed and merged to the parent branch
+3. **Worktree is cleaned up** automatically
+4. **You receive the result** directly in the deploy tool response
+
+After receiving a successful blocking mode response, you just need to:
+```bash
+# Mark the task as complete in the orchestrator plan
+orchestrator_completeTask(taskId)
+```
+
+#### Manual Completion (Non-Blocking Mode)
 
 **Workers do NOT push.** They signal completion, and YOU (Orchestrator) complete the task by merging their work.
 

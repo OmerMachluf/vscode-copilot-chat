@@ -3,10 +3,14 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { CancellationToken, LanguageModelTextPart, LanguageModelToolInvocationOptions, LanguageModelToolInvocationPrepareOptions, LanguageModelToolResult, ProviderResult } from 'vscode';
+import type { CancellationToken, LanguageModelTextPart, LanguageModelToolInvocationOptions, LanguageModelToolInvocationPrepareOptions, LanguageModelToolResult, ProviderResult } from 'vscode';
+import { ILogService } from '../../../platform/log/common/logService';
+import { Disposable as VSCodeDisposable } from '../../../util/vs/base/common/lifecycle';
 import { formatAgentsForPrompt, IAgentDiscoveryService } from '../../orchestrator/agentDiscoveryService';
 import { IOrchestratorPermissionService } from '../../orchestrator/orchestratorPermissions';
 import { CreateTaskOptions, IOrchestratorService } from '../../orchestrator/orchestratorServiceV2';
+import { ISubtaskProgressService } from '../../orchestrator/subtaskProgressService';
+import { IWorkerContext } from '../../orchestrator/workerToolsService';
 import { ToolName } from '../common/toolNames';
 import { ICopilotTool, ToolRegistry } from '../common/toolsRegistry';
 
@@ -52,69 +56,45 @@ interface IDeployParams {
 	planId?: string;
 	taskId?: string;
 	modelId?: string;
+	/**
+	 * Whether to wait for the task to complete before returning (default: true).
+	 * If true (blocking mode): Shows progress bubbles, waits for completion, returns result.
+	 * If false (async mode): Returns immediately after deploying (legacy behavior).
+	 */
+	blocking?: boolean;
+	/**
+	 * Timeout in milliseconds for blocking mode (default: 10 minutes).
+	 */
+	timeout?: number;
 }
 
 class DeployTool implements ICopilotTool<IDeployParams> {
 	public static readonly toolName = ToolName.OrchestratorDeploy;
 
 	constructor(
-		@IOrchestratorService private readonly _orchestratorService: IOrchestratorService
+		@IOrchestratorService private readonly _orchestratorService: IOrchestratorService,
+		@ISubtaskProgressService private readonly _progressService: ISubtaskProgressService,
+		@IWorkerContext private readonly _workerContext: IWorkerContext,
+		@ILogService private readonly _logService: ILogService,
 	) { }
 
 	prepareInvocation(_options: LanguageModelToolInvocationPrepareOptions<IDeployParams>, _token: CancellationToken): ProviderResult<any> {
 		return { presentation: 'hidden' };
 	}
 
-	async invoke(options: LanguageModelToolInvocationOptions<IDeployParams>, _token: CancellationToken): Promise<LanguageModelToolResult> {
-		const { planId, taskId, modelId } = options.input;
+	async invoke(options: LanguageModelToolInvocationOptions<IDeployParams>, token: CancellationToken): Promise<LanguageModelToolResult> {
+		const { planId, taskId, modelId, blocking = true, timeout = 10 * 60 * 1000 } = options.input;
 		const deployOptions = modelId ? { modelId } : undefined;
 
 		try {
 			// Option 1: Deploy a specific task by taskId
 			if (taskId) {
-				const worker = await this._orchestratorService.deploy(taskId, deployOptions);
-				const task = this._orchestratorService.getTaskById(taskId);
-				const modelInfo = modelId ? ` (model: ${modelId})` : '';
-				const sessionUri = task?.sessionUri ? `\nSession URI: ${task.sessionUri}` : '';
-				return new LanguageModelToolResult([
-					new LanguageModelTextPart(`✅ Deployed worker ${worker.id} for task: ${taskId}${modelInfo}\nTask: ${worker.task}${sessionUri}`)
-				]);
+				return await this._deploySingleTask(taskId, deployOptions, blocking, timeout, token);
 			}
 
 			// Option 2: Deploy all ready tasks in a plan
 			if (planId) {
-				const plan = this._orchestratorService.getPlanById(planId);
-				if (!plan) {
-					return new LanguageModelToolResult([
-						new LanguageModelTextPart(`Error: Plan "${planId}" not found. Use orchestrator_listWorkers to see available plans.`)
-					]);
-				}
-
-				// Start the plan if not already active
-				if (plan.status !== 'active') {
-					await this._orchestratorService.startPlan(planId);
-				}
-
-				// Deploy ALL ready tasks in the plan
-				const workers = await this._orchestratorService.deployAll(planId, deployOptions);
-
-				if (workers.length === 0) {
-					const readyTasks = this._orchestratorService.getReadyTasks(planId);
-					if (readyTasks.length === 0) {
-						return new LanguageModelToolResult([
-							new LanguageModelTextPart(`⚠️ Plan "${plan.name}" has no ready tasks to deploy. All tasks may be pending dependencies or already running/completed.`)
-						]);
-					}
-					return new LanguageModelToolResult([
-						new LanguageModelTextPart(`⚠️ Plan "${plan.name}" has ${readyTasks.length} ready task(s) but deployment failed. Check task status with orchestrator_listWorkers.`)
-					]);
-				}
-
-				const modelInfo = modelId ? ` using model ${modelId}` : '';
-				const workerInfo = workers.map(w => `  - ${w.id}: ${w.task}`).join('\n');
-				return new LanguageModelToolResult([
-					new LanguageModelTextPart(`✅ Plan "${plan.name}" (${planId}) - deployed ${workers.length} worker(s)${modelInfo}:\n${workerInfo}`)
-				]);
+				return await this._deployPlan(planId, deployOptions, blocking, timeout, token);
 			}
 
 			// No planId or taskId provided - error with guidance
@@ -126,6 +106,360 @@ class DeployTool implements ICopilotTool<IDeployParams> {
 				new LanguageModelTextPart(`Error deploying: ${e.message}`)
 			]);
 		}
+	}
+
+	/**
+	 * Deploy a single task with optional blocking behavior.
+	 */
+	private async _deploySingleTask(
+		taskId: string,
+		deployOptions: { modelId: string } | undefined,
+		blocking: boolean,
+		timeout: number,
+		token: CancellationToken
+	): Promise<LanguageModelToolResult> {
+		const worker = await this._orchestratorService.deploy(taskId, deployOptions);
+		const task = this._orchestratorService.getTaskById(taskId);
+		const modelInfo = deployOptions?.modelId ? ` (model: ${deployOptions.modelId})` : '';
+		const sessionUri = task?.sessionUri ?? '';
+
+		// Non-blocking mode: return immediately (legacy behavior)
+		if (!blocking) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(
+					`✅ Deployed worker ${worker.id} for task: ${taskId}${modelInfo}\n` +
+					`Task: ${worker.task}\n` +
+					`Session URI: ${sessionUri}\n\n` +
+					`Worker is running in background. Use \`orchestrator_listWorkers\` to check status.`
+				)
+			]);
+		}
+
+		// Blocking mode: wait for task completion with progress UI
+		this._logService.info(`[DeployTool] Blocking mode: waiting for task ${taskId} to complete`);
+
+		// Get orchestrator's stream for progress reporting
+		const orchestratorWorkerId = this._workerContext?.workerId ?? 'orchestrator';
+		const parentStream = this._progressService.getStream(orchestratorWorkerId);
+
+		// Create progress tracking
+		const progressHandle = this._progressService.createProgress({
+			subtaskId: taskId,
+			agentType: task?.agent ?? '@agent',
+			message: `Executing task: ${task?.name ?? taskId}...`,
+			stream: parentStream,
+		});
+
+		try {
+			const result = await this._waitForTaskCompletion(taskId, worker.id, timeout, token);
+
+			progressHandle.complete({
+				taskId,
+				status: result.success ? 'success' : 'failed',
+				output: result.output,
+				error: result.error,
+			});
+
+			if (result.success) {
+				return new LanguageModelToolResult([
+					new LanguageModelTextPart(
+						`✅ Task "${task?.name ?? taskId}" completed successfully!\n\n` +
+						`**Worker:** ${worker.id}\n` +
+						`**Session:** ${sessionUri}\n\n` +
+						`**Result:**\n${result.output}\n\n` +
+						(result.changedFiles?.length
+							? `**Changed files (${result.changedFiles.length}):**\n${result.changedFiles.map(f => `- ${f}`).join('\n')}\n\n` +
+							`Use \`orchestrator_completeTask\` to mark as complete and merge changes.`
+							: '')
+					)
+				]);
+			} else {
+				return new LanguageModelToolResult([
+					new LanguageModelTextPart(
+						`❌ Task "${task?.name ?? taskId}" failed.\n\n` +
+						`**Worker:** ${worker.id}\n` +
+						`**Error:** ${result.error ?? 'Unknown error'}\n\n` +
+						`**Partial output:**\n${result.output || '(none)'}`
+					)
+				]);
+			}
+		} catch (error) {
+			progressHandle.fail(error instanceof Error ? error.message : String(error));
+			throw error;
+		}
+	}
+
+	/**
+	 * Deploy all ready tasks in a plan with optional blocking behavior.
+	 */
+	private async _deployPlan(
+		planId: string,
+		deployOptions: { modelId: string } | undefined,
+		blocking: boolean,
+		timeout: number,
+		token: CancellationToken
+	): Promise<LanguageModelToolResult> {
+		const plan = this._orchestratorService.getPlanById(planId);
+		if (!plan) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`Error: Plan "${planId}" not found. Use orchestrator_listWorkers to see available plans.`)
+			]);
+		}
+
+		// Start the plan if not already active
+		if (plan.status !== 'active') {
+			await this._orchestratorService.startPlan(planId);
+		}
+
+		// Deploy ALL ready tasks in the plan
+		const workers = await this._orchestratorService.deployAll(planId, deployOptions);
+
+		if (workers.length === 0) {
+			const readyTasks = this._orchestratorService.getReadyTasks(planId);
+			if (readyTasks.length === 0) {
+				return new LanguageModelToolResult([
+					new LanguageModelTextPart(`⚠️ Plan "${plan.name}" has no ready tasks to deploy. All tasks may be pending dependencies or already running/completed.`)
+				]);
+			}
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`⚠️ Plan "${plan.name}" has ${readyTasks.length} ready task(s) but deployment failed. Check task status with orchestrator_listWorkers.`)
+			]);
+		}
+
+		const modelInfo = deployOptions?.modelId ? ` using model ${deployOptions.modelId}` : '';
+
+		// Non-blocking mode: return immediately
+		if (!blocking) {
+			const workerInfo = workers.map(w => `  - ${w.id}: ${w.task}`).join('\n');
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(
+					`✅ Plan "${plan.name}" (${planId}) - deployed ${workers.length} worker(s)${modelInfo}:\n${workerInfo}\n\n` +
+					`Workers are running in background. Use \`orchestrator_listWorkers\` to check status.`
+				)
+			]);
+		}
+
+		// Blocking mode: wait for all tasks to complete with progress UI
+		this._logService.info(`[DeployTool] Blocking mode: waiting for ${workers.length} tasks in plan ${planId}`);
+
+		// Get orchestrator's stream for progress reporting
+		const orchestratorWorkerId = this._workerContext?.workerId ?? 'orchestrator';
+		const parentStream = this._progressService.getStream(orchestratorWorkerId);
+
+		// Create progress tracking for each worker
+		const progressHandles = workers.map(w => {
+			const task = this._orchestratorService.getTasks(planId).find(t => t.workerId === w.id);
+			return {
+				worker: w,
+				task,
+				handle: this._progressService.createProgress({
+					subtaskId: task?.id ?? w.id,
+					agentType: task?.agent ?? '@agent',
+					message: `Executing: ${task?.name ?? w.task}...`,
+					stream: parentStream,
+				}),
+			};
+		});
+
+		try {
+			// Wait for all tasks in parallel
+			const results = await Promise.all(
+				progressHandles.map(async ({ worker, task, handle }) => {
+					const taskId = task?.id ?? worker.id;
+					const result = await this._waitForTaskCompletion(taskId, worker.id, timeout, token);
+
+					handle.complete({
+						taskId,
+						status: result.success ? 'success' : 'failed',
+						output: result.output,
+						error: result.error,
+					});
+
+					return { worker, task, result };
+				})
+			);
+
+			// Format results
+			const successful = results.filter(r => r.result.success);
+			const failed = results.filter(r => !r.result.success);
+
+			const resultLines = [
+				`## Plan "${plan.name}" Deployment Results\n`,
+				`**Total:** ${results.length} | **Success:** ${successful.length} | **Failed:** ${failed.length}\n`,
+			];
+
+			for (const { worker, task, result } of results) {
+				const statusIcon = result.success ? '✅' : '❌';
+				resultLines.push(`### ${statusIcon} ${task?.name ?? worker.task}`);
+				resultLines.push(`- **Task ID:** ${task?.id ?? 'N/A'}`);
+				resultLines.push(`- **Worker:** ${worker.id}`);
+				resultLines.push(`- **Status:** ${result.success ? 'completed' : 'failed'}`);
+
+				if (result.success) {
+					resultLines.push(`- **Output:** ${result.output.substring(0, 500)}${result.output.length > 500 ? '...' : ''}`);
+				} else {
+					resultLines.push(`- **Error:** ${result.error}`);
+				}
+
+				if (result.changedFiles?.length) {
+					resultLines.push(`- **Changed files:** ${result.changedFiles.length}`);
+				}
+				resultLines.push('');
+			}
+
+			if (successful.length > 0) {
+				resultLines.push('---');
+				resultLines.push('**Next steps:** Use `orchestrator_completeTask` for each successful task to merge changes.');
+			}
+
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(resultLines.join('\n'))
+			]);
+
+		} catch (error) {
+			// Clean up progress handles
+			for (const { handle } of progressHandles) {
+				handle.fail(error instanceof Error ? error.message : String(error));
+			}
+			throw error;
+		}
+	}
+
+	/**
+	 * Wait for a task/worker to complete and return the result.
+	 * Similar to SubTaskManager._waitForOrchestratorTaskCompletion.
+	 */
+	private async _waitForTaskCompletion(
+		taskId: string,
+		workerId: string,
+		timeoutMs: number,
+		token: CancellationToken
+	): Promise<{ success: boolean; output: string; error?: string; changedFiles?: string[] }> {
+		this._logService.info(`[DeployTool] Waiting for task ${taskId} (worker ${workerId}) with timeout ${timeoutMs}ms`);
+
+		return new Promise((resolve) => {
+			const disposables: VSCodeDisposable[] = [];
+			let resolved = false;
+
+			const cleanup = () => {
+				if (!resolved) {
+					resolved = true;
+					disposables.forEach(d => d.dispose());
+				}
+			};
+
+			const resolveOnce = (result: { success: boolean; output: string; error?: string; changedFiles?: string[] }, reason: string) => {
+				if (!resolved) {
+					this._logService.info(`[DeployTool] Task ${taskId} resolved via: ${reason}`);
+					cleanup();
+					resolve(result);
+				}
+			};
+
+			// Timeout
+			const timeoutId = setTimeout(() => {
+				const workerState = this._orchestratorService.getWorkerState(workerId);
+				resolveOnce({
+					success: false,
+					output: workerState?.messages?.map(m => m.content).join('\n') || '',
+					error: `Timeout waiting for task completion (${timeoutMs}ms)`,
+				}, 'TIMEOUT');
+			}, timeoutMs);
+			disposables.push({ dispose: () => clearTimeout(timeoutId) } as VSCodeDisposable);
+
+			// Listen for orchestrator events
+			disposables.push(this._orchestratorService.onOrchestratorEvent(event => {
+				if ('taskId' in event && event.taskId === taskId) {
+					if (event.type === 'task.completed') {
+						const workerState = this._orchestratorService.getWorkerState(workerId);
+						resolveOnce({
+							success: true,
+							output: workerState?.messages?.map(m => m.content).join('\n') || 'Task completed successfully',
+						}, 'task.completed event');
+					} else if (event.type === 'task.failed') {
+						resolveOnce({
+							success: false,
+							output: '',
+							error: (event as any).error || 'Task failed',
+						}, 'task.failed event');
+					}
+				}
+
+				// Handle worker.idle as potential completion
+				if (event.type === 'worker.idle' && 'workerId' in event && event.workerId === workerId) {
+					const workerState = this._orchestratorService.getWorkerState(workerId);
+					const task = this._orchestratorService.getTaskById(taskId);
+
+					// Only treat idle as success if task hasn't failed
+					if (!task?.error) {
+						resolveOnce({
+							success: true,
+							output: workerState?.messages?.map(m => m.content).join('\n') || 'Task completed (worker idle)',
+						}, 'worker.idle event');
+					}
+				}
+			}) as VSCodeDisposable);
+
+			// Listen for worker session events directly
+			const workerSession = this._orchestratorService.getWorkerSession(workerId);
+			if (workerSession) {
+				disposables.push(workerSession.onDidComplete(() => {
+					const workerState = this._orchestratorService.getWorkerState(workerId);
+					resolveOnce({
+						success: true,
+						output: workerState?.messages?.map(m => m.content).join('\n') || 'Task completed',
+					}, 'workerSession.onDidComplete');
+				}) as VSCodeDisposable);
+
+				disposables.push(workerSession.onDidStop(() => {
+					const workerState = this._orchestratorService.getWorkerState(workerId);
+					resolveOnce({
+						success: false,
+						output: workerState?.messages?.map(m => m.content).join('\n') || '',
+						error: workerState?.errorMessage || 'Worker stopped unexpectedly',
+					}, 'workerSession.onDidStop');
+				}) as VSCodeDisposable);
+
+				// Watch for status changes
+				disposables.push(workerSession.onDidChange(() => {
+					const workerState = this._orchestratorService.getWorkerState(workerId);
+					if (!workerState) {
+						return;
+					}
+
+					if (workerState.status === 'completed') {
+						resolveOnce({
+							success: true,
+							output: workerState.messages?.map(m => m.content).join('\n') || 'Task completed',
+						}, 'workerSession.onDidChange (status=completed)');
+					} else if (workerState.status === 'error') {
+						resolveOnce({
+							success: false,
+							output: workerState.messages?.map(m => m.content).join('\n') || '',
+							error: workerState.errorMessage || 'Worker error',
+						}, 'workerSession.onDidChange (status=error)');
+					} else if (workerState.status === 'idle') {
+						const task = this._orchestratorService.getTaskById(taskId);
+						if (!task?.error) {
+							resolveOnce({
+								success: true,
+								output: workerState.messages?.map(m => m.content).join('\n') || 'Task completed (worker idle)',
+							}, 'workerSession.onDidChange (status=idle)');
+						}
+					}
+				}) as VSCodeDisposable);
+			}
+
+			// Handle cancellation
+			token.onCancellationRequested(() => {
+				this._orchestratorService.interruptWorker(workerId);
+				resolveOnce({
+					success: false,
+					output: '',
+					error: 'Task was cancelled',
+				}, 'cancellation requested');
+			});
+		});
 	}
 }
 

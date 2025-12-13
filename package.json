@@ -1499,6 +1499,14 @@
 						"modelId": {
 							"type": "string",
 							"description": "The language model ID to use for the deployed worker(s). Overrides the task's default model. Examples: 'gpt-4o', 'claude-sonnet-4-20250514', 'gemini-2.5-pro'."
+						},
+						"blocking": {
+							"type": "boolean",
+							"description": "Whether to wait for the task to complete before returning (default: true). If true (blocking mode): Shows progress bubbles, waits for completion, returns result. If false (async mode): Returns immediately after deploying."
+						},
+						"timeout": {
+							"type": "number",
+							"description": "Timeout in milliseconds for blocking mode (default: 10 minutes = 600000ms)."
 						}
 					},
 					"required": []
