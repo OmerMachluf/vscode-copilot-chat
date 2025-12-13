@@ -5,12 +5,19 @@
 
 import { ILogService } from '../../platform/log/common/logService';
 import { Disposable } from '../../util/vs/base/common/lifecycle';
+import { IInstantiationService } from '../../util/vs/platform/instantiation/common/instantiation';
 import {
-AgentBackendType,
-IAgentExecutor,
-IAgentExecutorRegistry,
-ParsedAgentType,
+	AgentBackendType,
+	IAgentExecutor,
+	IAgentExecutorRegistry,
+	ParsedAgentType,
 } from './agentExecutor';
+import { ClaudeCodeAgentExecutor } from './executors/claudeCodeAgentExecutor';
+import { CopilotAgentExecutor } from './executors/copilotAgentExecutor';
+
+// Re-export executor classes for external usage
+export { ClaudeCodeAgentExecutor } from './executors/claudeCodeAgentExecutor';
+export { CopilotAgentExecutor } from './executors/copilotAgentExecutor';
 
 export class AgentExecutorRegistry extends Disposable implements IAgentExecutorRegistry {
 readonly _serviceBrand: undefined;
@@ -72,4 +79,25 @@ override dispose(): void {
 this._executors.clear();
 super.dispose();
 }
+}
+/**
+ * Registers all built-in agent executors with the registry.
+ *
+ * This function should be called during service initialization to ensure
+ * that all supported backend types are available for task execution.
+ *
+ * @param registry - The executor registry to register executors with
+ * @param instantiationService - The instantiation service for creating executor instances
+ */
+export function registerBuiltInExecutors(
+	registry: IAgentExecutorRegistry,
+	instantiationService: IInstantiationService
+): void {
+	// Register Copilot executor (default)
+	const copilotExecutor = instantiationService.createInstance(CopilotAgentExecutor);
+	registry.register(copilotExecutor);
+
+	// Register Claude Code executor
+	const claudeExecutor = instantiationService.createInstance(ClaudeCodeAgentExecutor);
+	registry.register(claudeExecutor);
 }
