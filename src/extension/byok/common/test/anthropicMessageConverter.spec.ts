@@ -178,6 +178,40 @@ suite('anthropicMessagesToRawMessages', function () {
 		expect(result).toMatchSnapshot();
 	});
 
+	test('includes redacted thinking blocks in conversion to raw messages', function () {
+		const messages: MessageParam[] = [
+			{
+				role: 'assistant',
+				content: [
+					{ type: 'redacted_thinking', data: 'encrypted-data-here' },
+					{ type: 'text', text: 'Here is my response' }
+				]
+			}
+		];
+		const system: TextBlockParam = { type: 'text', text: '' };
+
+		const result = anthropicMessagesToRawMessages(messages, system);
+
+		expect(result).toMatchSnapshot();
+	});
+
+	test('includes thinking blocks with signature in conversion to raw messages', function () {
+		const messages: MessageParam[] = [
+			{
+				role: 'assistant',
+				content: [
+					{ type: 'thinking', thinking: 'Let me think about this carefully...', signature: 'sig123' },
+					{ type: 'text', text: 'Here is my thoughtful response' }
+				]
+			}
+		];
+		const system: TextBlockParam = { type: 'text', text: '' };
+
+		const result = anthropicMessagesToRawMessages(messages, system);
+
+		expect(result).toMatchSnapshot();
+	});
+
 	test('handles url-based images', function () {
 		const messages: MessageParam[] = [
 			{

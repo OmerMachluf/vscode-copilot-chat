@@ -10,6 +10,7 @@ import { IEndpointProvider } from '../../../platform/endpoint/common/endpointPro
 import { ILogService } from '../../../platform/log/common/logService';
 import { IChatEndpoint } from '../../../platform/networking/common/networking';
 import { APIUsage } from '../../../platform/networking/common/openai';
+import { isEncryptedThinkingDelta } from '../../../platform/thinking/common/thinking';
 import { createServiceIdentifier } from '../../../util/common/services';
 import { CancellationTokenSource } from '../../../util/vs/base/common/cancellation';
 import { generateUuid } from '../../../util/vs/base/common/uuid';
@@ -136,6 +137,9 @@ export class LanguageModelServer implements ILanguageModelServer {
 
 	private async handleChatRequest(adapter: IProtocolAdapter, body: string, res: http.ServerResponse): Promise<void> {
 		try {
+			// Log minimal request info for debugging
+			this.logService.trace(`[LanguageModelServer] Received chat request`);
+
 			const parsedRequest = adapter.parseRequest(body);
 
 			const endpoints = await this.endpointProvider.getAllChatEndpoints();
@@ -211,6 +215,20 @@ export class LanguageModelServer implements ILanguageModelServer {
 								res.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
 							}
 						}
+						// Emit thinking deltas if present
+						if (delta.thinking) {
+							const isEncrypted = isEncryptedThinkingDelta(delta.thinking);
+							const textValue = typeof delta.thinking.text === 'string' ? delta.thinking.text : delta.thinking.text?.join('');
+							const thinkingData: IAgentStreamBlock = {
+								type: 'thinking',
+								id: delta.thinking.id ?? 'thinking',
+								text: textValue,
+								encrypted: isEncrypted ? (delta.thinking as { encrypted: string }).encrypted : undefined,
+							};
+							for (const event of adapter.formatStreamResponse(thinkingData, context)) {
+								res.write(`event: ${event.event}\ndata: ${event.data}\n\n`);
+							}
+						}
 						// Emit tool calls if present
 						if (delta.copilotToolCalls && delta.copilotToolCalls.length > 0) {
 							for (const call of delta.copilotToolCalls) {
@@ -232,6 +250,11 @@ export class LanguageModelServer implements ILanguageModelServer {
 					location: ChatLocation.Agent,
 					requestOptions: { ...parsedRequest.options, stream: false },
 					userInitiatedRequest,
+					// IMPORTANT: Disable thinking for Claude Code SDK requests because:
+					// 1. Claude Code SDK manages its own conversation history
+					// 2. It doesn't preserve thinking blocks between requests
+					// 3. Anthropic API requires assistant messages to start with thinking when enabled
+					disableThinking: true,
 					telemetryProperties: {
 						messageSource: `lmServer-${adapter.name}`
 					}

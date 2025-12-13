@@ -25,6 +25,7 @@ class AnthropicAdapter implements IProtocolAdapter {
 	private currentBlockIndex = 0;
 	private hasTextBlock = false;
 	private hadToolCalls = false;
+	private thinkingBlockIndex: number | undefined = undefined;
 	parseRequest(body: string): IParsedRequest {
 		const requestBody: Anthropic.MessageStreamParams = JSON.parse(body);
 
@@ -80,7 +81,75 @@ class AnthropicAdapter implements IProtocolAdapter {
 	): IStreamEventData[] {
 		const events: IStreamEventData[] = [];
 
-		if (streamData.type === 'text') {
+		if (streamData.type === 'thinking') {
+			// Handle thinking blocks - must come before text
+			if (this.thinkingBlockIndex === undefined) {
+				// Start a new thinking block
+				this.thinkingBlockIndex = this.currentBlockIndex;
+				// The SDK types require signature at content_block_start but the real API sends empty signature initially
+				const contentBlockStart = {
+					type: 'content_block_start',
+					index: this.currentBlockIndex,
+					content_block: {
+						type: 'thinking',
+						thinking: '',
+						signature: '',
+					}
+				};
+				events.push({
+					event: contentBlockStart.type,
+					data: this.formatEventData(contentBlockStart)
+				});
+				this.currentBlockIndex++;
+			}
+
+			// Send thinking delta
+			if (streamData.text) {
+				const thinkingDelta: Anthropic.RawContentBlockDeltaEvent = {
+					type: 'content_block_delta',
+					index: this.thinkingBlockIndex,
+					delta: {
+						type: 'thinking_delta',
+						thinking: streamData.text
+					}
+				};
+				events.push({
+					event: thinkingDelta.type,
+					data: this.formatEventData(thinkingDelta)
+				});
+			}
+
+			// If we have signature or encrypted, this is the end of thinking
+			if (streamData.signature || streamData.encrypted) {
+				// Send signature delta if present
+				if (streamData.signature) {
+					const signatureDelta: Anthropic.RawContentBlockDeltaEvent = {
+						type: 'content_block_delta',
+						index: this.thinkingBlockIndex,
+						delta: {
+							type: 'signature_delta',
+							signature: streamData.signature
+						}
+					};
+					events.push({
+						event: signatureDelta.type,
+						data: this.formatEventData(signatureDelta)
+					});
+				}
+
+				// Close the thinking block
+				const contentBlockStop: Anthropic.RawContentBlockStopEvent = {
+					type: 'content_block_stop',
+					index: this.thinkingBlockIndex
+				};
+				events.push({
+					event: contentBlockStop.type,
+					data: this.formatEventData(contentBlockStop)
+				});
+				this.thinkingBlockIndex = undefined;
+			}
+
+		} else if (streamData.type === 'text') {
 			if (!this.hasTextBlock) {
 				// Send content_block_start for text
 				const contentBlockStart: Anthropic.RawContentBlockStartEvent = {

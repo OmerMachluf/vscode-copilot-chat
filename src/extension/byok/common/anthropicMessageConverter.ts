@@ -226,15 +226,29 @@ export function anthropicMessagesToRawMessages(messages: MessageParam[], system:
 					pushImage(block);
 					pushCache(block);
 				} else if (block.type === 'thinking') {
-					// Include thinking content for logging
+					// Preserve thinking block as Opaque part so it can be reconstructed when sending to Anthropic API
 					content.push({
-						type: Raw.ChatCompletionContentPartKind.Text,
-						text: `[THINKING: ${block.thinking}]`
+						type: Raw.ChatCompletionContentPartKind.Opaque,
+						value: {
+							type: 'thinking',
+							thinking: {
+								id: `thinking_${content.length}`,
+								text: block.thinking,
+								signature: block.signature,
+							}
+						}
 					});
 				} else if (block.type === 'redacted_thinking') {
+					// Preserve redacted thinking block as Opaque part so it can be reconstructed when sending to Anthropic API
 					content.push({
-						type: Raw.ChatCompletionContentPartKind.Text,
-						text: '[REDACTED THINKING]'
+						type: Raw.ChatCompletionContentPartKind.Opaque,
+						value: {
+							type: 'thinking',
+							thinking: {
+								id: `thinking_${content.length}`,
+								encrypted: block.data,
+							}
+						}
 					});
 				} else if (block.type === 'tool_use') {
 					// tool_use appears in assistant messages; represent as toolCalls on assistant message

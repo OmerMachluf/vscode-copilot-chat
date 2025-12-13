@@ -197,16 +197,72 @@ exports[`anthropicMessagesToRawMessages > handles url-based images 1`] = `
 ]
 `;
 
+exports[`anthropicMessagesToRawMessages > includes redacted thinking blocks in conversion to raw messages 1`] = `
+[
+  {
+    "content": [
+      {
+        "type": 2,
+        "value": {
+          "thinking": {
+            "encrypted": "encrypted-data-here",
+            "id": "thinking_0",
+          },
+          "type": "thinking",
+        },
+      },
+      {
+        "text": "Here is my response",
+        "type": 1,
+      },
+    ],
+    "role": 2,
+  },
+]
+`;
+
 exports[`anthropicMessagesToRawMessages > includes thinking blocks in conversion to raw messages 1`] = `
 [
   {
     "content": [
       {
-        "text": "[THINKING: Let me think...]",
-        "type": 1,
+        "type": 2,
+        "value": {
+          "thinking": {
+            "id": "thinking_0",
+            "signature": "",
+            "text": "Let me think...",
+          },
+          "type": "thinking",
+        },
       },
       {
         "text": "Here is my response",
+        "type": 1,
+      },
+    ],
+    "role": 2,
+  },
+]
+`;
+
+exports[`anthropicMessagesToRawMessages > includes thinking blocks with signature in conversion to raw messages 1`] = `
+[
+  {
+    "content": [
+      {
+        "type": 2,
+        "value": {
+          "thinking": {
+            "id": "thinking_0",
+            "signature": "sig123",
+            "text": "Let me think about this carefully...",
+          },
+          "type": "thinking",
+        },
+      },
+      {
+        "text": "Here is my thoughtful response",
         "type": 1,
       },
     ],

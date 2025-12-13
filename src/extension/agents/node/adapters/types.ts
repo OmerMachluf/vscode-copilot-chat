@@ -32,7 +32,15 @@ export interface IAgentToolCallBlock {
 	readonly input: object;
 }
 
-export type IAgentStreamBlock = IAgentTextBlock | IAgentToolCallBlock;
+export interface IAgentThinkingBlock {
+	readonly type: 'thinking';
+	readonly id: string;
+	readonly text?: string;
+	readonly encrypted?: string;
+	readonly signature?: string;
+}
+
+export type IAgentStreamBlock = IAgentTextBlock | IAgentToolCallBlock | IAgentThinkingBlock;
 
 export interface IProtocolAdapter {
 	/**
