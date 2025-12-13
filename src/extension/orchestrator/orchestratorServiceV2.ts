@@ -444,6 +444,12 @@ export interface DeployOptions {
 	modelId?: string;
 	/** Existing worktree path to reuse (for subtasks sharing parent's worktree) */
 	worktreePath?: string;
+	/**
+	 * Callback to build additional instructions after the worktree is created.
+	 * This is called with the actual worktree path, allowing instructions to reference
+	 * the correct path even when it's created dynamically during deploy.
+	 */
+	instructionsBuilder?: (actualWorktreePath: string) => string;
 }
 
 /**
@@ -1473,6 +1479,21 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			// Note: Use || instead of ?? to treat empty string as falsy
 			const worktreePath = options?.worktreePath || await this._createWorktree(task.name, baseBranch);
 
+			// If an instructions builder was provided, call it with the actual worktree path
+			// and inject the built instructions into the task's context.
+			// This is critical for subtasks where the worktreePath wasn't known at creation time.
+			if (options?.instructionsBuilder) {
+				const builtInstructions = options.instructionsBuilder(worktreePath);
+				// Mutate the task's context to include the instructions
+				// This must happen BEFORE _runWorkerTask is called
+				// Use type assertion to bypass readonly (we need to set this at deploy time)
+				if (!task.context) {
+					(task as { context?: WorkerTaskContext }).context = {};
+				}
+				(task.context as { additionalInstructions?: string }).additionalInstructions = builtInstructions;
+				this._logService.debug(`[OrchestratorService] Injected instructions for task ${task.id} (${builtInstructions.length} chars)`);
+			}
+
 			// Load agent instructions
 			// Normalize agent ID: strip @ prefix and lowercase
 			const rawAgentId = task.agent || '@agent';
@@ -1480,8 +1501,15 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			const composedInstructions = await this._agentInstructionService.loadInstructions(agentId);
 
 			// Determine model ID: deploy options override > task's model > undefined
-			const effectiveModelId = options?.modelId ?? task.modelId;
-			this._logService.info(`[OrchestratorService] Deploy task ${task.id}: effectiveModelId=${effectiveModelId || '(will use _selectModel fallback)'}, worktreePath=${worktreePath}`);
+			// Select the actual model now so we can log it accurately
+			const preferredModelId = options?.modelId ?? task.modelId;
+			const selectedModel = await this._selectModel(preferredModelId);
+			const actualModelId = selectedModel?.id || '(no model available)';
+			this._logService.info(`[OrchestratorService] Deploy task ${task.id}: model=${actualModelId}, worktreePath=${worktreePath}`);
+
+			// Store the model override for the worker
+			// Use the selected model's ID so we don't re-select in _runWorkerLoop
+			const effectiveModelId = selectedModel?.id ?? preferredModelId;
 
 			// Create worker session with agent instructions and model
 			const worker = new WorkerSession(

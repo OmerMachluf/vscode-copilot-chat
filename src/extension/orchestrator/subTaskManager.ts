@@ -498,13 +498,29 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 
 		try {
 			// Deploy the task - this creates a WorkerSession with full UI
-			// Reuse the parent's worktree to avoid creating redundant worktrees
-			this._logService.info(`[SubTaskManager] Deploying task ${orchestratorTask.id} with worktreePath=${subTask.worktreePath}`);
+			// If subTask.worktreePath is undefined (orchestrator-spawned), deploy() will create a worktree
+			// We pass an instructionsBuilder callback that gets called AFTER the worktree is created,
+			// ensuring the instructions contain the correct worktree path.
+			this._logService.info(`[SubTaskManager] Deploying task ${orchestratorTask.id} with worktreePath=${subTask.worktreePath || '(undefined - will create new worktree)'}`);
 			const workerSession = await orchestratorService.deploy(orchestratorTask.id, {
 				modelId: subTask.model,
 				worktreePath: subTask.worktreePath,
+				// Build instructions with the actual worktree path (known after worktree creation)
+				instructionsBuilder: (actualWorktreePath: string) => {
+					// Update subTask.worktreePath so the instructions builder uses the correct path
+					if (!subTask.worktreePath) {
+						(subTask as { worktreePath?: string }).worktreePath = actualWorktreePath;
+					}
+					return this._buildSubTaskAdditionalInstructions(subTask, inheritedSpawnContext);
+				},
 			});
-			this._logService.info(`[SubTaskManager] Deploy returned workerSession.id=${workerSession.id}`);
+			this._logService.info(`[SubTaskManager] Deploy returned workerSession.id=${workerSession.id}, actual worktreePath=${workerSession.worktreePath}`);
+
+			// Ensure subTask.worktreePath is updated (may have been set in instructionsBuilder, but double-check)
+			if (!subTask.worktreePath && workerSession.worktreePath) {
+				(subTask as { worktreePath?: string }).worktreePath = workerSession.worktreePath;
+				this._logService.info(`[SubTaskManager] Updated subTask.worktreePath to ${workerSession.worktreePath}`);
+			}
 
 			// Wait for the task to complete
 			this._logService.info(`[SubTaskManager] Now calling _waitForOrchestratorTaskCompletion for task ${orchestratorTask.id}, worker ${workerSession.id}`);

@@ -85,7 +85,6 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 		@IOrchestratorQueueService private readonly _queueService: IOrchestratorQueueService,
 		@ISubtaskProgressService private readonly _progressService: ISubtaskProgressService,
 		@ILogService private readonly _logService: ILogService,
-		@IWorkspaceService private readonly _workspaceService: IWorkspaceService,
 	) { }
 
 	get enabled(): boolean {
@@ -350,7 +349,6 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 		@IOrchestratorQueueService private readonly _queueService: IOrchestratorQueueService,
 		@ISubtaskProgressService private readonly _progressService: ISubtaskProgressService,
 		@ILogService private readonly _logService: ILogService,
-		@IWorkspaceService private readonly _workspaceService: IWorkspaceService,
 	) { }
 
 	get enabled(): boolean {
