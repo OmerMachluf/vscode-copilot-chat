@@ -3,6 +3,18 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+/**
+ * Agent-to-Agent (A2A) utilities for multi-agent workflows.
+ *
+ * This module provides:
+ * - Message types and protocols for inter-agent communication
+ * - Message queue with priority support
+ * - Message routing between agents
+ * - Git operations for worktree management
+ * - Merge utilities with conflict detection
+ * - Support for multiple merge strategies (merge, squash, rebase)
+ */
+
 // Message types and protocols
 export {
 	deserializeMessage,
@@ -61,3 +73,95 @@ export {
 	IRouterMetrics,
 	IRoutingRule,
 } from './messageRouter';
+
+// Git operations - low-level git command execution
+export {
+	// Types
+	GitOperationResult,
+	GitExecOptions,
+	GitBranchInfo,
+	GitWorktreeInfo,
+
+	// Core operations
+	execGit,
+	execGitOrThrow,
+
+	// Branch operations
+	getCurrentBranch,
+	getCurrentCommit,
+	getDefaultBranch,
+	branchExists,
+	createBranch,
+	checkout,
+	deleteBranch,
+	deleteRemoteBranch,
+
+	// Change tracking
+	hasUncommittedChanges,
+	getChangedFiles,
+	getDiffStats,
+	getFilesBetweenRefs,
+
+	// Staging and committing
+	stageAllChanges,
+	commit,
+
+	// Remote operations
+	fetch,
+	pull,
+	push,
+	getMergeBase,
+
+	// Worktree operations
+	listWorktrees,
+	createWorktree,
+	removeWorktree,
+	pruneWorktrees,
+	getMainRepoPath,
+	isWorktree,
+
+	// Merge/rebase state
+	abortMerge,
+	abortRebase,
+	isInMerge,
+	isInRebase,
+	getConflictedFiles,
+
+	// Utility operations
+	reset,
+	clean,
+	stash,
+	stashPop,
+	getLog,
+} from './gitOperations';
+
+// Merge utilities - high-level merge operations with conflict detection
+export {
+	// Types
+	MergeStrategy,
+	MergeResult,
+	MergeOptions,
+	WorktreeCleanupResult,
+	WorktreeCleanupOptions,
+	ConflictDetectionResult,
+	PreMergeCheckResult,
+
+	// Conflict detection
+	detectConflicts,
+	performPreMergeChecks,
+
+	// Merge operations
+	mergeBranches,
+	mergeWorktreeAndCleanup,
+
+	// Cleanup operations
+	cleanupWorktree,
+	abortInProgressOperation,
+
+	// Conflict resolution
+	resolveAllConflicts,
+
+	// State inspection
+	getMergeState,
+	prepareWorktreeForMerge,
+} from './mergeUtils';
