@@ -20,6 +20,7 @@ import {
 	ISubTaskAncestry,
 	ISubTaskCost,
 	ITokenUsage,
+	SpawnContext,
 } from './safetyLimits';
 import { IWorkerToolsService } from './workerToolsService';
 
@@ -457,11 +458,22 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 		this._logService.info(`[SubTaskManager] ========== _executeSubTaskWithOrchestratorUI STARTED for ${subTask.id} ==========`);
 		const orchestratorService = this._orchestratorService!;
 
-		// Create an orchestrator task for this subtask
-		const taskName = `[SubTask] ${subTask.agentType} (${subTask.id.slice(-6)})`;
-		const taskDescription = `${subTask.prompt}\n\n---\n**Expected Output:** ${subTask.expectedOutput}`;
+		// Get parent's tool set to inherit spawn context (same logic as _executeSubTaskInternal)
+		const parentToolSet = this._workerToolsService.getWorkerToolSet(subTask.parentWorkerId);
+		const inheritedSpawnContext = parentToolSet?.workerContext?.spawnContext ?? 'orchestrator';
 
-		this._logService.info(`[SubTaskManager] Creating orchestrator task: name="${taskName}", parentWorkerId=${subTask.parentWorkerId}`);
+		// Build the FULL prompt with sub-task context (NOT just the raw prompt!)
+		// This ensures the agent sees all the critical instructions about committing, worktree, etc.
+		const taskDescription = this._buildSubTaskPrompt(subTask);
+
+		// Build additional instructions (same as _executeSubTaskInternal uses)
+		// This provides the full context about being a sub-agent, commit requirements, etc.
+		const additionalInstructions = this._buildSubTaskAdditionalInstructions(subTask, inheritedSpawnContext);
+
+		// Create an orchestrator task for this subtask with full context
+		const taskName = `[SubTask] ${subTask.agentType} (${subTask.id.slice(-6)})`;
+
+		this._logService.info(`[SubTaskManager] Creating orchestrator task: name="${taskName}", parentWorkerId=${subTask.parentWorkerId}, spawnContext=${inheritedSpawnContext}`);
 		const orchestratorTask = orchestratorService.addTask(taskDescription, {
 			name: taskName,
 			planId: subTask.planId,
@@ -472,6 +484,11 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			// CRITICAL: Set parentWorkerId so messages from this subtask route to parent
 			// This enables the parent worker to receive notifications via registerOwnerHandler
 			parentWorkerId: subTask.parentWorkerId,
+			// CRITICAL: Pass the additional instructions via context
+			// This ensures the worker sees all the guidance about committing, worktree restrictions, etc.
+			context: {
+				additionalInstructions,
+			},
 		});
 
 		// Map subtask ID to orchestrator task ID
@@ -886,13 +903,8 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			streamCollector = new SubTaskStreamCollector();
 		}
 
-		// Determine effective max depth based on inherited spawn context
-		const effectiveMaxDepth = this._safetyLimitsService.getMaxDepthForContext(inheritedSpawnContext);
-		// Determine if this subtask can spawn more subtasks based on depth
-		const canSpawnSubTasks = subTask.depth < effectiveMaxDepth;
-		const subTaskGuidance = canSpawnSubTasks
-			? `You CAN spawn sub-tasks if needed using a2a_spawn_subtask or a2a_spawn_parallel_subtasks tools. Use orchestrator_listAgents to discover available agent types.`
-			: `You are at maximum depth (${subTask.depth}/${effectiveMaxDepth}) for ${inheritedSpawnContext} context and CANNOT spawn additional sub-tasks. Complete this task directly.`;
+		// Build additional instructions using the shared method
+		const additionalInstructions = this._buildSubTaskAdditionalInstructions(subTask, inheritedSpawnContext);
 
 		// Build agent run options
 		const runOptions: IAgentRunOptions = {
@@ -902,7 +914,56 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			worktreePath: subTask.worktreePath,
 			token,
 			maxToolCallIterations: 50, // Lower limit for sub-tasks
-			additionalInstructions: `## SUB-TASK CONTEXT
+			additionalInstructions,
+		};
+
+		// Execute the agent
+		const result = await this._agentRunner.run(runOptions, streamCollector);
+
+		// Apply any buffered edits (don't hard-fail — just log for visibility)
+		const applyEditsResult = await streamCollector.applyBufferedEdits();
+		if (!applyEditsResult.success) {
+			this._logService.debug(`[SubTaskManager] Buffered edits failed for subtask ${subTask.id}: ${applyEditsResult.error || 'unknown'} (editCount=${applyEditsResult.editCount}, editTargets=${applyEditsResult.editTargets})`);
+		} else if (applyEditsResult.editCount > 0) {
+			this._logService.debug(`[SubTaskManager] Applied ${applyEditsResult.editCount} buffered edits to ${applyEditsResult.editTargets} files for subtask ${subTask.id}`);
+		}
+
+		const changeSummary = await getWorktreeChangeSummary(subTask.worktreePath);
+
+		// Report facts in logs - let parent/orchestrator decide if zero changes is acceptable
+		this._logService.debug(`[SubTaskManager] Subtask ${subTask.id} finished: model=${model.id}, success=${result.success}, bufferedEdits=${applyEditsResult.success ? applyEditsResult.editCount : 'FAILED'}, changedFiles=${changeSummary.changedFiles.length}`);
+
+		return {
+			taskId: subTask.id,
+			status: result.success ? 'success' : 'failed',
+			output: result.response ?? streamCollector.getContent(),
+			error: result.error,
+			metadata: {
+				...result.metadata,
+				model: { id: model.id, vendor: model.vendor, family: model.family, reason: modelSelectionReason },
+				bufferedEdits: applyEditsResult,
+				worktreeChanges: changeSummary,
+			},
+		};
+	}
+
+	/**
+	 * Build the additional instructions for a subtask.
+	 * This is used by both _executeSubTaskInternal and _executeSubTaskWithOrchestratorUI
+	 * to ensure consistent guidance for subtask agents.
+	 */
+	private _buildSubTaskAdditionalInstructions(subTask: ISubTask, spawnContext: SpawnContext): string {
+		// Determine effective max depth based on spawn context
+		// For 'subtask' context, treat as 'agent' for depth limit purposes
+		const effectiveContext = spawnContext === 'subtask' ? 'agent' : spawnContext;
+		const effectiveMaxDepth = this._safetyLimitsService.getMaxDepthForContext(effectiveContext);
+		// Determine if this subtask can spawn more subtasks based on depth
+		const canSpawnSubTasks = subTask.depth < effectiveMaxDepth;
+		const subTaskGuidance = canSpawnSubTasks
+			? `You CAN spawn sub-tasks if needed using a2a_spawn_subtask or a2a_spawn_parallel_subtasks tools. Use orchestrator_listAgents to discover available agent types.`
+			: `You are at maximum depth (${subTask.depth}/${effectiveMaxDepth}) for ${spawnContext} context and CANNOT spawn additional sub-tasks. Complete this task directly.`;
+
+		return `## SUB-TASK CONTEXT
 You are a sub-agent spawned by a PARENT AGENT (not the user).
 - **Your Parent:** Worker ID '${subTask.parentWorkerId}'
 - **Your Task ID:** ${subTask.id}
@@ -957,37 +1018,7 @@ Good reasons to spawn sub-tasks:
 ## EXPECTED OUTPUT
 ${subTask.expectedOutput}
 
-Focus on your assigned task and provide a clear, actionable result.`,
-		};
-
-		// Execute the agent
-		const result = await this._agentRunner.run(runOptions, streamCollector);
-
-		// Apply any buffered edits (don't hard-fail — just log for visibility)
-		const applyEditsResult = await streamCollector.applyBufferedEdits();
-		if (!applyEditsResult.success) {
-			this._logService.debug(`[SubTaskManager] Buffered edits failed for subtask ${subTask.id}: ${applyEditsResult.error || 'unknown'} (editCount=${applyEditsResult.editCount}, editTargets=${applyEditsResult.editTargets})`);
-		} else if (applyEditsResult.editCount > 0) {
-			this._logService.debug(`[SubTaskManager] Applied ${applyEditsResult.editCount} buffered edits to ${applyEditsResult.editTargets} files for subtask ${subTask.id}`);
-		}
-
-		const changeSummary = await getWorktreeChangeSummary(subTask.worktreePath);
-
-		// Report facts in logs - let parent/orchestrator decide if zero changes is acceptable
-		this._logService.debug(`[SubTaskManager] Subtask ${subTask.id} finished: model=${model.id}, success=${result.success}, bufferedEdits=${applyEditsResult.success ? applyEditsResult.editCount : 'FAILED'}, changedFiles=${changeSummary.changedFiles.length}`);
-
-		return {
-			taskId: subTask.id,
-			status: result.success ? 'success' : 'failed',
-			output: result.response ?? streamCollector.getContent(),
-			error: result.error,
-			metadata: {
-				...result.metadata,
-				model: { id: model.id, vendor: model.vendor, family: model.family, reason: modelSelectionReason },
-				bufferedEdits: applyEditsResult,
-				worktreeChanges: changeSummary,
-			},
-		};
+Focus on your assigned task and provide a clear, actionable result.`;
 	}
 
 	private _buildSubTaskPrompt(subTask: ISubTask): string {
