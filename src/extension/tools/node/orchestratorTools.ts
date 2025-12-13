@@ -3,7 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import type { CancellationToken, LanguageModelTextPart, LanguageModelToolInvocationOptions, LanguageModelToolInvocationPrepareOptions, LanguageModelToolResult, ProviderResult } from 'vscode';
+import type { CancellationToken, LanguageModelToolInvocationOptions, LanguageModelToolInvocationPrepareOptions, ProviderResult } from 'vscode';
+import { LanguageModelTextPart, LanguageModelToolResult } from '../../../vscodeTypes';
 import { formatAgentsForPrompt, IAgentDiscoveryService } from '../../orchestrator/agentDiscoveryService';
 import { CreateTaskOptions, IOrchestratorService } from '../../orchestrator/orchestratorServiceV2';
 import { ToolName } from '../common/toolNames';
