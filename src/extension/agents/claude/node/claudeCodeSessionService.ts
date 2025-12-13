@@ -50,6 +50,11 @@ export interface IClaudeCodeSessionService {
 	readonly _serviceBrand: undefined;
 	getAllSessions(token: CancellationToken): Promise<readonly IClaudeCodeSession[]>;
 	getSession(resource: URI, token: CancellationToken): Promise<IClaudeCodeSession | undefined>;
+	/**
+	 * Gets sessions associated with a specific worktree path.
+	 * Returns sessions whose working directory matches the worktree path.
+	 */
+	getSessionsForWorktree(worktreePath: string, token: CancellationToken): Promise<readonly IClaudeCodeSession[]>;
 }
 
 export class ClaudeCodeSessionService implements IClaudeCodeSessionService {
@@ -106,6 +111,27 @@ export class ClaudeCodeSessionService implements IClaudeCodeSessionService {
 		const all = await this.getAllSessions(token);
 		const targetId = resource.path.slice(1); // Remove leading '/' from path
 		return all.find(session => session.id === targetId);
+	}
+
+	/**
+	 * Gets sessions associated with a specific worktree path.
+	 * Computes the folder slug for the worktree path and loads sessions from that directory.
+	 */
+	async getSessionsForWorktree(worktreePath: string, token: CancellationToken): Promise<readonly IClaudeCodeSession[]> {
+		const worktreeUri = URI.file(worktreePath);
+		const slug = this._computeFolderSlug(worktreeUri);
+		const projectDirUri = URI.joinPath(this._nativeEnvService.userHome, '.claude', 'projects', slug);
+
+		// Check if we can use cached data
+		const cachedSessions = await this._getCachedSessionsIfValid(projectDirUri, token);
+		if (cachedSessions) {
+			return cachedSessions;
+		}
+
+		// Cache miss or invalid - reload from disk
+		const freshSessions = await this._loadSessionsFromDisk(projectDirUri, token);
+		this._sessionCache.set(projectDirUri, freshSessions);
+		return freshSessions;
 	}
 
 	/**
