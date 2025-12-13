@@ -7,10 +7,10 @@ import type { WorkspaceConfiguration } from 'vscode';
 import * as vscode from 'vscode';
 import { distinct } from '../../../util/vs/base/common/arrays';
 import { ICopilotTokenStore } from '../../authentication/common/copilotTokenStore';
+import { IEnvService } from '../../env/common/envService';
 import { packageJson } from '../../env/common/packagejson';
 import { IExperimentationService } from '../../telemetry/common/nullExperimentationService';
 import { AbstractConfigurationService, BaseConfig, Config, ConfigValueValidators, CopilotConfigPrefix, ExperimentBasedConfig, ExperimentBasedConfigType, globalConfigRegistry, InspectConfigResult } from '../common/configurationService';
-import { IEnvService } from '../../env/common/envService';
 
 // Helper to avoid JSON.stringify quoting strings
 function stringOrStringify(value: any) {
