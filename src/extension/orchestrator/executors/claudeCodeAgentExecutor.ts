@@ -1,0 +1,318 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+import * as vscode from 'vscode';
+import { ILogService } from '../../../platform/log/common/logService';
+import { CancellationToken } from '../../../util/vs/base/common/cancellation';
+import { IClaudeAgentManager } from '../../agents/claude/node/claudeCodeAgent';
+import { ClaudeWorktreeSession } from '../../agents/claude/node/claudeWorktreeSession';
+import {
+	AgentBackendType,
+	AgentExecuteParams,
+	AgentExecuteResult,
+	AgentWorkerStatus,
+	IAgentExecutor,
+	ParsedAgentType,
+} from '../agentExecutor';
+
+/**
+ * Maps Claude agent names to their corresponding slash commands
+ */
+const CLAUDE_SLASH_COMMAND_MAP: Record<string, string> = {
+	'architect': '/architect',
+	'review': '/review',
+	'reviewer': '/review',
+};
+
+interface ActiveClaudeWorkerState {
+	status: AgentWorkerStatus;
+	session: ClaudeWorktreeSession;
+	worktreePath: string;
+	startTime: number;
+}
+
+/**
+ * ClaudeCodeAgentExecutor implements IAgentExecutor for the Claude Code backend.
+ *
+ * This executor uses the ClaudeAgentManager to create worktree-scoped sessions
+ * and execute tasks via the Claude SDK. It supports slash commands like
+ * /architect and /review which map to Claude's built-in capabilities.
+ */
+export class ClaudeCodeAgentExecutor implements IAgentExecutor {
+	readonly _serviceBrand: undefined;
+	readonly backendType: AgentBackendType = 'claude';
+
+	private readonly _activeWorkers = new Map<string, ActiveClaudeWorkerState>();
+	private readonly _pendingMessages = new Map<string, string[]>();
+
+	constructor(
+		@IClaudeAgentManager private readonly _claudeAgentManager: IClaudeAgentManager,
+		@ILogService private readonly _logService: ILogService,
+	) { }
+
+	/**
+	 * Executes a task in the specified worktree using Claude Code.
+	 */
+	async execute(params: AgentExecuteParams, stream?: vscode.ChatResponseStream): Promise<AgentExecuteResult> {
+		const {
+			taskId,
+			prompt,
+			worktreePath,
+			agentType,
+			token,
+		} = params;
+
+		const startTime = Date.now();
+
+		this._logService.info(`[ClaudeCodeAgentExecutor] Starting execution for task ${taskId} in ${worktreePath}`);
+
+		try {
+			// Get or create session for this worktree
+			const session = await this._claudeAgentManager.getOrCreateWorktreeSession(worktreePath);
+
+			// Track worker state
+			this._activeWorkers.set(taskId, {
+				status: { state: 'running', startTime },
+				session,
+				worktreePath,
+				startTime,
+			});
+
+			// Build prompt with slash command if specified
+			const fullPrompt = this._buildPrompt(prompt, agentType);
+
+			// Create a collector stream if no stream provided
+			const responseStream = stream ?? this._createCollectorStream();
+			const collectedOutput: string[] = [];
+
+			// If using collector stream, capture the output
+			if (!stream) {
+				const originalMarkdown = responseStream.markdown;
+				responseStream.markdown = (value: string | vscode.MarkdownString) => {
+					const text = typeof value === 'string' ? value : value.value;
+					collectedOutput.push(text);
+					return originalMarkdown.call(responseStream, value);
+				};
+			}
+
+			// Create a mock request object for the Claude session
+			const mockRequest = this._createMockChatRequest(fullPrompt);
+
+			// Execute via Claude session
+			await session.session.invoke(
+				fullPrompt,
+				mockRequest.toolInvocationToken,
+				responseStream,
+				token
+			);
+
+			const endTime = Date.now();
+			const executionTime = endTime - startTime;
+
+			// Update status
+			const workerState = this._activeWorkers.get(taskId);
+			if (workerState) {
+				workerState.status = {
+					state: 'completed',
+					result: {
+						status: 'success',
+						output: collectedOutput.join(''),
+						metadata: {
+							executionTime,
+							sessionId: session.sessionId,
+						},
+					},
+				};
+			}
+
+			this._logService.info(`[ClaudeCodeAgentExecutor] Completed execution for task ${taskId} in ${executionTime}ms`);
+
+			return {
+				status: 'success',
+				output: collectedOutput.join(''),
+				metadata: {
+					executionTime,
+					sessionId: session.sessionId,
+				},
+			};
+		} catch (error) {
+			const workerState = this._activeWorkers.get(taskId);
+			if (workerState) {
+				workerState.status = {
+					state: 'failed',
+					error: error instanceof Error ? error.message : String(error),
+				};
+			}
+
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			this._logService.error(`[ClaudeCodeAgentExecutor] Execution failed for task ${taskId}: ${errorMessage}`);
+
+			return {
+				status: 'failed',
+				output: '',
+				error: errorMessage,
+			};
+		}
+	}
+
+	/**
+	 * Sends a message to a running worker session.
+	 * The message will be queued and sent when the session is ready for input.
+	 */
+	async sendMessage(workerId: string, message: string): Promise<void> {
+		const workerState = this._activeWorkers.get(workerId);
+		if (!workerState) {
+			// Queue message for later if worker hasn't started yet
+			if (!this._pendingMessages.has(workerId)) {
+				this._pendingMessages.set(workerId, []);
+			}
+			this._pendingMessages.get(workerId)!.push(message);
+			this._logService.info(`[ClaudeCodeAgentExecutor] Message queued for worker ${workerId}: ${message.substring(0, 100)}...`);
+			return;
+		}
+
+		this._logService.info(`[ClaudeCodeAgentExecutor] Sending message to worker ${workerId}: ${message.substring(0, 100)}...`);
+
+		// Create a dummy stream for the follow-up message
+		const collectorStream = this._createCollectorStream();
+		const mockRequest = this._createMockChatRequest(message);
+
+		try {
+			await workerState.session.session.invoke(
+				message,
+				mockRequest.toolInvocationToken,
+				collectorStream,
+				CancellationToken.None
+			);
+		} catch (error) {
+			this._logService.error(`[ClaudeCodeAgentExecutor] Failed to send message to worker ${workerId}: ${error}`);
+			throw error;
+		}
+	}
+
+	/**
+	 * Cancels a running worker and cleans up its session.
+	 */
+	async cancel(workerId: string): Promise<void> {
+		const workerState = this._activeWorkers.get(workerId);
+		if (workerState) {
+			this._logService.info(`[ClaudeCodeAgentExecutor] Cancelling execution for worker ${workerId}`);
+
+			// Mark session as inactive
+			workerState.session.markInactive();
+
+			// Update status
+			workerState.status = {
+				state: 'failed',
+				error: 'Cancelled by user',
+			};
+
+			// Remove worktree session from manager
+			this._claudeAgentManager.removeWorktreeSession(workerState.worktreePath);
+
+			// Clean up
+			this._activeWorkers.delete(workerId);
+		}
+
+		// Clean up pending messages
+		this._pendingMessages.delete(workerId);
+	}
+
+	/**
+	 * Gets the current status of a worker.
+	 */
+	getStatus(workerId: string): AgentWorkerStatus | undefined {
+		const workerState = this._activeWorkers.get(workerId);
+		return workerState?.status;
+	}
+
+	/**
+	 * Checks if this executor supports the given agent type.
+	 * Supports all Claude backend agent types.
+	 */
+	supports(parsedType: ParsedAgentType): boolean {
+		return parsedType.backend === 'claude';
+	}
+
+	/**
+	 * Builds the full prompt with optional slash command prefix.
+	 */
+	private _buildPrompt(prompt: string, agentType: ParsedAgentType): string {
+		// Check if agent name maps to a slash command
+		const slashCommand = agentType.slashCommand ?? CLAUDE_SLASH_COMMAND_MAP[agentType.agentName];
+
+		if (slashCommand) {
+			// If prompt doesn't already start with a slash command, prepend it
+			if (!prompt.startsWith('/')) {
+				return `${slashCommand} ${prompt}`;
+			}
+		}
+
+		return prompt;
+	}
+
+	/**
+	 * Creates a mock chat request for Claude session invocation.
+	 */
+	private _createMockChatRequest(prompt: string): vscode.ChatRequest {
+		return {
+			prompt,
+			command: undefined,
+			references: [],
+			toolReferences: [],
+			toolInvocationToken: undefined as unknown as vscode.ChatParticipantToolToken,
+			attempt: 0,
+			enableCommandDetection: false,
+			isParticipantDetected: false,
+			location: vscode.ChatLocation.Panel,
+			location2: undefined,
+			acceptedConfirmationData: undefined,
+			rejectedConfirmationData: undefined,
+			model: undefined as unknown as vscode.LanguageModelChat,
+			tools: new Map(),
+			id: `claude-executor-${Date.now()}`,
+			sessionId: `claude-session-${Date.now()}`,
+		};
+	}
+
+	/**
+	 * Creates a simple collector stream for cases where no stream is provided.
+	 * This captures all output but doesn't display it anywhere.
+	 */
+	private _createCollectorStream(): vscode.ChatResponseStream {
+		const collected: string[] = [];
+		return {
+			markdown: (value: string | vscode.MarkdownString) => {
+				const text = typeof value === 'string' ? value : value.value;
+				collected.push(text);
+			},
+			anchor: () => { },
+			button: () => { },
+			filetree: () => { },
+			progress: () => { },
+			reference: () => { },
+			push: () => { },
+			confirmation: () => { },
+			warning: () => { },
+			textEdit: () => { },
+			codeblockUri: () => { },
+			detectedParticipant: () => { },
+		} as unknown as vscode.ChatResponseStream;
+	}
+
+	/**
+	 * Cleans up any pending worker state for a specific worktree path.
+	 * This is useful when a worktree is removed externally.
+	 */
+	cleanupWorktree(worktreePath: string): void {
+		for (const [workerId, workerState] of this._activeWorkers) {
+			if (workerState.worktreePath === worktreePath) {
+				this._logService.info(`[ClaudeCodeAgentExecutor] Cleaning up worker ${workerId} for removed worktree`);
+				this._activeWorkers.delete(workerId);
+				this._pendingMessages.delete(workerId);
+			}
+		}
+	}
+}
