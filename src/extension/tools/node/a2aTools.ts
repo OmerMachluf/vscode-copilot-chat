@@ -10,6 +10,13 @@ import { CancellationToken } from '../../../util/vs/base/common/cancellation';
 import { IDisposable } from '../../../util/vs/base/common/lifecycle';
 import { generateUuid } from '../../../util/vs/base/common/uuid';
 import { LanguageModelTextPart, LanguageModelToolResult } from '../../../vscodeTypes';
+import {
+	AgentTypeParseError,
+	getBackendType,
+	isCopilotAgentType,
+	parseAgentType,
+	ParsedAgentType,
+} from '../../orchestrator/agentTypeParser';
 import { IOrchestratorQueueMessage, IOrchestratorQueueService } from '../../orchestrator/orchestratorQueue';
 import { IOrchestratorService } from '../../orchestrator/orchestratorServiceV2';
 import { ISubTask, ISubTaskCreateOptions, ISubTaskManager, ISubTaskResult } from '../../orchestrator/subTaskManager';
@@ -121,6 +128,45 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 
 		const { agentType, prompt, expectedOutput, model, targetFiles, blocking = true } = options.input;
 
+		// Parse and validate the agent type for routing
+		let parsedAgentType: ParsedAgentType;
+		try {
+			parsedAgentType = parseAgentType(agentType, model);
+			this._logService.debug(`[A2ASpawnSubTaskTool] Parsed agent type: backend=${parsedAgentType.backend}, agentName=${parsedAgentType.agentName}, slashCommand=${parsedAgentType.slashCommand || 'none'}`);
+		} catch (error) {
+			if (error instanceof AgentTypeParseError) {
+				this._logService.warn(`[A2ASpawnSubTaskTool] Invalid agent type: ${error.message}`);
+				return new LanguageModelToolResult([
+					new LanguageModelTextPart(
+						`ERROR: Invalid agent type '${agentType}'.\n\n` +
+						`${error.message}\n\n` +
+						`**Valid agent type formats:**\n` +
+						`- Copilot agents: \`@agent\`, \`@architect\`, \`@reviewer\`\n` +
+						`- Claude agents: \`claude:agent\`, \`claude:architect\`\n` +
+						`- CLI agents: \`cli:agent\` (future)\n` +
+						`- Cloud agents: \`cloud:agent\` (future)`
+					),
+				]);
+			}
+			throw error;
+		}
+
+		// Currently only Copilot backend is supported for sub-tasks
+		// Claude and other backends will be added in future phases
+		if (parsedAgentType.backend !== 'copilot') {
+			this._logService.warn(`[A2ASpawnSubTaskTool] Unsupported backend: ${parsedAgentType.backend}`);
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(
+					`ERROR: Backend '${parsedAgentType.backend}' is not yet supported for sub-task spawning.\n\n` +
+					`**Currently supported:**\n` +
+					`- Copilot agents: \`@agent\`, \`@architect\`, \`@reviewer\`\n\n` +
+					`**Coming soon:**\n` +
+					`- Claude agents: \`claude:agent\`, \`claude:architect\`\n\n` +
+					`Please use a Copilot agent type for now.`
+				),
+			]);
+		}
+
 		this._logService.debug(`[A2ASpawnSubTaskTool] Input params: agentType=${agentType}, blocking=${blocking}, model=${model || 'default'}, currentDepth=${currentDepth}`);
 		this._logService.debug(`[A2ASpawnSubTaskTool] Context: taskId=${taskId}, planId=${planId}`);
 		this._logService.debug(`[A2ASpawnSubTaskTool] Worktree resolved: ${worktreePath || '(empty - orchestrator will create)'}`);
@@ -164,9 +210,10 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 			}
 		}
 
-		this._logService.info(`[A2ASpawnSubTaskTool] Spawning subtask: agentType=${agentType}, blocking=${blocking}, depth=${currentDepth + 1}`);
+		this._logService.info(`[A2ASpawnSubTaskTool] Spawning subtask: agentType=${agentType} (backend=${parsedAgentType.backend}), blocking=${blocking}, depth=${currentDepth + 1}`);
 
 		// Create sub-task options with inherited spawn context
+		// Use the raw agent type string - subTaskManager handles normalization
 		const createOptions: ISubTaskCreateOptions = {
 			parentWorkerId: workerId,
 			parentTaskId: taskId,
@@ -382,6 +429,44 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 				new LanguageModelTextPart('ERROR: No subtasks provided.'),
 			]);
 		}
+
+		// Parse and validate all agent types upfront
+		const parsedAgentTypes: ParsedAgentType[] = [];
+		for (let i = 0; i < subtasks.length; i++) {
+			const task = subtasks[i];
+			try {
+				const parsed = parseAgentType(task.agentType, task.model);
+				parsedAgentTypes.push(parsed);
+
+				// Currently only Copilot backend is supported
+				if (parsed.backend !== 'copilot') {
+					return new LanguageModelToolResult([
+						new LanguageModelTextPart(
+							`ERROR: Subtask ${i + 1} uses unsupported backend '${parsed.backend}'.\n\n` +
+							`Agent type: ${task.agentType}\n\n` +
+							`**Currently supported:**\n` +
+							`- Copilot agents: \`@agent\`, \`@architect\`, \`@reviewer\`\n\n` +
+							`Please use Copilot agent types for all subtasks.`
+						),
+					]);
+				}
+			} catch (error) {
+				if (error instanceof AgentTypeParseError) {
+					return new LanguageModelToolResult([
+						new LanguageModelTextPart(
+							`ERROR: Invalid agent type '${task.agentType}' in subtask ${i + 1}.\n\n` +
+							`${error.message}\n\n` +
+							`**Valid agent type formats:**\n` +
+							`- Copilot agents: \`@agent\`, \`@architect\`, \`@reviewer\`\n` +
+							`- Claude agents: \`claude:agent\`, \`claude:architect\` (coming soon)`
+						),
+					]);
+				}
+				throw error;
+			}
+		}
+
+		this._logService.debug(`[A2ASpawnParallelSubTasksTool] Validated ${parsedAgentTypes.length} agent types`);
 
 		// Get spawn context from worker context (inherited from parent)
 		// Normalize to 'orchestrator' | 'agent' (subtask is only used internally for depth checking)

@@ -14,6 +14,7 @@ import { generateUuid } from '../../util/vs/base/common/uuid';
 import { createDecorator } from '../../util/vs/platform/instantiation/common/instantiation';
 import { IAgentInstructionService } from './agentInstructionService';
 import { IAgentRunner } from './agentRunner';
+import { AgentTypeParseError, parseAgentType } from './agentTypeParser';
 import { CircuitBreaker } from './circuitBreaker';
 import {
 	CompletionManager,
@@ -1494,10 +1495,31 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				this._logService.debug(`[OrchestratorService] Injected instructions for task ${task.id} (${builtInstructions.length} chars)`);
 			}
 
-			// Load agent instructions
-			// Normalize agent ID: strip @ prefix and lowercase
-			const rawAgentId = task.agent || '@agent';
-			const agentId = rawAgentId.replace(/^@/, '').toLowerCase();
+			// Parse and validate agent type using the centralized parser
+			const rawAgentType = task.agent || '@agent';
+			let parsedAgentType;
+			try {
+				parsedAgentType = parseAgentType(rawAgentType, task.modelId);
+			} catch (error) {
+				if (error instanceof AgentTypeParseError) {
+					throw new Error(`Invalid agent type '${rawAgentType}' for task ${task.id}: ${error.message}`);
+				}
+				throw error;
+			}
+
+			// Currently only Copilot backend is supported
+			if (parsedAgentType.backend !== 'copilot') {
+				throw new Error(
+					`Unsupported backend '${parsedAgentType.backend}' for task ${task.id}.\n` +
+					`Agent type: ${rawAgentType}\n\n` +
+					`Currently supported:\n` +
+					`- Copilot agents: @agent, @architect, @reviewer\n\n` +
+					`Please use Copilot agent types.`
+				);
+			}
+
+			// Load agent instructions using the normalized agent name
+			const agentId = parsedAgentType.agentName;
 			const composedInstructions = await this._agentInstructionService.loadInstructions(agentId);
 
 			// Determine model ID: deploy options override > task's model > undefined

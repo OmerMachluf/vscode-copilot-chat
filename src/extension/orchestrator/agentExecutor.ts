@@ -11,62 +11,17 @@ import { IAgentHistoryEntry } from './orchestratorInterfaces';
 import { IOrchestratorPermissions } from './orchestratorPermissions';
 import { WorkerToolSet } from './workerToolsService';
 
-// ============================================================================
-// Agent Backend Types
-// ============================================================================
-
-/**
- * Supported agent backend types.
- */
-export type AgentBackendType = 'copilot' | 'claude' | 'cli' | 'cloud';
-
-/**
- * Parsed agent type from agent type strings.
- */
-export interface ParsedAgentType {
-	readonly backend: AgentBackendType;
-	readonly agentName: string;
-	readonly slashCommand?: string;
-	readonly rawType: string;
-	readonly modelOverride?: string;
-}
-
-/**
- * Parses an agent type string into its components.
- *
- * Supported formats:
- * - `@agent` - Default Copilot agent
- * - `@architect` - Architect agent
- * - `@reviewer` - Reviewer agent
- * - `claude:sonnet` - Claude backend with agent name
- * - `cli:local-agent` - CLI backend with agent name
- *
- * @param agentType - The agent type string to parse
- * @param modelOverride - Optional model override
- * @returns Parsed agent type information
- */
-export function parseAgentType(agentType: string, modelOverride?: string): ParsedAgentType {
-	// Check if it's a backend:agent format (e.g., "claude:sonnet")
-	const colonIndex = agentType.indexOf(':');
-	if (colonIndex !== -1) {
-		const backend = agentType.substring(0, colonIndex) as AgentBackendType;
-		const agentName = agentType.substring(colonIndex + 1);
-		return {
-			backend,
-			agentName,
-			rawType: agentType,
-			modelOverride,
-		};
-	}
-
-	// Default to copilot backend for @ prefixed agents
-	return {
-		backend: 'copilot',
-		agentName: agentType,
-		rawType: agentType,
-		modelOverride,
-	};
-}
+// Re-export from agentTypeParser for backwards compatibility
+export {
+	AgentBackendType,
+	ParsedAgentType,
+	parseAgentType,
+	isCopilotAgentType,
+	isClaudeAgentType,
+	normalizeAgentName,
+	getBackendType,
+	AgentTypeParseError,
+} from './agentTypeParser';
 
 // ============================================================================
 // Worker Status
