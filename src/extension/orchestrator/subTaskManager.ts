@@ -310,7 +310,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 	}
 
 	async executeSubTask(id: string, token: CancellationToken): Promise<ISubTaskResult> {
-		this._logService.info(`[SubTaskManager] ========== executeSubTask STARTED for ${id} ==========`);
+		this._logService.debug(`[SubTaskManager] executeSubTask STARTED for ${id}`);
 
 		const subTask = this._subTasks.get(id);
 		if (!subTask) {
@@ -324,7 +324,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			return result;
 		}
 
-		this._logService.info(`[SubTaskManager] Found subtask: agentType=${subTask.agentType}, parentWorkerId=${subTask.parentWorkerId}, status=${subTask.status}`);
+		this._logService.debug(`[SubTaskManager] Found subtask: agentType=${subTask.agentType}, parentWorkerId=${subTask.parentWorkerId}, status=${subTask.status}`);
 
 		// Check for conflicts before starting
 		const conflicts = this.checkFileConflicts(subTask.targetFiles ?? [], id);
@@ -339,14 +339,14 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			this.updateStatus(id, 'failed', result);
 			return result;
 		}
-		this._logService.info(`[SubTaskManager] No file conflicts detected`);
+		this._logService.debug(`[SubTaskManager] No file conflicts detected`);
 
 		// Create cancellation source for this sub-task
 		const cts = new CancellationTokenSource(token);
 		this._cancellationSources.set(id, cts);
 
 		this.updateStatus(id, 'running');
-		this._logService.info(`[SubTaskManager] Status updated to 'running'`);
+		this._logService.debug(`[SubTaskManager] Status updated to 'running'`);
 
 		let result: ISubTaskResult;
 
@@ -355,27 +355,27 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			// This creates a real WorkerSession that appears in the sessions panel
 			// with thinking bubbles, tool confirmations, etc.
 			if (this._orchestratorService) {
-				this._logService.info(`[SubTaskManager] Orchestrator service AVAILABLE - using _executeSubTaskWithOrchestratorUI`);
+				this._logService.debug(`[SubTaskManager] Orchestrator service AVAILABLE - using _executeSubTaskWithOrchestratorUI`);
 				result = await this._executeSubTaskWithOrchestratorUI(subTask, cts.token);
-				this._logService.info(`[SubTaskManager] _executeSubTaskWithOrchestratorUI RETURNED: status=${result.status}, error=${result.error || 'none'}`);
+				this._logService.debug(`[SubTaskManager] _executeSubTaskWithOrchestratorUI RETURNED: status=${result.status}, error=${result.error || 'none'}`);
 			} else {
 				// Orchestrator not available, use headless execution
-				this._logService.info(`[SubTaskManager] Orchestrator service NOT AVAILABLE - using _executeSubTaskHeadless`);
+				this._logService.debug(`[SubTaskManager] Orchestrator service NOT AVAILABLE - using _executeSubTaskHeadless`);
 				result = await this._executeSubTaskHeadless(subTask, cts.token);
-				this._logService.info(`[SubTaskManager] _executeSubTaskHeadless RETURNED: status=${result.status}, error=${result.error || 'none'}`);
+				this._logService.debug(`[SubTaskManager] _executeSubTaskHeadless RETURNED: status=${result.status}, error=${result.error || 'none'}`);
 			}
 
 			// Ensure status is updated (may have already been updated by orchestrator events)
 			const currentSubTask = this._subTasks.get(id);
-			this._logService.info(`[SubTaskManager] Current subtask status after execution: ${currentSubTask?.status}`);
+			this._logService.debug(`[SubTaskManager] Current subtask status after execution: ${currentSubTask?.status}`);
 			if (currentSubTask && !['completed', 'failed', 'cancelled'].includes(currentSubTask.status)) {
-				this._logService.info(`[SubTaskManager] Updating status to ${result.status === 'success' ? 'completed' : 'failed'}`);
+				this._logService.debug(`[SubTaskManager] Updating status to ${result.status === 'success' ? 'completed' : 'failed'}`);
 				this.updateStatus(id, result.status === 'success' ? 'completed' : 'failed', result);
 			} else {
-				this._logService.info(`[SubTaskManager] Status already in terminal state, not updating`);
+				this._logService.debug(`[SubTaskManager] Status already in terminal state, not updating`);
 			}
 
-			this._logService.info(`[SubTaskManager] ========== executeSubTask COMPLETED for ${id} ==========`);
+			this._logService.debug(`[SubTaskManager] executeSubTask COMPLETED for ${id}`);
 			return result;
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : String(error);
@@ -404,10 +404,10 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			}
 
 			// For other errors, try fallback to headless execution
-			this._logService.info(`[SubTaskManager] Falling back to headless execution...`);
+			this._logService.debug(`[SubTaskManager] Falling back to headless execution...`);
 			try {
 				result = await this._executeSubTaskHeadless(subTask, cts.token);
-				this._logService.info(`[SubTaskManager] Headless fallback SUCCEEDED: status=${result.status}`);
+				this._logService.debug(`[SubTaskManager] Headless fallback SUCCEEDED: status=${result.status}`);
 				this.updateStatus(id, result.status === 'success' ? 'completed' : 'failed', result);
 				return result;
 			} catch (fallbackError) {
@@ -422,7 +422,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 				return result;
 			}
 		} finally {
-			this._logService.info(`[SubTaskManager] Cleanup: removing cancellation source and running subtask entry for ${id}`);
+			this._logService.debug(`[SubTaskManager] Cleanup: removing cancellation source and running subtask entry for ${id}`);
 			this._cancellationSources.delete(id);
 			this._runningSubTasks.delete(id);
 
@@ -431,7 +431,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			// The updateStatus call above (or in catch blocks) will have fired onDidCompleteSubTask
 			// which ParentCompletionService listens to. This comment documents the guarantee.
 			const finalSubTask = this._subTasks.get(id);
-			this._logService.info(`[SubTaskManager] Final subtask status check: ${finalSubTask?.status}`);
+			this._logService.debug(`[SubTaskManager] Final subtask status check: ${finalSubTask?.status}`);
 			if (finalSubTask && finalSubTask.status === 'running') {
 				// If we got here and status is still 'running', something went very wrong
 				this._logService.error(`[SubTaskManager] CRITICAL: Sub-task ${id} finished execution but status is still 'running' - forcing completion`);
@@ -443,7 +443,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 				};
 				this.updateStatus(id, 'failed', fallbackResult);
 			}
-			this._logService.info(`[SubTaskManager] ========== executeSubTask FINALLY block done for ${id} ==========`);
+			this._logService.debug(`[SubTaskManager] executeSubTask FINALLY block done for ${id}`);
 		}
 	}
 
@@ -455,7 +455,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 	 * @precondition this._orchestratorService is defined
 	 */
 	private async _executeSubTaskWithOrchestratorUI(subTask: ISubTask, token: CancellationToken): Promise<ISubTaskResult> {
-		this._logService.info(`[SubTaskManager] ========== _executeSubTaskWithOrchestratorUI STARTED for ${subTask.id} ==========`);
+		this._logService.debug(`[SubTaskManager] _executeSubTaskWithOrchestratorUI STARTED for ${subTask.id}`);
 		const orchestratorService = this._orchestratorService!;
 
 		// Get parent's tool set to inherit spawn context (same logic as _executeSubTaskInternal)
@@ -473,7 +473,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 		// Create an orchestrator task for this subtask with full context
 		const taskName = `[SubTask] ${subTask.agentType} (${subTask.id.slice(-6)})`;
 
-		this._logService.info(`[SubTaskManager] Creating orchestrator task: name="${taskName}", parentWorkerId=${subTask.parentWorkerId}, spawnContext=${inheritedSpawnContext}`);
+		this._logService.debug(`[SubTaskManager] Creating orchestrator task: name="${taskName}", parentWorkerId=${subTask.parentWorkerId}, spawnContext=${inheritedSpawnContext}`);
 		const orchestratorTask = orchestratorService.addTask(taskDescription, {
 			name: taskName,
 			planId: subTask.planId,
@@ -494,14 +494,14 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 		// Map subtask ID to orchestrator task ID
 		this._subtaskToOrchestratorTask.set(subTask.id, orchestratorTask.id);
 
-		this._logService.info(`[SubTaskManager] Created orchestrator task ${orchestratorTask.id} for subtask ${subTask.id}`);
+		this._logService.debug(`[SubTaskManager] Created orchestrator task ${orchestratorTask.id} for subtask ${subTask.id}`);
 
 		try {
 			// Deploy the task - this creates a WorkerSession with full UI
 			// If subTask.worktreePath is undefined (orchestrator-spawned), deploy() will create a worktree
 			// We pass an instructionsBuilder callback that gets called AFTER the worktree is created,
 			// ensuring the instructions contain the correct worktree path.
-			this._logService.info(`[SubTaskManager] Deploying task ${orchestratorTask.id} with worktreePath=${subTask.worktreePath || '(undefined - will create new worktree)'}`);
+			this._logService.debug(`[SubTaskManager] Deploying task ${orchestratorTask.id} with worktreePath=${subTask.worktreePath || '(undefined - will create new worktree)'}`);
 			const workerSession = await orchestratorService.deploy(orchestratorTask.id, {
 				modelId: subTask.model,
 				worktreePath: subTask.worktreePath,
@@ -514,18 +514,18 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 					return this._buildSubTaskAdditionalInstructions(subTask, inheritedSpawnContext);
 				},
 			});
-			this._logService.info(`[SubTaskManager] Deploy returned workerSession.id=${workerSession.id}, actual worktreePath=${workerSession.worktreePath}`);
+			this._logService.debug(`[SubTaskManager] Deploy returned workerSession.id=${workerSession.id}, actual worktreePath=${workerSession.worktreePath}`);
 
 			// Ensure subTask.worktreePath is updated (may have been set in instructionsBuilder, but double-check)
 			if (!subTask.worktreePath && workerSession.worktreePath) {
 				(subTask as { worktreePath?: string }).worktreePath = workerSession.worktreePath;
-				this._logService.info(`[SubTaskManager] Updated subTask.worktreePath to ${workerSession.worktreePath}`);
+				this._logService.debug(`[SubTaskManager] Updated subTask.worktreePath to ${workerSession.worktreePath}`);
 			}
 
 			// Wait for the task to complete
-			this._logService.info(`[SubTaskManager] Now calling _waitForOrchestratorTaskCompletion for task ${orchestratorTask.id}, worker ${workerSession.id}`);
+			this._logService.debug(`[SubTaskManager] Now calling _waitForOrchestratorTaskCompletion for task ${orchestratorTask.id}, worker ${workerSession.id}`);
 			const result = await this._waitForOrchestratorTaskCompletion(orchestratorTask.id, workerSession.id, token);
-			this._logService.info(`[SubTaskManager] _waitForOrchestratorTaskCompletion RETURNED: status=${result.status}, error=${result.error || 'none'}`);
+			this._logService.debug(`[SubTaskManager] _waitForOrchestratorTaskCompletion RETURNED: status=${result.status}, error=${result.error || 'none'}`);
 
 			// Get subtask's worktree info for parent to review (NO auto-merge!)
 			// Parent is responsible for reviewing changes and deciding when to pull/merge.
@@ -561,7 +561,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 				},
 			};
 
-			this._logService.info(`[SubTaskManager] ========== _executeSubTaskWithOrchestratorUI COMPLETED for ${subTask.id} ==========`);
+			this._logService.debug(`[SubTaskManager] _executeSubTaskWithOrchestratorUI COMPLETED for ${subTask.id}`);
 			return enhancedResult;
 		} catch (error) {
 			this._logService.error(`[SubTaskManager] _executeSubTaskWithOrchestratorUI FAILED: ${error instanceof Error ? error.message : String(error)}`);
@@ -586,10 +586,9 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 		taskId: string,
 		workerId: string,
 		token: CancellationToken,
-		timeoutMs: number = 5 * 60 * 1000 // 5 minutes default
+		timeoutMs: number = 20 * 60 * 1000 // 20 minutes default (increased from 5 minutes)
 	): Promise<ISubTaskResult> {
-		this._logService.info(`[SubTaskManager] ========== _waitForOrchestratorTaskCompletion STARTED ==========`);
-		this._logService.info(`[SubTaskManager] Waiting for taskId=${taskId}, workerId=${workerId}, timeout=${timeoutMs}ms`);
+		this._logService.debug(`[SubTaskManager] Waiting for taskId=${taskId}, workerId=${workerId}, timeout=${timeoutMs}ms`);
 		const orchestratorService = this._orchestratorService!;
 
 		return new Promise<ISubTaskResult>((resolve) => {
@@ -605,21 +604,21 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 
 			const resolveOnce = (result: ISubTaskResult, reason: string) => {
 				if (!resolved) {
-					this._logService.info(`[SubTaskManager] RESOLVING via: ${reason}`);
-					this._logService.info(`[SubTaskManager] Result: status=${result.status}, error=${result.error || 'none'}`);
+					this._logService.debug(`[SubTaskManager] RESOLVING via: ${reason}`);
+					this._logService.debug(`[SubTaskManager] Result: status=${result.status}, error=${result.error || 'none'}`);
 					cleanup();
 					resolve(result);
 				} else {
-					this._logService.info(`[SubTaskManager] IGNORING duplicate resolution via: ${reason} (already resolved)`);
+					this._logService.debug(`[SubTaskManager] IGNORING duplicate resolution via: ${reason} (already resolved)`);
 				}
 			};
 
 			// Timeout - don't wait forever
-			this._logService.info(`[SubTaskManager] Setting up ${timeoutMs}ms timeout`);
+			this._logService.debug(`[SubTaskManager] Setting up ${timeoutMs}ms timeout`);
 			const timeoutId = setTimeout(() => {
-				this._logService.warn(`[SubTaskManager] TIMEOUT TRIGGERED after ${timeoutMs}ms`);
+				this._logService.error(`[SubTaskManager] TIMEOUT TRIGGERED after ${timeoutMs}ms for worker ${workerId}`);
 				const workerState = orchestratorService.getWorkerState(workerId);
-				this._logService.warn(`[SubTaskManager] Worker state at timeout: status=${workerState?.status}, errorMessage=${workerState?.errorMessage}`);
+				this._logService.error(`[SubTaskManager] Worker state at timeout: status=${workerState?.status}, errorMessage=${workerState?.errorMessage}`);
 				resolveOnce({
 					taskId,
 					status: 'failed',
@@ -630,14 +629,14 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			disposables.push({ dispose: () => clearTimeout(timeoutId) });
 
 			// Listen for task/worker events
-			this._logService.info(`[SubTaskManager] Registering orchestrator event listener`);
+			this._logService.debug(`[SubTaskManager] Registering orchestrator event listener`);
 			disposables.push(orchestratorService.onOrchestratorEvent(event => {
-				this._logService.info(`[SubTaskManager] Received orchestrator event: type=${event.type}, taskId=${'taskId' in event ? event.taskId : 'N/A'}, workerId=${'workerId' in event ? event.workerId : 'N/A'}`);
+				this._logService.debug(`[SubTaskManager] Received orchestrator event: type=${event.type}, taskId=${'taskId' in event ? event.taskId : 'N/A'}, workerId=${'workerId' in event ? event.workerId : 'N/A'}`);
 
 				// Handle task-specific events
 				if ('taskId' in event && event.taskId === taskId) {
 					if (event.type === 'task.completed') {
-						this._logService.info(`[SubTaskManager] EVENT: task.completed for our task ${taskId}`);
+						this._logService.debug(`[SubTaskManager] EVENT: task.completed for our task ${taskId}`);
 						const workerState = orchestratorService.getWorkerState(workerId);
 						resolveOnce({
 							taskId,
@@ -645,7 +644,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 							output: workerState?.messages?.map(m => m.content).join('\n') || 'Task completed successfully',
 						}, 'task.completed event');
 					} else if (event.type === 'task.failed') {
-						this._logService.info(`[SubTaskManager] EVENT: task.failed for our task ${taskId}, error=${(event as any).error}`);
+						this._logService.error(`[SubTaskManager] EVENT: task.failed for task ${taskId}, error=${(event as any).error}`);
 						resolveOnce({
 							taskId,
 							status: 'failed',
@@ -658,12 +657,13 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 				// Handle worker.idle - worker finished its autonomous loop
 				// This is a fallback for when a2a_subtask_complete wasn't called
 				if (event.type === 'worker.idle' && 'workerId' in event && event.workerId === workerId) {
-					this._logService.info(`[SubTaskManager] EVENT: worker.idle for our worker ${workerId}`);
+					this._logService.debug(`[SubTaskManager] EVENT: worker.idle for our worker ${workerId}`);
 					const workerState = orchestratorService.getWorkerState(workerId);
 					// Check if task was already marked with an error
 					const task = orchestratorService.getTaskById(taskId);
-					this._logService.info(`[SubTaskManager] Task error state: ${task?.error || 'none'}`);
+					this._logService.debug(`[SubTaskManager] Task error state: ${task?.error || 'none'}`);
 					if (task?.error) {
+						this._logService.error(`[SubTaskManager] Worker ${workerId} idle with task error: ${task.error}`);
 						resolveOnce({
 							taskId,
 							status: 'failed',
@@ -682,12 +682,12 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 
 			// Listen for worker session completion directly
 			const workerSession = orchestratorService.getWorkerSession(workerId);
-			this._logService.info(`[SubTaskManager] Got worker session: ${workerSession ? 'YES' : 'NO'}`);
+			this._logService.debug(`[SubTaskManager] Got worker session: ${workerSession ? 'YES' : 'NO'}`);
 			if (workerSession) {
-				this._logService.info(`[SubTaskManager] Registering worker session event listeners`);
+				this._logService.debug(`[SubTaskManager] Registering worker session event listeners`);
 
 				disposables.push(workerSession.onDidComplete(() => {
-					this._logService.info(`[SubTaskManager] EVENT: workerSession.onDidComplete for ${workerId}`);
+					this._logService.debug(`[SubTaskManager] EVENT: workerSession.onDidComplete for ${workerId}`);
 					const workerState = orchestratorService.getWorkerState(workerId);
 					resolveOnce({
 						taskId,
@@ -698,9 +698,9 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 
 				// Also listen for stop (error/cancellation)
 				disposables.push(workerSession.onDidStop(() => {
-					this._logService.info(`[SubTaskManager] EVENT: workerSession.onDidStop for ${workerId}`);
+					this._logService.debug(`[SubTaskManager] EVENT: workerSession.onDidStop for ${workerId}`);
 					const workerState = orchestratorService.getWorkerState(workerId);
-					this._logService.info(`[SubTaskManager] Worker state at stop: status=${workerState?.status}, errorMessage=${workerState?.errorMessage}`);
+					this._logService.debug(`[SubTaskManager] Worker state at stop: status=${workerState?.status}, errorMessage=${workerState?.errorMessage}`);
 					resolveOnce({
 						taskId,
 						status: 'failed',
@@ -715,18 +715,18 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 					if (!workerState) {
 						return;
 					}
-					this._logService.info(`[SubTaskManager] EVENT: workerSession.onDidChange - status=${workerState.status}`);
+					this._logService.debug(`[SubTaskManager] EVENT: workerSession.onDidChange - status=${workerState.status}`);
 
 					// Terminal states: completed, error, idle (idle means task finished)
 					if (workerState.status === 'completed') {
-						this._logService.info(`[SubTaskManager] Worker status is 'completed' - resolving success`);
+						this._logService.debug(`[SubTaskManager] Worker status is 'completed' - resolving success`);
 						resolveOnce({
 							taskId,
 							status: 'success',
 							output: workerState.messages?.map(m => m.content).join('\n') || 'Task completed',
 						}, 'workerSession.onDidChange (status=completed)');
 					} else if (workerState.status === 'error') {
-						this._logService.info(`[SubTaskManager] Worker status is 'error' - resolving failure`);
+						this._logService.error(`[SubTaskManager] Worker ${workerId} status is 'error': ${workerState.errorMessage}`);
 						resolveOnce({
 							taskId,
 							status: 'failed',
@@ -735,9 +735,10 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 						}, 'workerSession.onDidChange (status=error)');
 					} else if (workerState.status === 'idle') {
 						// Worker finished its task but didn't explicitly complete
-						this._logService.info(`[SubTaskManager] Worker status is 'idle' - treating as completion`);
+						this._logService.debug(`[SubTaskManager] Worker status is 'idle' - treating as completion`);
 						const task = orchestratorService.getTaskById(taskId);
 						if (task?.error) {
+							this._logService.error(`[SubTaskManager] Worker ${workerId} idle but task has error: ${task.error}`);
 							resolveOnce({
 								taskId,
 								status: 'failed',

@@ -2510,7 +2510,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		}));
 
 		// Continuous conversation loop - keeps running until worker is completed
-		const MAX_RETRIES = 3;
+		const MAX_RETRIES = 10; // Increased from 3 to handle rate limits better
 		let consecutiveFailures = 0;
 
 		while (worker.isActive) {
@@ -2602,18 +2602,31 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 					consecutiveFailures++;
 
 					// Check if error is retryable (empty response, timeout, rate limit)
-					const isRetryable = result.error.includes('no response') ||
-						result.error.includes('timeout') ||
-						result.error.includes('rate limit') ||
-						result.error.includes('empty');
+					const errorLower = result.error.toLowerCase();
+					const isRateLimit = errorLower.includes('rate limit') ||
+						errorLower.includes('rate_limit') ||
+						errorLower.includes('too many requests') ||
+						errorLower.includes('429') ||
+						errorLower.includes('quota') ||
+						errorLower.includes('exceeded');
+					const isRetryable = isRateLimit ||
+						errorLower.includes('no response') ||
+						errorLower.includes('timeout') ||
+						errorLower.includes('empty') ||
+						errorLower.includes('econnreset') ||
+						errorLower.includes('network');
 
 					if (isRetryable && consecutiveFailures < MAX_RETRIES) {
-						worker.addAssistantMessage(`[System: Retrying due to error: ${result.error} (attempt ${consecutiveFailures}/${MAX_RETRIES})]`);
-						// Brief delay before retry
-						await new Promise(resolve => setTimeout(resolve, 2000 * consecutiveFailures));
+						// Use longer delay for rate limits (30s base), shorter for other errors (2s base)
+						const baseDelay = isRateLimit ? 30000 : 2000;
+						const delay = baseDelay * consecutiveFailures;
+						this._logService.warn(`[OrchestratorService] RETRYABLE ERROR for worker ${worker.id}: ${result.error} (attempt ${consecutiveFailures}/${MAX_RETRIES}, waiting ${delay}ms)`);
+						worker.addAssistantMessage(`[System: ${isRateLimit ? 'Rate limited' : 'Error'}: ${result.error}. Retrying in ${Math.ceil(delay / 1000)}s (attempt ${consecutiveFailures}/${MAX_RETRIES})]`);
+						await new Promise(resolve => setTimeout(resolve, delay));
 						continue;
 					}
 
+					this._logService.error(`[OrchestratorService] FATAL ERROR for worker ${worker.id}: ${result.error} (exhausted ${MAX_RETRIES} retries)`);
 					worker.error(result.error);
 					break;
 				}
@@ -2667,20 +2680,33 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				}
 
 				consecutiveFailures++;
-				// errorMessage already set above
 
-				// Check if error is retryable
-				const isRetryable = errorMessage.includes('ECONNRESET') ||
+				// Check if error is retryable - network errors and rate limits
+				const isRateLimitError = errorMessage.toLowerCase().includes('rate limit') ||
+					errorMessage.toLowerCase().includes('rate_limit') ||
+					errorMessage.toLowerCase().includes('too many requests') ||
+					errorMessage.includes('429') ||
+					errorMessage.toLowerCase().includes('quota') ||
+					errorMessage.toLowerCase().includes('exceeded');
+
+				const isNetworkError = errorMessage.includes('ECONNRESET') ||
 					errorMessage.includes('ETIMEDOUT') ||
 					errorMessage.includes('network') ||
 					errorMessage.includes('abort');
 
+				const isRetryable = isRateLimitError || isNetworkError;
+
 				if (isRetryable && consecutiveFailures < MAX_RETRIES) {
-					worker.addAssistantMessage(`[System: Retrying due to error: ${errorMessage} (attempt ${consecutiveFailures}/${MAX_RETRIES})]`);
-					await new Promise(resolve => setTimeout(resolve, 2000 * consecutiveFailures));
+					// Use longer delay for rate limits (30s base), shorter for network errors (2s base)
+					const baseDelay = isRateLimitError ? 30000 : 2000;
+					const delay = baseDelay * consecutiveFailures;
+					this._logService.warn(`[Orchestrator] Worker ${worker.id}: ${isRateLimitError ? 'Rate limit' : 'Network'} error, retry ${consecutiveFailures}/${MAX_RETRIES} after ${delay / 1000}s`);
+					worker.addAssistantMessage(`[System: ${isRateLimitError ? 'Rate limited' : 'Network error'}, retrying in ${delay / 1000}s (attempt ${consecutiveFailures}/${MAX_RETRIES})]`);
+					await new Promise(resolve => setTimeout(resolve, delay));
 					continue;
 				}
 
+				this._logService.error(`[Orchestrator] Worker ${worker.id} failed after ${consecutiveFailures} attempts: ${errorMessage}`);
 				worker.error(errorMessage);
 				break;
 			}

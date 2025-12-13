@@ -953,7 +953,13 @@ export class WorkerSession extends Disposable {
 		this._status = 'error';
 		this._errorMessage = message;
 		this._addMessage({ role: 'system', content: `Error: ${message}` });
+		// Cancel any pending wait for clarification
+		if (this._clarificationResolve) {
+			this._clarificationResolve = undefined;
+		}
 		this._onDidChange.fire();
+		// Fire completion event so listeners know the worker has terminated
+		this._onDidComplete.fire();
 	}
 
 	/**
