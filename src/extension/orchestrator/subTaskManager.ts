@@ -910,8 +910,15 @@ You are a sub-agent spawned by a PARENT AGENT (not the user).
 ${subTask.targetFiles?.length ? `- **Target Files:** ${subTask.targetFiles.join(', ')}` : ''}
 
 ## YOUR WORKTREE
-You are working in your own dedicated worktree (separate from your parent's).
-When you complete your work, your file changes will be automatically merged back to your parent's worktree.
+You are working in your own dedicated worktree at: ${subTask.worktreePath}
+This is separate from your parent's worktree. Your parent will merge your branch when you're done.
+
+## ⚠️ CRITICAL: YOU MUST COMMIT YOUR CHANGES
+**Before completing your task, you MUST commit all your changes:**
+1. Stage all changes: \`git add -A\`
+2. Commit with a descriptive message: \`git commit -m "Your descriptive commit message"\`
+
+**Uncommitted changes will NOT be merged!** Your parent merges your branch, not your working directory.
 
 ## COMMUNICATION WITH PARENT
 - Use \`a2a_notify_orchestrator\` to send status updates, questions, or progress reports to your parent.
@@ -920,8 +927,8 @@ When you complete your work, your file changes will be automatically merged back
 ## YOUR RESPONSIBILITIES
 1. Complete the specific task assigned to you.
 2. Make file changes directly in your worktree using standard tools (create_file, replace_string_in_file, etc.).
-3. When done, simply stop. Your parent will be notified and your changes will be merged automatically.
-4. Do NOT worry about committing or merging - that's handled automatically.
+3. **COMMIT your changes** with git add and git commit.
+4. When done, simply stop. Your parent will be notified and will merge your branch.
 
 ## SUB-TASK SPAWNING
 ${subTaskGuidance}
@@ -994,18 +1001,14 @@ Focus on your assigned task and provide a clear, actionable result.`,
 		parts.push(subTask.expectedOutput);
 		parts.push('');
 
-		// Add CRITICAL commit instruction
-		parts.push(`## ⚠️ CRITICAL: Commit Your Changes`);
-		parts.push(`**YOU MUST COMMIT YOUR CHANGES BEFORE COMPLETING THIS TASK.**`);
-		parts.push('');
-		parts.push(`When you have finished making changes:`);
-		parts.push(`1. Stage all your changes: \`git add -A\``);
-		parts.push(`2. Commit with a descriptive message: \`git commit -m "Your descriptive message"\``);
-		parts.push(`3. Only then is your work complete.`);
-		parts.push('');
-		parts.push(`Your parent agent will merge your branch. Uncommitted changes will be lost!`);
-		parts.push('');
-		parts.push(`When complete, simply finish your work. Your parent will be notified automatically and will decide next steps.`);
+		// Add CRITICAL commit reminder (main instructions are in additionalInstructions)
+		parts.push(`## ⚠️ REMINDER: Commit Before Finishing`);
+		parts.push(`When you complete your work, **you MUST commit your changes**:`);
+		parts.push('```bash');
+		parts.push('git add -A');
+		parts.push('git commit -m "Your descriptive message"');
+		parts.push('```');
+		parts.push(`Your parent will merge your committed branch. Uncommitted work will be lost!`);
 
 		return parts.join('\n');
 	}

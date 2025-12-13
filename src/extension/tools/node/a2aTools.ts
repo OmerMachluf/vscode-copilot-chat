@@ -1131,12 +1131,16 @@ export class A2ASendMessageToWorkerTool implements ICopilotTool<SendMessageToWor
 
 		try {
 			// Send message to worker via orchestrator service
+			// The worker's status will change to 'running' which updates the session status
+			// in the VS Code chat sessions panel (shows as "In Progress")
 			this._orchestratorService.sendMessageToWorker(workerId, message);
 
 			return new LanguageModelToolResult([
 				new LanguageModelTextPart(
 					`Message sent to worker ${workerId}.\n\n` +
-					'The worker should wake up and continue working based on your feedback.'
+					'The worker will wake up and continue working based on your feedback. ' +
+					'Look for the worker session in the chat sessions panel - it will show as "In Progress" while working. ' +
+					'Click on the session to see real-time progress and results.'
 				),
 			]);
 
