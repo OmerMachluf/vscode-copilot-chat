@@ -6,9 +6,9 @@
 import * as vscode from 'vscode';
 import {
 	SerializedChatPart,
+	SerializedIconPath,
 	SerializedMarkdownString,
 	SerializedRange,
-	SerializedIconPath,
 	WorkerMessage,
 	WorkerStatus
 } from '../../orchestrator/workerSession';

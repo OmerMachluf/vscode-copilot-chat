@@ -91,7 +91,7 @@ export type SerializedToolSpecificData =
 	| ExtensionsToolData
 	| PullRequestToolData
 	| TodoListToolData
-	| { readonly kind: string; [key: string]: unknown };
+	| { readonly kind: string;[key: string]: unknown };
 
 /**
  * All supported chat part types matching VS Code's ExtendedChatResponsePart
