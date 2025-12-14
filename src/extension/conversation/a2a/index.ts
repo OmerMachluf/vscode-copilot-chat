@@ -120,3 +120,37 @@ export {
 	resolveAllConflicts
 } from './mergeUtils';
 
+// Permissions - agent operation permission types and utilities
+export {
+	// Types
+	AgentPermissionConfig,
+	ApprovalRecord,
+	ApprovalRule,
+	ApprovalScope,
+	FileAccessConfig,
+	MutablePermissionStats,
+	OperationCategory,
+	PermissionCheckResult,
+	PermissionLevel,
+	PermissionRequest,
+	PermissionStats,
+	TerminalAccessConfig,
+	// Constants
+	DEFAULT_PERMISSION_CONFIG,
+	SENSITIVE_OPERATIONS,
+	// Functions
+	getAllowedCategories,
+	isOperationAllowedByLevel,
+	isSensitiveOperation,
+} from './permissions';
+
+// Permission service - agent permission management
+export {
+	A2A_CONFIG_KEYS,
+	AgentPermissionService,
+	IAgentPermissionService,
+	IApprovalPromptEvent,
+	IPermissionEvent,
+	NullAgentPermissionService,
+} from './permissionService';
+
