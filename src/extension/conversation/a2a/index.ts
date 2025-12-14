@@ -120,3 +120,34 @@ export {
 	resolveAllConflicts
 } from './mergeUtils';
 
+// UI components - status display, progress indicators, and control panel
+export {
+	// Status display
+	AgentStatusDisplay,
+	AgentSessionStatus,
+	IAgentSessionInfo,
+	IAgentStatusDisplay,
+	IAgentStatusChangeEvent,
+	IApprovalNeededEvent,
+	createSimpleStatusDisplay
+} from './ui/statusDisplay';
+
+export {
+	// Progress indicators
+	ProgressOperationType,
+	IProgressInfo,
+	IProgressIndicator,
+	ProgressIndicator,
+	createStreamingProgressReporter
+} from './ui/progressIndicator';
+
+export {
+	// Control panel
+	ControlPanelAction,
+	IControlPanelActionEvent,
+	IPermissionRequestInfo,
+	IAgentControlPanel,
+	AgentControlPanel,
+	createAgentQuickAction
+} from './ui/controlPanel';
+
