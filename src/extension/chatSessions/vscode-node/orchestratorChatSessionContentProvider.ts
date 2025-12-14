@@ -439,13 +439,23 @@ export class OrchestratorChatSessionContentProvider implements vscode.ChatSessio
 	}
 
 	/**
-	 * Stream a single serialized part to the response stream
+	 * Stream a single serialized part to the response stream.
+	 * Supports ALL VS Code chat part types for 100% UI fidelity.
 	 */
 	private _streamPart(stream: vscode.ChatResponseStream, part: SerializedChatPart): void {
+		// For most part types, use the full deserialization to get proper VS Code parts
+		const converted = serializedPartToChatResponsePart(part);
+		if (converted) {
+			stream.push(converted as vscode.ChatResponsePart);
+			return;
+		}
+
+		// Fallback for cases where conversion fails but we have content
 		switch (part.type) {
 			case 'markdown':
 				if (part.content) {
-					stream.markdown(part.content);
+					const content = typeof part.content === 'string' ? part.content : part.content.value;
+					stream.markdown(content);
 				}
 				break;
 
@@ -473,45 +483,12 @@ export class OrchestratorChatSessionContentProvider implements vscode.ChatSessio
 				}
 				break;
 
-			case 'toolInvocation':
-				if (part.toolName) {
-					const converted = serializedPartToChatResponsePart(part);
-					if (converted) {
-						stream.push(converted as vscode.ChatResponsePart);
-					}
-				}
-				break;
-
-			case 'thinkingProgress':
-				if (part.content) {
-					const thinkingPart = new vscode.ChatResponseThinkingProgressPart(part.content);
-					stream.push(thinkingPart as unknown as vscode.ChatResponsePart);
-				}
-				break;
-
-			case 'warning':
-				if (part.content) {
-					stream.markdown(`⚠️ ${part.content}`);
-				}
-				break;
-
-			case 'error':
-				if (part.content) {
-					stream.markdown(`❌ ${part.content}`);
-				}
-				break;
-
-			case 'confirmation':
-				if (part.title || part.content) {
-					stream.markdown(`**${part.title ?? 'Confirmation'}**: ${part.content ?? ''}`);
-				}
-				break;
-
 			case 'filetree':
-				// FileTree needs special handling
+				// FileTree needs special handling for legacy format
 				if (part.uri && part.content) {
 					try {
-						const treeData = JSON.parse(part.content);
+						const content = typeof part.content === 'string' ? part.content : part.content.value;
+						const treeData = JSON.parse(content);
 						stream.filetree(treeData, vscode.Uri.parse(part.uri));
 					} catch {
 						stream.markdown(`[File tree: ${part.uri}]`);
@@ -520,9 +497,10 @@ export class OrchestratorChatSessionContentProvider implements vscode.ChatSessio
 				break;
 
 			default:
-				// For unknown types, try generic conversion or show as markdown
+				// For unknown types, show content as markdown if available
 				if (part.content) {
-					stream.markdown(part.content);
+					const content = typeof part.content === 'string' ? part.content : part.content.value;
+					stream.markdown(content);
 				}
 				break;
 		}

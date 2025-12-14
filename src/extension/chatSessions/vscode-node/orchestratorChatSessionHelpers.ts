@@ -4,7 +4,14 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { SerializedChatPart, WorkerMessage, WorkerStatus } from '../../orchestrator/workerSession';
+import {
+	SerializedChatPart,
+	SerializedMarkdownString,
+	SerializedRange,
+	SerializedIconPath,
+	WorkerMessage,
+	WorkerStatus
+} from '../../orchestrator/workerSession';
 
 /**
  * Session ID utilities for orchestrator sessions
@@ -59,91 +66,434 @@ export function workerStatusToChatSessionStatus(status: WorkerStatus): vscode.Ch
 /**
  * Extended response part type that includes all possible parts
  */
-type ExtendedResponsePart = vscode.ChatResponsePart | vscode.ChatToolInvocationPart | vscode.ChatResponseThinkingProgressPart;
+type ExtendedResponsePart =
+	| vscode.ChatResponsePart
+	| vscode.ChatToolInvocationPart
+	| vscode.ChatResponseThinkingProgressPart
+	| vscode.ChatPrepareToolInvocationPart
+	| vscode.ChatResponseTextEditPart
+	| vscode.ChatResponseNotebookEditPart
+	| vscode.ChatResponseConfirmationPart
+	| vscode.ChatResponseCodeCitationPart
+	| vscode.ChatResponseCodeblockUriPart
+	| vscode.ChatResponseWarningPart
+	| vscode.ChatResponseMovePart
+	| vscode.ChatResponseMultiDiffPart
+	| vscode.ChatResponsePullRequestPart
+	| vscode.ChatResponseExtensionsPart
+	| vscode.ChatResponseMarkdownWithVulnerabilitiesPart;
+
+// ============================================================================
+// Deserialization Helpers
+// ============================================================================
+
+/**
+ * Convert a serialized MarkdownString back to vscode.MarkdownString
+ */
+function deserializeMarkdownString(content: string | SerializedMarkdownString | undefined): vscode.MarkdownString {
+	if (!content) {
+		return new vscode.MarkdownString('');
+	}
+
+	if (typeof content === 'string') {
+		return new vscode.MarkdownString(content);
+	}
+
+	const md = new vscode.MarkdownString(content.value);
+	if (content.isTrusted !== undefined) {
+		md.isTrusted = content.isTrusted;
+	}
+	if (content.supportThemeIcons !== undefined) {
+		md.supportThemeIcons = content.supportThemeIcons;
+	}
+	if (content.supportHtml !== undefined) {
+		md.supportHtml = content.supportHtml;
+	}
+	if (content.baseUri) {
+		md.baseUri = vscode.Uri.parse(content.baseUri);
+	}
+	return md;
+}
+
+/**
+ * Get string value from content (handles both string and SerializedMarkdownString)
+ */
+function getContentString(content: string | SerializedMarkdownString | undefined): string {
+	if (!content) {
+		return '';
+	}
+	return typeof content === 'string' ? content : content.value;
+}
+
+/**
+ * Convert a serialized range back to vscode.Range
+ */
+function deserializeRange(range: SerializedRange): vscode.Range {
+	return new vscode.Range(
+		range.startLine,
+		range.startChar,
+		range.endLine,
+		range.endChar
+	);
+}
+
+/**
+ * Convert a serialized icon path to vscode icon path
+ */
+function deserializeIconPath(iconPath: SerializedIconPath | undefined): vscode.ThemeIcon | vscode.Uri | { light: vscode.Uri; dark: vscode.Uri } | undefined {
+	if (!iconPath) {
+		return undefined;
+	}
+	if (iconPath.themeIcon) {
+		return new vscode.ThemeIcon(iconPath.themeIcon);
+	}
+	if (iconPath.light && iconPath.dark) {
+		return {
+			light: vscode.Uri.parse(iconPath.light),
+			dark: vscode.Uri.parse(iconPath.dark)
+		};
+	}
+	if (iconPath.light) {
+		return vscode.Uri.parse(iconPath.light);
+	}
+	return undefined;
+}
+
+/**
+ * Convert a serialized TextEdit to vscode.TextEdit
+ */
+function deserializeTextEdit(edit: { range: SerializedRange; newText: string }): vscode.TextEdit {
+	return new vscode.TextEdit(deserializeRange(edit.range), edit.newText);
+}
 
 /**
  * Convert a SerializedChatPart back to an actual ChatResponsePart
+ * Supports ALL VS Code chat part types for 100% UI fidelity
  */
 export function serializedPartToChatResponsePart(part: SerializedChatPart): ExtendedResponsePart | undefined {
 	switch (part.type) {
+		// ========================================
+		// Markdown Parts
+		// ========================================
 		case 'markdown':
-			return new vscode.ChatResponseMarkdownPart(new vscode.MarkdownString(part.content ?? ''));
+			return new vscode.ChatResponseMarkdownPart(deserializeMarkdownString(part.content));
 
+		case 'markdownWithVulnerabilities':
+			if (part.vulnerabilities) {
+				return new vscode.ChatResponseMarkdownWithVulnerabilitiesPart(
+					deserializeMarkdownString(part.content),
+					part.vulnerabilities as { title: string; description: string }[]
+				);
+			}
+			return new vscode.ChatResponseMarkdownPart(deserializeMarkdownString(part.content));
+
+		// ========================================
+		// Progress Parts
+		// ========================================
 		case 'progress':
-			return new vscode.ChatResponseProgressPart(part.progressMessage ?? '');
-
-		case 'reference':
-			if (part.uri) {
-				const uri = vscode.Uri.parse(part.uri);
-				if (part.range) {
-					const range = new vscode.Range(
-						part.range.startLine,
-						part.range.startChar,
-						part.range.endLine,
-						part.range.endChar
-					);
-					return new vscode.ChatResponseAnchorPart(new vscode.Location(uri, range), part.content);
-				}
-				return new vscode.ChatResponseAnchorPart(uri, part.content);
-			}
-			return undefined;
-
-		case 'anchor':
-			if (part.uri) {
-				const uri = vscode.Uri.parse(part.uri);
-				if (part.range) {
-					const range = new vscode.Range(
-						part.range.startLine,
-						part.range.startChar,
-						part.range.endLine,
-						part.range.endChar
-					);
-					return new vscode.ChatResponseAnchorPart(new vscode.Location(uri, range), part.content);
-				}
-				return new vscode.ChatResponseAnchorPart(uri, part.content);
-			}
-			return undefined;
-
-		case 'toolInvocation':
-			if (part.toolName && part.toolCallId) {
-				const toolPart = new vscode.ChatToolInvocationPart(part.toolName, part.toolCallId);
-				toolPart.isComplete = part.isComplete ?? true;
-				toolPart.isConfirmed = part.isConfirmed ?? true;
-				toolPart.isError = part.isError ?? false;
-				if (part.invocationMessage) {
-					toolPart.invocationMessage = new vscode.MarkdownString(part.invocationMessage);
-				}
-				if (part.pastTenseMessage) {
-					toolPart.pastTenseMessage = new vscode.MarkdownString(part.pastTenseMessage);
-				}
-				// Note: toolSpecificData requires specific shape, skip for now
-				return toolPart;
-			} else if (part.toolName) {
-				// Just a prepareToolInvocation
-				const toolPart = new vscode.ChatToolInvocationPart(part.toolName, part.toolName);
-				toolPart.isComplete = false;
-				toolPart.isConfirmed = false;
-				return toolPart;
-			}
-			return undefined;
+			return new vscode.ChatResponseProgressPart(part.progressMessage ?? getContentString(part.content));
 
 		case 'thinkingProgress':
-			return new vscode.ChatResponseThinkingProgressPart(part.content ?? '');
+			return new vscode.ChatResponseThinkingProgressPart(
+				getContentString(part.content),
+				part.thinkingId,
+				part.thinkingMetadata as { readonly [key: string]: unknown } | undefined
+			);
 
+		// ========================================
+		// Reference/Anchor Parts
+		// ========================================
+		case 'reference': {
+			const uri = part.uri ? vscode.Uri.parse(part.uri) : undefined;
+			if (!uri) {
+				return undefined;
+			}
+			let value: vscode.Uri | vscode.Location = uri;
+			if (part.range) {
+				value = new vscode.Location(uri, deserializeRange(part.range));
+			}
+			const refPart = new vscode.ChatResponseReferencePart(value);
+			// Apply icon path if available
+			const iconPath = deserializeIconPath(part.iconPath);
+			if (iconPath) {
+				(refPart as { iconPath?: typeof iconPath }).iconPath = iconPath;
+			}
+			return refPart;
+		}
+
+		case 'anchor': {
+			const uri = part.uri ? vscode.Uri.parse(part.uri) : undefined;
+			if (!uri) {
+				return undefined;
+			}
+			if (part.range) {
+				const location = new vscode.Location(uri, deserializeRange(part.range));
+				return new vscode.ChatResponseAnchorPart(location, getContentString(part.content));
+			}
+			return new vscode.ChatResponseAnchorPart(uri, getContentString(part.content));
+		}
+
+		// ========================================
+		// Tool Invocation Parts
+		// ========================================
+		case 'toolInvocation': {
+			if (!part.toolName || !part.toolCallId) {
+				return undefined;
+			}
+			const toolPart = new vscode.ChatToolInvocationPart(part.toolName, part.toolCallId);
+			toolPart.isComplete = part.isComplete ?? true;
+			toolPart.isConfirmed = part.isConfirmed ?? true;
+			toolPart.isError = part.isError ?? false;
+
+			if (part.invocationMessage) {
+				toolPart.invocationMessage = deserializeMarkdownString(part.invocationMessage);
+			}
+			if (part.pastTenseMessage) {
+				toolPart.pastTenseMessage = deserializeMarkdownString(part.pastTenseMessage);
+			}
+			if (part.originMessage) {
+				toolPart.originMessage = deserializeMarkdownString(part.originMessage);
+			}
+			if (part.fromSubAgent !== undefined) {
+				toolPart.fromSubAgent = part.fromSubAgent;
+			}
+			if (part.presentation && part.presentation !== 'default') {
+				toolPart.presentation = part.presentation;
+			}
+			if (part.toolSpecificData) {
+				toolPart.toolSpecificData = deserializeToolSpecificData(part.toolSpecificData);
+			}
+			return toolPart;
+		}
+
+		case 'prepareToolInvocation':
+			if (part.toolName) {
+				return new vscode.ChatPrepareToolInvocationPart(part.toolName);
+			}
+			return undefined;
+
+		// ========================================
+		// Confirmation Part
+		// ========================================
+		case 'confirmation': {
+			const title = part.title ?? 'Confirmation';
+			const message = deserializeMarkdownString(part.message ?? part.content);
+			const buttons = part.buttons ? [...part.buttons] : undefined;
+			return new vscode.ChatResponseConfirmationPart(title, message, part.data, buttons);
+		}
+
+		// ========================================
+		// Warning Part
+		// ========================================
 		case 'warning':
-			return new vscode.ChatResponseMarkdownPart(new vscode.MarkdownString(`⚠️ ${part.content ?? ''}`));
+			return new vscode.ChatResponseWarningPart(deserializeMarkdownString(part.content));
 
-		case 'error':
-			return new vscode.ChatResponseMarkdownPart(new vscode.MarkdownString(`❌ ${part.content ?? ''}`));
+		// ========================================
+		// File Tree Part
+		// ========================================
+		case 'filetree': {
+			if (!part.treeItems || !part.baseUri) {
+				return undefined;
+			}
+			const baseUri = vscode.Uri.parse(part.baseUri);
+			const items = part.treeItems.map(function convertItem(item): vscode.ChatResponseFileTree {
+				return {
+					name: item.name,
+					children: item.children?.map(convertItem)
+				};
+			});
+			return new vscode.ChatResponseFileTreePart(items, baseUri);
+		}
 
-		case 'confirmation':
-			// Confirmations can't be fully reconstructed, show as markdown
-			const confirmText = `**${part.title ?? 'Confirmation'}**: ${part.content ?? ''}`;
-			return new vscode.ChatResponseMarkdownPart(new vscode.MarkdownString(confirmText));
+		// ========================================
+		// Text Edit Part
+		// ========================================
+		case 'textEdit': {
+			if (!part.uri || !part.edits) {
+				return undefined;
+			}
+			const uri = vscode.Uri.parse(part.uri);
+			const edits = part.edits.map(deserializeTextEdit);
+			const editPart = new vscode.ChatResponseTextEditPart(uri, edits);
+			if (part.isDone !== undefined) {
+				editPart.isDone = part.isDone;
+			}
+			return editPart;
+		}
 
+		// ========================================
+		// Notebook Edit Part
+		// ========================================
+		case 'notebookEdit': {
+			if (!part.uri || !part.notebookEdits) {
+				return undefined;
+			}
+			const uri = vscode.Uri.parse(part.uri);
+			const edits = part.notebookEdits.map((edit): vscode.NotebookEdit => {
+				if (edit.editType === 'replace' && edit.index !== undefined && edit.count !== undefined && edit.cells) {
+					const range = new vscode.NotebookRange(edit.index, edit.index + edit.count);
+					const cells = edit.cells.map(cell => new vscode.NotebookCellData(
+						cell.kind === 'code' ? vscode.NotebookCellKind.Code : vscode.NotebookCellKind.Markup,
+						cell.value,
+						cell.languageId
+					));
+					return vscode.NotebookEdit.replaceCells(range, cells);
+				} else if (edit.editType === 'metadata' && edit.index !== undefined && edit.metadata) {
+					return vscode.NotebookEdit.updateCellMetadata(edit.index, edit.metadata);
+				} else if (edit.editType === 'documentMetadata' && edit.metadata) {
+					return vscode.NotebookEdit.updateNotebookMetadata(edit.metadata);
+				}
+				// Fallback: empty replace
+				return vscode.NotebookEdit.replaceCells(new vscode.NotebookRange(0, 0), []);
+			});
+			const notebookEditPart = new vscode.ChatResponseNotebookEditPart(uri, edits);
+			if (part.isDone !== undefined) {
+				notebookEditPart.isDone = part.isDone;
+			}
+			return notebookEditPart;
+		}
+
+		// ========================================
+		// Codeblock URI Part
+		// ========================================
+		case 'codeblockUri': {
+			if (!part.codeblockUri) {
+				return undefined;
+			}
+			const uri = vscode.Uri.parse(part.codeblockUri);
+			return new vscode.ChatResponseCodeblockUriPart(uri, part.isEdit, part.undoStopId);
+		}
+
+		// ========================================
+		// Code Citation Part
+		// ========================================
+		case 'codeCitation': {
+			if (!part.citationValue || !part.license || !part.snippet) {
+				return undefined;
+			}
+			return new vscode.ChatResponseCodeCitationPart(
+				vscode.Uri.parse(part.citationValue),
+				part.license,
+				part.snippet
+			);
+		}
+
+		// ========================================
+		// Command Button Part
+		// ========================================
+		case 'command': {
+			if (!part.command) {
+				return undefined;
+			}
+			const command: vscode.Command = {
+				title: part.command.title,
+				command: part.command.command,
+				tooltip: part.command.tooltip,
+				arguments: part.command.arguments ? [...part.command.arguments] : undefined
+			};
+			return new vscode.ChatResponseCommandButtonPart(command);
+		}
+
+		// ========================================
+		// Move Part
+		// ========================================
+		case 'move': {
+			if (!part.moveUri || !part.moveRange) {
+				return undefined;
+			}
+			const uri = vscode.Uri.parse(part.moveUri);
+			const range = deserializeRange(part.moveRange);
+			return new vscode.ChatResponseMovePart(uri, range);
+		}
+
+		// ========================================
+		// Multi-Diff Part
+		// ========================================
+		case 'multiDiff': {
+			if (!part.multiDiffResources) {
+				return undefined;
+			}
+			const resources = part.multiDiffResources.map(r => ({
+				originalUri: r.originalUri ? vscode.Uri.parse(r.originalUri) : undefined,
+				modifiedUri: r.modifiedUri ? vscode.Uri.parse(r.modifiedUri) : undefined,
+				goToFileUri: r.goToFileUri ? vscode.Uri.parse(r.goToFileUri) : undefined,
+				added: r.added,
+				removed: r.removed
+			}));
+			return new vscode.ChatResponseMultiDiffPart(resources, part.multiDiffTitle ?? '', part.multiDiffReadOnly);
+		}
+
+		// ========================================
+		// Pull Request Part
+		// ========================================
+		case 'pullRequest': {
+			// ChatResponsePullRequestPart requires all arguments: (uri, title, description, author, linkTag)
+			const uri = part.prUri ? vscode.Uri.parse(part.prUri) : vscode.Uri.parse('');
+			const title = part.prTitle ?? '';
+			const description = part.prDescription ?? '';
+			const author = part.prAuthor ?? '';
+			const linkTag = part.prLinkTag ?? '';
+			return new vscode.ChatResponsePullRequestPart(uri, title, description, author, linkTag);
+		}
+
+		// ========================================
+		// Extensions Part
+		// ========================================
+		case 'extensions': {
+			if (!part.extensions) {
+				return undefined;
+			}
+			return new vscode.ChatResponseExtensionsPart([...part.extensions]);
+		}
+
+		// ========================================
+		// Error (rendered as warning with error styling)
+		// ========================================
+		case 'error': {
+			// VS Code doesn't have a dedicated error part, use warning
+			const md = deserializeMarkdownString(part.content);
+			return new vscode.ChatResponseWarningPart(md);
+		}
+
+		// ========================================
+		// Unknown - skip
+		// ========================================
+		case 'unknown':
 		default:
 			return undefined;
 	}
+}
+
+/**
+ * Deserialize tool-specific data back to the format VS Code expects
+ */
+function deserializeToolSpecificData(data: unknown): vscode.ChatTerminalToolInvocationData | undefined {
+	if (!data || typeof data !== 'object') {
+		return undefined;
+	}
+
+	const d = data as Record<string, unknown>;
+	if (d.kind === 'terminal') {
+		// ChatTerminalToolInvocationData has commandLine as an object { original, userEdited?, toolEdited? }
+		if ('commandLine' in d && typeof d.commandLine === 'string') {
+			return {
+				commandLine: {
+					original: d.commandLine,
+				},
+				language: (d.language as string) ?? 'shellscript'
+			};
+		}
+		if ('command' in d && typeof d.command === 'string') {
+			return {
+				commandLine: {
+					original: d.command,
+				},
+				language: (d.language as string) ?? 'shellscript'
+			};
+		}
+	}
+
+	return undefined;
 }
 
 /**

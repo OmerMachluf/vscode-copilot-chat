@@ -10,30 +10,270 @@ import { Disposable } from '../../util/vs/base/common/lifecycle';
 import { generateUuid } from '../../util/vs/base/common/uuid';
 
 /**
- * Serializable representation of a ChatResponsePart for persistence
- * These can be reconstructed into actual ChatResponsePart objects
+ * Serialized MarkdownString that preserves all VS Code MarkdownString properties
+ */
+export interface SerializedMarkdownString {
+	readonly value: string;
+	readonly isTrusted?: boolean | { readonly enabledCommands: readonly string[] };
+	readonly supportThemeIcons?: boolean;
+	readonly supportHtml?: boolean;
+	readonly baseUri?: string;
+}
+
+/**
+ * Serialized range for locations
+ */
+export interface SerializedRange {
+	readonly startLine: number;
+	readonly startChar: number;
+	readonly endLine: number;
+	readonly endChar: number;
+}
+
+/**
+ * Serialized location (URI + optional range)
+ */
+export interface SerializedLocation {
+	readonly uri: string;
+	readonly range?: SerializedRange;
+}
+
+/**
+ * Icon path for references
+ */
+export interface SerializedIconPath {
+	readonly themeIcon?: string;
+	readonly light?: string;
+	readonly dark?: string;
+}
+
+/**
+ * Tool invocation presentation options
+ */
+export type ToolInvocationPresentation = 'default' | 'hidden' | 'hiddenAfterComplete';
+
+/**
+ * Tool-specific data variants matching VS Code's internal types
+ */
+export interface TerminalToolData {
+	readonly kind: 'terminal';
+	readonly command?: string;
+	readonly commandLine?: string;
+	readonly language: string;
+}
+
+export interface InputToolData {
+	readonly kind: 'input';
+	readonly placeholder?: string;
+}
+
+export interface ExtensionsToolData {
+	readonly kind: 'extensions';
+	readonly extensions: readonly string[];
+}
+
+export interface PullRequestToolData {
+	readonly kind: 'pullRequest';
+	readonly author?: string;
+	readonly title?: string;
+	readonly description?: string;
+	readonly uri?: string;
+}
+
+export interface TodoListToolData {
+	readonly kind: 'todoList';
+	readonly items: readonly { id: number; title: string; status: string }[];
+}
+
+export type SerializedToolSpecificData =
+	| TerminalToolData
+	| InputToolData
+	| ExtensionsToolData
+	| PullRequestToolData
+	| TodoListToolData
+	| { readonly kind: string; [key: string]: unknown };
+
+/**
+ * All supported chat part types matching VS Code's ExtendedChatResponsePart
+ */
+export type SerializedChatPartType =
+	| 'markdown'
+	| 'markdownWithVulnerabilities'
+	| 'anchor'
+	| 'reference'
+	| 'progress'
+	| 'thinkingProgress'
+	| 'filetree'
+	| 'toolInvocation'
+	| 'prepareToolInvocation'
+	| 'confirmation'
+	| 'warning'
+	| 'error'
+	| 'textEdit'
+	| 'notebookEdit'
+	| 'codeblockUri'
+	| 'codeCitation'
+	| 'command'
+	| 'move'
+	| 'multiDiff'
+	| 'pullRequest'
+	| 'extensions'
+	| 'unknown';
+
+/**
+ * Serializable representation of a ChatResponsePart for persistence.
+ * This interface supports ALL VS Code chat part types for 100% UI fidelity.
+ * Parts can be reconstructed into actual ChatResponsePart objects.
  */
 export interface SerializedChatPart {
-	readonly type: 'markdown' | 'reference' | 'progress' | 'toolInvocation' | 'anchor' | 'filetree' | 'confirmation' | 'warning' | 'error' | 'thinkingProgress' | 'unknown';
-	readonly content?: string;
-	// For references
+	readonly type: SerializedChatPartType;
+
+	// === Common fields ===
+	/** Plain string content (legacy) or serialized MarkdownString */
+	readonly content?: string | SerializedMarkdownString;
+
+	// === Location/Reference fields ===
 	readonly uri?: string;
-	readonly range?: { startLine: number; startChar: number; endLine: number; endChar: number };
-	// For tool invocations
+	readonly range?: SerializedRange;
+	readonly location?: SerializedLocation;
+	/** For references with custom icons */
+	readonly iconPath?: SerializedIconPath;
+	/** Reference display options */
+	readonly referenceOptions?: { readonly status?: { readonly description: string; readonly kind: string } };
+
+	// === Tool invocation fields (ChatToolInvocationPart) ===
 	readonly toolName?: string;
 	readonly toolCallId?: string;
 	readonly isComplete?: boolean;
 	readonly isConfirmed?: boolean;
 	readonly isError?: boolean;
-	readonly invocationMessage?: string;
-	readonly pastTenseMessage?: string;
-	readonly toolSpecificData?: unknown;
-	// For progress
+	readonly invocationMessage?: string | SerializedMarkdownString;
+	readonly pastTenseMessage?: string | SerializedMarkdownString;
+	/** Origin message showing where the tool was invoked from */
+	readonly originMessage?: string | SerializedMarkdownString;
+	/** Whether this tool call came from a sub-agent */
+	readonly fromSubAgent?: boolean;
+	/** Presentation mode: hidden, hiddenAfterComplete, or default */
+	readonly presentation?: ToolInvocationPresentation;
+	/** Tool-specific rendering data (terminal commands, extensions, etc.) */
+	readonly toolSpecificData?: SerializedToolSpecificData;
+
+	// === Progress fields ===
 	readonly progressMessage?: string;
-	// For confirmations
+
+	// === Thinking progress fields ===
+	readonly thinkingId?: string;
+	readonly thinkingMetadata?: unknown;
+
+	// === Confirmation fields ===
 	readonly title?: string;
-	readonly buttons?: string[];
+	readonly message?: string | SerializedMarkdownString;
+	readonly buttons?: readonly string[];
 	readonly data?: unknown;
+
+	// === File tree fields ===
+	readonly treeItems?: readonly SerializedFileTreeItem[];
+	readonly baseUri?: string;
+
+	// === Text edit fields ===
+	readonly edits?: readonly SerializedTextEdit[];
+	readonly isDone?: boolean;
+
+	// === Notebook edit fields ===
+	readonly notebookEdits?: readonly SerializedNotebookEdit[];
+
+	// === Codeblock URI fields ===
+	readonly codeblockUri?: string;
+	readonly isEdit?: boolean;
+	readonly undoStopId?: string;
+
+	// === Code citation fields ===
+	readonly license?: string;
+	readonly snippet?: string;
+	readonly citationValue?: string;
+
+	// === Command button fields ===
+	readonly command?: SerializedCommand;
+
+	// === Move part fields ===
+	readonly moveUri?: string;
+	readonly moveRange?: SerializedRange;
+
+	// === Multi-diff fields ===
+	readonly multiDiffTitle?: string;
+	readonly multiDiffResources?: readonly SerializedMultiDiffResource[];
+	readonly multiDiffReadOnly?: boolean;
+
+	// === Pull request fields ===
+	readonly prAuthor?: string;
+	readonly prTitle?: string;
+	readonly prDescription?: string;
+	readonly prUri?: string;
+	readonly prLinkTag?: string;
+
+	// === Extensions fields ===
+	readonly extensions?: readonly string[];
+
+	// === Markdown with vulnerabilities fields ===
+	readonly vulnerabilities?: readonly { readonly title: string; readonly description: string }[];
+}
+
+/**
+ * Serialized file tree item for filetree parts
+ */
+export interface SerializedFileTreeItem {
+	readonly name: string;
+	readonly children?: readonly SerializedFileTreeItem[];
+}
+
+/**
+ * Serialized text edit
+ */
+export interface SerializedTextEdit {
+	readonly range: SerializedRange;
+	readonly newText: string;
+}
+
+/**
+ * Serialized notebook edit
+ */
+export interface SerializedNotebookEdit {
+	readonly editType: 'replace' | 'metadata' | 'documentMetadata';
+	readonly index?: number;
+	readonly count?: number;
+	readonly cells?: readonly SerializedNotebookCell[];
+	readonly metadata?: Record<string, unknown>;
+}
+
+/**
+ * Serialized notebook cell
+ */
+export interface SerializedNotebookCell {
+	readonly kind: 'code' | 'markup';
+	readonly value: string;
+	readonly languageId: string;
+	readonly metadata?: Record<string, unknown>;
+}
+
+/**
+ * Serialized command for command button parts
+ */
+export interface SerializedCommand {
+	readonly title: string;
+	readonly command: string;
+	readonly tooltip?: string;
+	readonly arguments?: readonly unknown[];
+}
+
+/**
+ * Serialized multi-diff resource entry
+ */
+export interface SerializedMultiDiffResource {
+	readonly originalUri?: string;
+	readonly modifiedUri?: string;
+	readonly goToFileUri?: string;
+	readonly added?: number;
+	readonly removed?: number;
 }
 
 /**
@@ -326,7 +566,7 @@ export class WorkerSession extends Disposable {
 		switch (part.type) {
 			case 'markdown':
 				if (part.content) {
-					stream.markdown(part.content);
+					stream.markdown(this._deserializeMarkdownContent(part.content));
 				}
 				break;
 			case 'progress':
@@ -359,6 +599,29 @@ export class WorkerSession extends Disposable {
 				break;
 			// Other part types are less critical for replay
 		}
+	}
+
+	/**
+	 * Deserialize markdown content from string or SerializedMarkdownString to MarkdownString
+	 */
+	private _deserializeMarkdownContent(content: string | SerializedMarkdownString): vscode.MarkdownString {
+		if (typeof content === 'string') {
+			return new vscode.MarkdownString(content);
+		}
+		const md = new vscode.MarkdownString(content.value);
+		if (content.isTrusted !== undefined) {
+			md.isTrusted = content.isTrusted;
+		}
+		if (content.supportThemeIcons !== undefined) {
+			md.supportThemeIcons = content.supportThemeIcons;
+		}
+		if (content.supportHtml !== undefined) {
+			md.supportHtml = content.supportHtml;
+		}
+		if (content.baseUri) {
+			md.baseUri = vscode.Uri.parse(content.baseUri);
+		}
+		return md;
 	}
 
 	/**
@@ -1182,7 +1445,21 @@ export class WorkerResponseStream implements vscode.ChatResponseStream {
 		this._currentContent += content;
 		// Write to REAL stream if attached
 		this._realStream?.markdown(value);
-		this._emitPart({ type: 'markdown', content });
+		// Serialize with full MarkdownString properties for fidelity
+		if (typeof value === 'string') {
+			this._emitPart({ type: 'markdown', content });
+		} else {
+			this._emitPart({
+				type: 'markdown',
+				content: {
+					value: value.value,
+					isTrusted: value.isTrusted,
+					supportThemeIcons: value.supportThemeIcons,
+					supportHtml: value.supportHtml,
+					baseUri: value.baseUri?.toString(),
+				},
+			});
+		}
 	}
 
 	anchor(value: vscode.Uri | vscode.Location): void {
@@ -1206,19 +1483,28 @@ export class WorkerResponseStream implements vscode.ChatResponseStream {
 		// Write to REAL stream if attached
 		this._realStream?.button(command);
 		this._emitPart({
-			type: 'unknown',
-			content: `[Button: ${command.title}]`,
-			data: { command: command.command, arguments: command.arguments },
+			type: 'command',
+			command: {
+				title: command.title,
+				command: command.command,
+				tooltip: command.tooltip,
+				arguments: command.arguments,
+			},
 		});
 	}
 
 	filetree(value: vscode.ChatResponseFileTree[], baseUri: vscode.Uri): void {
 		// Write to REAL stream if attached
 		this._realStream?.filetree(value, baseUri);
+		// Properly serialize file tree items
+		const serializeItem = (item: vscode.ChatResponseFileTree): { name: string; children?: { name: string; children?: any }[] } => ({
+			name: item.name,
+			children: item.children?.map(serializeItem),
+		});
 		this._emitPart({
 			type: 'filetree',
-			uri: baseUri.toString(),
-			content: JSON.stringify(value),
+			baseUri: baseUri.toString(),
+			treeItems: value.map(serializeItem),
 		});
 	}
 
@@ -1313,7 +1599,21 @@ export class WorkerResponseStream implements vscode.ChatResponseStream {
 		(this._realStream as any)?.warning?.(value);
 		const content = typeof value === 'string' ? value : value.value;
 		this._currentContent += `⚠️ ${content}`;
-		this._emitPart({ type: 'warning', content });
+		// Serialize with full MarkdownString properties for fidelity
+		if (typeof value === 'string') {
+			this._emitPart({ type: 'warning', content });
+		} else {
+			this._emitPart({
+				type: 'warning',
+				content: {
+					value: value.value,
+					isTrusted: value.isTrusted,
+					supportThemeIcons: value.supportThemeIcons,
+					supportHtml: value.supportHtml,
+					baseUri: value.baseUri?.toString(),
+				},
+			});
+		}
 	}
 
 	error(value: string | vscode.MarkdownString): void {
@@ -1321,7 +1621,21 @@ export class WorkerResponseStream implements vscode.ChatResponseStream {
 		(this._realStream as any)?.error?.(value);
 		const content = typeof value === 'string' ? value : value.value;
 		this._currentContent += `❌ ${content}`;
-		this._emitPart({ type: 'error', content });
+		// Serialize with full MarkdownString properties for fidelity
+		if (typeof value === 'string') {
+			this._emitPart({ type: 'error', content });
+		} else {
+			this._emitPart({
+				type: 'error',
+				content: {
+					value: value.value,
+					isTrusted: value.isTrusted,
+					supportThemeIcons: value.supportThemeIcons,
+					supportHtml: value.supportHtml,
+					baseUri: value.baseUri?.toString(),
+				},
+			});
+		}
 	}
 
 	confirmation(title: string, message: string | vscode.MarkdownString, data: any, buttons?: string[]): void {
@@ -1329,43 +1643,136 @@ export class WorkerResponseStream implements vscode.ChatResponseStream {
 		(this._realStream as any)?.confirmation?.(title, message, data, buttons);
 		const messageText = typeof message === 'string' ? message : message.value;
 		this._currentContent += `[Confirmation] ${title}: ${messageText}`;
-		this._emitPart({
-			type: 'confirmation',
-			title,
-			content: messageText,
-			buttons,
-			data,
-		});
+		// Serialize with full MarkdownString properties for fidelity
+		if (typeof message === 'string') {
+			this._emitPart({
+				type: 'confirmation',
+				title,
+				message: message,
+				buttons,
+				data,
+			});
+		} else {
+			this._emitPart({
+				type: 'confirmation',
+				title,
+				message: {
+					value: message.value,
+					isTrusted: message.isTrusted,
+					supportThemeIcons: message.supportThemeIcons,
+					supportHtml: message.supportHtml,
+					baseUri: message.baseUri?.toString(),
+				},
+				buttons,
+				data,
+			});
+		}
 	}
 
 	thinkingProgress(value: any): void {
 		// Write to REAL stream if attached
 		(this._realStream as any)?.thinkingProgress?.(value);
-		const content = typeof value === 'string' ? value : (value?.value ?? JSON.stringify(value));
-		this._emitPart({
-			type: 'thinkingProgress',
-			content,
-		});
+		// Extract thinking progress properties
+		if (typeof value === 'string') {
+			this._emitPart({
+				type: 'thinkingProgress',
+				content: value,
+			});
+		} else {
+			this._emitPart({
+				type: 'thinkingProgress',
+				content: value?.value ?? '',
+				thinkingId: value?.id,
+				thinkingMetadata: value?.metadata,
+			});
+		}
 	}
 
-	textEdit(target: any, edits: any): void {
+	textEdit(target: vscode.Uri, edits: vscode.TextEdit | vscode.TextEdit[]): void;
+	textEdit(target: vscode.Uri, isDone: true): void;
+	textEdit(target: vscode.Uri, editsOrIsDone: vscode.TextEdit | vscode.TextEdit[] | true): void {
 		// Write to REAL stream if attached - this is the key for proper rendering!
-		(this._realStream as any)?.textEdit?.(target, edits);
-		// Only store for history - don't emit as visible part since real stream handles rendering
+		(this._realStream as any)?.textEdit?.(target, editsOrIsDone);
+
+		// Handle the "isDone" overload
+		if (editsOrIsDone === true) {
+			this._emitPart({
+				type: 'textEdit',
+				uri: target.toString(),
+				edits: [],
+				isDone: true,
+			});
+			return;
+		}
+
+		// Properly serialize text edits for full fidelity
+		const editArray = Array.isArray(editsOrIsDone) ? editsOrIsDone : [editsOrIsDone];
 		this._emitPart({
-			type: 'unknown',
-			content: '[Text edit applied]',
-			data: { target: target?.toString?.(), editCount: Array.isArray(edits) ? edits.length : 1 },
+			type: 'textEdit',
+			uri: target.toString(),
+			edits: editArray.map(e => ({
+				range: {
+					startLine: e.range.start.line,
+					startChar: e.range.start.character,
+					endLine: e.range.end.line,
+					endChar: e.range.end.character,
+				},
+				newText: e.newText,
+			})),
+			isDone: false,
 		});
 	}
 
-	notebookEdit(target: any, edits: any): void {
+	notebookEdit(target: vscode.Uri, edits: vscode.NotebookEdit | vscode.NotebookEdit[]): void;
+	notebookEdit(target: vscode.Uri, isDone: true): void;
+	notebookEdit(target: vscode.Uri, editsOrIsDone: vscode.NotebookEdit | vscode.NotebookEdit[] | true): void {
 		// Write to REAL stream if attached
-		(this._realStream as any)?.notebookEdit?.(target, edits);
+		(this._realStream as any)?.notebookEdit?.(target, editsOrIsDone);
+
+		// Handle the "isDone" overload
+		if (editsOrIsDone === true) {
+			this._emitPart({
+				type: 'notebookEdit',
+				uri: target.toString(),
+				notebookEdits: [],
+				isDone: true,
+			});
+			return;
+		}
+
+		// Serialize notebook edits for fidelity
+		const editArray = Array.isArray(editsOrIsDone) ? editsOrIsDone : [editsOrIsDone];
 		this._emitPart({
-			type: 'unknown',
-			content: '[Notebook edit applied]',
-			data: { target: target?.toString?.() },
+			type: 'notebookEdit',
+			uri: target.toString(),
+			notebookEdits: editArray.map(e => {
+				// Determine edit type and serialize appropriately
+				if (e.newCellMetadata) {
+					return {
+						editType: 'metadata' as const,
+						index: e.range.start,
+						metadata: e.newCellMetadata,
+					};
+				} else if (e.newNotebookMetadata) {
+					return {
+						editType: 'documentMetadata' as const,
+						metadata: e.newNotebookMetadata,
+					};
+				} else {
+					return {
+						editType: 'replace' as const,
+						index: e.range.start,
+						count: e.range.end - e.range.start,
+						cells: e.newCells.map(c => ({
+							kind: c.kind === vscode.NotebookCellKind.Code ? 'code' as const : 'markup' as const,
+							value: c.value,
+							languageId: c.languageId,
+							metadata: c.metadata,
+						})),
+					};
+				}
+			}),
+			isDone: false,
 		});
 	}
 
@@ -1382,34 +1789,52 @@ export class WorkerResponseStream implements vscode.ChatResponseStream {
 		return Promise.resolve(callback()).then(() => '');
 	}
 
-	markdownWithVulnerabilities(value: string | vscode.MarkdownString, vulnerabilities: any[]): void {
+	markdownWithVulnerabilities(value: string | vscode.MarkdownString, vulnerabilities: { title: string; description: string }[]): void {
 		// Write to REAL stream if attached
 		(this._realStream as any)?.markdownWithVulnerabilities?.(value, vulnerabilities);
 		const content = typeof value === 'string' ? value : value.value;
 		this._currentContent += content;
+		// Serialize with full properties for fidelity
+		if (typeof value === 'string') {
+			this._emitPart({
+				type: 'markdownWithVulnerabilities',
+				content,
+				vulnerabilities,
+			});
+		} else {
+			this._emitPart({
+				type: 'markdownWithVulnerabilities',
+				content: {
+					value: value.value,
+					isTrusted: value.isTrusted,
+					supportThemeIcons: value.supportThemeIcons,
+					supportHtml: value.supportHtml,
+					baseUri: value.baseUri?.toString(),
+				},
+				vulnerabilities,
+			});
+		}
+	}
+
+	codeblockUri(value: vscode.Uri, isEdit?: boolean, undoStopId?: string): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.codeblockUri?.(value, isEdit, undoStopId);
 		this._emitPart({
-			type: 'markdown',
-			content,
-			data: { vulnerabilities },
+			type: 'codeblockUri',
+			codeblockUri: value.toString(),
+			isEdit,
+			undoStopId,
 		});
 	}
 
-	codeblockUri(value: vscode.Uri): void {
+	codeCitation(value: vscode.Uri, license: string, snippet: string): void {
 		// Write to REAL stream if attached
-		(this._realStream as any)?.codeblockUri?.(value);
+		(this._realStream as any)?.codeCitation?.(value, license, snippet);
 		this._emitPart({
-			type: 'reference',
-			uri: value.toString(),
-		});
-	}
-
-	codeCitation(value: any): void {
-		// Write to REAL stream if attached
-		(this._realStream as any)?.codeCitation?.(value);
-		this._emitPart({
-			type: 'unknown',
-			content: '[Code citation]',
-			data: value,
+			type: 'codeCitation',
+			citationValue: value.toString(),
+			license,
+			snippet,
 		});
 	}
 
@@ -1452,13 +1877,83 @@ export class WorkerResponseStream implements vscode.ChatResponseStream {
 		}
 	}
 
-	command(value: any): void {
+	command(value: vscode.Command): void {
 		// Write to REAL stream if attached
 		(this._realStream as any)?.command?.(value);
 		this._emitPart({
-			type: 'unknown',
-			content: `[Command: ${value?.title ?? 'unknown'}]`,
-			data: value,
+			type: 'command',
+			command: {
+				title: value.title,
+				command: value.command,
+				tooltip: value.tooltip,
+				arguments: value.arguments,
+			},
+		});
+	}
+
+	/**
+	 * Record a move part indicating content should be moved to a location
+	 */
+	move(uri: vscode.Uri, range: vscode.Range): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.move?.(uri, range);
+		this._emitPart({
+			type: 'move',
+			moveUri: uri.toString(),
+			moveRange: {
+				startLine: range.start.line,
+				startChar: range.start.character,
+				endLine: range.end.line,
+				endChar: range.end.character,
+			},
+		});
+	}
+
+	/**
+	 * Record a multi-diff view showing multiple file changes
+	 */
+	multiDiff(resources: { originalUri?: vscode.Uri; modifiedUri?: vscode.Uri; goToFileUri?: vscode.Uri; added?: number; removed?: number }[], title?: string, readOnly?: boolean): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.multiDiff?.(resources, title, readOnly);
+		this._emitPart({
+			type: 'multiDiff',
+			multiDiffTitle: title,
+			multiDiffResources: resources.map(r => ({
+				originalUri: r.originalUri?.toString(),
+				modifiedUri: r.modifiedUri?.toString(),
+				goToFileUri: r.goToFileUri?.toString(),
+				added: r.added,
+				removed: r.removed,
+			})),
+			multiDiffReadOnly: readOnly,
+		});
+	}
+
+	/**
+	 * Record a pull request reference
+	 */
+	pullRequest(options: { author?: string; title?: string; description?: string; uri?: vscode.Uri; linkTag?: string }): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.pullRequest?.(options);
+		this._emitPart({
+			type: 'pullRequest',
+			prAuthor: options.author,
+			prTitle: options.title,
+			prDescription: options.description,
+			prUri: options.uri?.toString(),
+			prLinkTag: options.linkTag,
+		});
+	}
+
+	/**
+	 * Record recommended extensions
+	 */
+	extensions(extensionIds: string[]): void {
+		// Write to REAL stream if attached
+		(this._realStream as any)?.extensions?.(extensionIds);
+		this._emitPart({
+			type: 'extensions',
+			extensions: extensionIds,
 		});
 	}
 
@@ -1466,10 +1961,8 @@ export class WorkerResponseStream implements vscode.ChatResponseStream {
 		// Write to REAL stream if attached
 		(this._realStream as any)?.prepareToolInvocation?.(toolName);
 		this._emitPart({
-			type: 'toolInvocation',
+			type: 'prepareToolInvocation',
 			toolName,
-			isComplete: false,
-			isConfirmed: false,
 		});
 	}
 
@@ -1480,13 +1973,33 @@ export class WorkerResponseStream implements vscode.ChatResponseStream {
 		isComplete?: boolean;
 		isConfirmed?: boolean;
 		isError?: boolean;
-		invocationMessage?: string;
-		pastTenseMessage?: string;
-		originMessage?: string;
+		invocationMessage?: string | vscode.MarkdownString;
+		pastTenseMessage?: string | vscode.MarkdownString;
+		originMessage?: string | vscode.MarkdownString;
+		fromSubAgent?: boolean;
+		presentation?: 'default' | 'hidden' | 'hiddenAfterComplete';
 		toolSpecificData?: unknown;
 	}): void {
 		// Write to REAL stream if attached
 		(this._realStream as any)?.toolInvocation?.(toolName, toolCallId, options);
+
+		// Helper to serialize MarkdownString
+		const serializeMarkdown = (value: string | vscode.MarkdownString | undefined) => {
+			if (!value) {
+				return undefined;
+			}
+			if (typeof value === 'string') {
+				return value;
+			}
+			return {
+				value: value.value,
+				isTrusted: value.isTrusted,
+				supportThemeIcons: value.supportThemeIcons,
+				supportHtml: value.supportHtml,
+				baseUri: value.baseUri?.toString(),
+			};
+		};
+
 		this._emitPart({
 			type: 'toolInvocation',
 			toolName,
@@ -1494,9 +2007,12 @@ export class WorkerResponseStream implements vscode.ChatResponseStream {
 			isComplete: options?.isComplete ?? true,
 			isConfirmed: options?.isConfirmed ?? true,
 			isError: options?.isError ?? false,
-			invocationMessage: options?.invocationMessage,
-			pastTenseMessage: options?.pastTenseMessage,
-			toolSpecificData: options?.toolSpecificData,
+			invocationMessage: serializeMarkdown(options?.invocationMessage),
+			pastTenseMessage: serializeMarkdown(options?.pastTenseMessage),
+			originMessage: serializeMarkdown(options?.originMessage),
+			fromSubAgent: options?.fromSubAgent,
+			presentation: options?.presentation,
+			toolSpecificData: options?.toolSpecificData as SerializedToolSpecificData | undefined,
 		});
 	}
 

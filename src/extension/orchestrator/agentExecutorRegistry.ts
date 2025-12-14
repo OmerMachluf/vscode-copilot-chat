@@ -20,65 +20,65 @@ export { ClaudeCodeAgentExecutor } from './executors/claudeCodeAgentExecutor';
 export { CopilotAgentExecutor } from './executors/copilotAgentExecutor';
 
 export class AgentExecutorRegistry extends Disposable implements IAgentExecutorRegistry {
-readonly _serviceBrand: undefined;
+	readonly _serviceBrand: undefined;
 
-private readonly _executors = new Map<AgentBackendType, IAgentExecutor>();
+	private readonly _executors = new Map<AgentBackendType, IAgentExecutor>();
 
-constructor(
-@ILogService private readonly _logService: ILogService,
-) {
-super();
-}
+	constructor(
+		@ILogService private readonly _logService: ILogService,
+	) {
+		super();
+	}
 
-register(executor: IAgentExecutor): void {
-const backendType = executor.backendType;
-if (this._executors.has(backendType)) {
-throw new Error(`Executor already registered for backend type: ${backendType}`);
-}
-this._executors.set(backendType, executor);
-this._logService.info(`[AgentExecutorRegistry] Registered executor for backend: ${backendType}`);
-}
+	register(executor: IAgentExecutor): void {
+		const backendType = executor.backendType;
+		if (this._executors.has(backendType)) {
+			throw new Error(`Executor already registered for backend type: ${backendType}`);
+		}
+		this._executors.set(backendType, executor);
+		this._logService.info(`[AgentExecutorRegistry] Registered executor for backend: ${backendType}`);
+	}
 
-unregister(backendType: AgentBackendType): void {
-if (this._executors.delete(backendType)) {
-this._logService.info(`[AgentExecutorRegistry] Unregistered executor for backend: ${backendType}`);
-}
-}
+	unregister(backendType: AgentBackendType): void {
+		if (this._executors.delete(backendType)) {
+			this._logService.info(`[AgentExecutorRegistry] Unregistered executor for backend: ${backendType}`);
+		}
+	}
 
-getExecutor(parsedType: ParsedAgentType): IAgentExecutor {
-const executor = this._executors.get(parsedType.backend);
-if (!executor) {
-const available = Array.from(this._executors.keys()).join(', ') || 'none';
-throw new Error(
-`No executor registered for backend type '${parsedType.backend}'. ` +
-`Agent type: ${parsedType.rawType}. Available backends: ${available}`
-);
-}
-if (!executor.supports(parsedType)) {
-throw new Error(
-`Executor for '${parsedType.backend}' does not support agent type '${parsedType.rawType}'. ` +
-`Agent name: ${parsedType.agentName}`
-);
-}
-return executor;
-}
+	getExecutor(parsedType: ParsedAgentType): IAgentExecutor {
+		const executor = this._executors.get(parsedType.backend);
+		if (!executor) {
+			const available = Array.from(this._executors.keys()).join(', ') || 'none';
+			throw new Error(
+				`No executor registered for backend type '${parsedType.backend}'. ` +
+				`Agent type: ${parsedType.rawType}. Available backends: ${available}`
+			);
+		}
+		if (!executor.supports(parsedType)) {
+			throw new Error(
+				`Executor for '${parsedType.backend}' does not support agent type '${parsedType.rawType}'. ` +
+				`Agent name: ${parsedType.agentName}`
+			);
+		}
+		return executor;
+	}
 
-getExecutorByBackend(backendType: AgentBackendType): IAgentExecutor | undefined {
-return this._executors.get(backendType);
-}
+	getExecutorByBackend(backendType: AgentBackendType): IAgentExecutor | undefined {
+		return this._executors.get(backendType);
+	}
 
-hasExecutor(backendType: AgentBackendType): boolean {
-return this._executors.has(backendType);
-}
+	hasExecutor(backendType: AgentBackendType): boolean {
+		return this._executors.has(backendType);
+	}
 
-getRegisteredBackends(): AgentBackendType[] {
-return Array.from(this._executors.keys());
-}
+	getRegisteredBackends(): AgentBackendType[] {
+		return Array.from(this._executors.keys());
+	}
 
-override dispose(): void {
-this._executors.clear();
-super.dispose();
-}
+	override dispose(): void {
+		this._executors.clear();
+		super.dispose();
+	}
 }
 /**
  * Registers all built-in agent executors with the registry.
@@ -98,6 +98,12 @@ export function registerBuiltInExecutors(
 	registry.register(copilotExecutor);
 
 	// Register Claude Code executor
-	const claudeExecutor = instantiationService.createInstance(ClaudeCodeAgentExecutor);
-	registry.register(claudeExecutor);
+
+	// Register Claude Code executor (optional - may not be available in all contexts)
+	try {
+		const claudeExecutor = instantiationService.createInstance(ClaudeCodeAgentExecutor);
+		registry.register(claudeExecutor);
+	} catch (error) {
+		// Claude executor depends on IClaudeAgentManager which may not be registered
+	}
 }
