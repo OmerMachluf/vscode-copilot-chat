@@ -5,30 +5,36 @@
 
 // Status display components
 export {
-	AgentSessionStatus,
-	IAgentSessionInfo,
-	IAgentStatusDisplay,
-	IAgentStatusChangeEvent,
-	IApprovalNeededEvent,
-	AgentStatusDisplay,
-	createSimpleStatusDisplay
+AgentSessionStatus,
+IAgentSessionInfo,
+IAgentStatusDisplay,
+IAgentStatusChangeEvent,
+IApprovalNeededEvent,
+AgentStatusDisplay,
+createSimpleStatusDisplay
 } from './statusDisplay';
 
 // Progress indicators
 export {
-	ProgressOperationType,
-	IProgressInfo,
-	IProgressIndicator,
-	ProgressIndicator,
-	createStreamingProgressReporter
+IProgressState,
+IProgressIndicatorOptions,
+IProgressUpdateEvent,
+IProgressCancelEvent,
+IAgentProgressIndicator,
+IProgressIndicatorService,
+AgentOperationType,
+ProgressIndicatorService,
+withProgress,
+createWorktreeProgress,
+getProgressIndicatorService
 } from './progressIndicator';
 
 // Control panel
 export {
-	ControlPanelAction,
-	IControlPanelActionEvent,
-	IPermissionRequestInfo,
-	IAgentControlPanel,
-	AgentControlPanel,
-	createAgentQuickAction
+IPendingApproval,
+IApprovalDecisionEvent,
+CONTROL_PANEL_COMMANDS,
+IAgentControlPanel,
+AgentControlPanel,
+getAgentControlPanel
 } from './controlPanel';
