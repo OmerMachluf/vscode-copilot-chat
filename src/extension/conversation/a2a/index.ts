@@ -176,32 +176,33 @@ AgentControlPanel,
 getAgentControlPanel
 } from './ui/controlPanel';
 
-// Permission system
+// Permissions - agent operation permission types and utilities
 export {
-PermissionLevel,
-OperationCategory,
-PermissionCheckResult,
-PermissionRequest,
-FileAccessConfig,
-TerminalAccessConfig,
 AgentPermissionConfig,
 ApprovalRecord,
-ApprovalScope,
 ApprovalRule,
+ApprovalScope,
+FileAccessConfig,
+MutablePermissionStats,
+OperationCategory,
+PermissionCheckResult,
+PermissionLevel,
+PermissionRequest,
 PermissionStats,
+TerminalAccessConfig,
 DEFAULT_PERMISSION_CONFIG,
 SENSITIVE_OPERATIONS,
-isSensitiveOperation,
 getAllowedCategories,
-isOperationAllowedByLevel
+isOperationAllowedByLevel,
+isSensitiveOperation,
 } from './permissions';
 
-// Permission service
+// Permission service - agent permission management
 export {
-IAgentPermissionService,
-IPermissionEvent,
-IApprovalPromptEvent,
+A2A_CONFIG_KEYS,
 AgentPermissionService,
+IAgentPermissionService,
+IApprovalPromptEvent,
+IPermissionEvent,
 NullAgentPermissionService,
-A2A_CONFIG_KEYS
 } from './permissionService';
