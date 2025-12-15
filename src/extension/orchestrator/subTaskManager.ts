@@ -468,11 +468,13 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 		// Create an orchestrator task for this subtask with full context
 		const taskName = `[SubTask] ${subTask.agentType} (${subTask.id.slice(-6)})`;
 
-		this._logService.debug(`[SubTaskManager] Creating orchestrator task: name="${taskName}", parentWorkerId=${subTask.parentWorkerId}, spawnContext=${inheritedSpawnContext}`);
+		this._logService.debug(`[SubTaskManager] Creating orchestrator task: name="${taskName}", parentWorkerId=${subTask.parentWorkerId}, spawnContext=${inheritedSpawnContext}, agentType=${subTask.agentType}`);
 		const orchestratorTask = orchestratorService.addTask(taskDescription, {
 			name: taskName,
 			planId: subTask.planId,
 			modelId: subTask.model,
+			// CRITICAL: Pass the agent type so the worker gets the correct role/instructions
+			agent: subTask.agentType,
 			// Don't create a new worktree - reuse parent's worktree
 			baseBranch: undefined,
 			targetFiles: subTask.targetFiles,
