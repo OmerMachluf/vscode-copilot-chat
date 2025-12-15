@@ -93,6 +93,7 @@ import { DebugCommandToConfigConverter, IDebugCommandToConfigConverter } from '.
 import { DebuggableCommandIdentifier, IDebuggableCommandIdentifier } from '../../onboardDebug/node/debuggableCommandIdentifier';
 import { ILanguageToolsProvider, LanguageToolsProvider } from '../../onboardDebug/node/languageToolsProvider';
 import { ClaudeAgentManager, IClaudeAgentManager } from '../../agents/claude/node/claudeCodeAgent';
+import { ClaudeCodeSdkService, IClaudeCodeSdkService } from '../../agents/claude/node/claudeCodeSdkService';
 import { AgentDiscoveryService, IAgentDiscoveryService } from '../../orchestrator/agentDiscoveryService';
 import { IAgentExecutorRegistry } from '../../orchestrator/agentExecutor';
 import { AgentExecutorRegistry } from '../../orchestrator/agentExecutorRegistry';
@@ -187,6 +188,7 @@ export function registerServices(builder: IInstantiationServiceBuilder, extensio
 	builder.define(IAgentRunner, new SyncDescriptor(AgentRunnerService));
 	builder.define(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistry));
 	builder.define(IClaudeAgentManager, new SyncDescriptor(ClaudeAgentManager));
+	builder.define(IClaudeCodeSdkService, new SyncDescriptor(ClaudeCodeSdkService));
 	builder.define(IWorkerToolsService, new SyncDescriptor(WorkerToolsService));
 	builder.define(IWorkerContext, new SyncDescriptor(GlobalWorkerContext));
 	builder.define(ISafetyLimitsService, new SyncDescriptor(SafetyLimitsService));
