@@ -597,6 +597,22 @@ export class WorkerSession extends Disposable {
 					}
 				}
 				break;
+			// TODO: omerm : validate this even works
+			case 'toolInvocation':
+				// Tool invocation UI is tied to the live request and can't be fully replayed.
+				// Show a summary as markdown instead so the user knows what tools were called.
+				if (part.toolName) {
+					const status = part.status === 'complete' ? '✅' : part.status === 'error' ? '❌' : '🔄';
+					stream.markdown(new vscode.MarkdownString(`${status} **Tool:** \`${part.toolName}\``));
+					if (part.result) {
+						// Show truncated result
+						const resultPreview = typeof part.result === 'string'
+							? part.result.substring(0, 200) + (part.result.length > 200 ? '...' : '')
+							: JSON.stringify(part.result).substring(0, 200);
+						stream.markdown(new vscode.MarkdownString(`\n\`\`\`\n${resultPreview}\n\`\`\`\n`));
+					}
+				}
+				break;
 			// Other part types are less critical for replay
 		}
 	}
