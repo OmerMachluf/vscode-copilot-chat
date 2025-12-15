@@ -3,7 +3,7 @@
 .vscode-test-web/
 node_modules/
 dist/
-
+.copilot-orchestrator-queue.json
 # created by simulation
 .simulation
 
