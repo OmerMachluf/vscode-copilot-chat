@@ -11,7 +11,9 @@ import { ILogService } from '../../platform/log/common/logService';
 import { Emitter, Event } from '../../util/vs/base/common/event';
 import { Disposable } from '../../util/vs/base/common/lifecycle';
 import { generateUuid } from '../../util/vs/base/common/uuid';
-import { createDecorator } from '../../util/vs/platform/instantiation/common/instantiation';
+import { createDecorator, IInstantiationService } from '../../util/vs/platform/instantiation/common/instantiation';
+import { IAgentExecutorRegistry, ParsedAgentType } from './agentExecutor';
+import { registerBuiltInExecutors } from './agentExecutorRegistry';
 import { IAgentInstructionService } from './agentInstructionService';
 import { IAgentRunner } from './agentRunner';
 import { AgentTypeParseError, parseAgentType } from './agentTypeParser';
@@ -101,6 +103,8 @@ export interface WorkerTask {
 	readonly targetFiles?: string[];
 	/** Parent worker ID for subtasks - messages route to parent instead of orchestrator */
 	readonly parentWorkerId?: string;
+	/** Parsed agent type (set during deploy) */
+	parsedAgentType?: ParsedAgentType;
 	/** Current execution status */
 	status: TaskStatus;
 	/** Worker ID if assigned */
@@ -561,11 +565,15 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		@IOrchestratorPermissionService private readonly _permissionService: IOrchestratorPermissionService,
 		@IParentCompletionService private readonly _parentCompletionService: IParentCompletionService,
 		@ISubtaskProgressService private readonly _subtaskProgressService: ISubtaskProgressService,
+		@IAgentExecutorRegistry private readonly _executorRegistry: IAgentExecutorRegistry,
+		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
 		// Initialize completion manager
 		this._completionManager = new CompletionManager(this._permissionService, this._logService);
+		// Register built-in agent executors (Copilot, Claude Code, etc.)
+		registerBuiltInExecutors(this._executorRegistry, this._instantiationService);
 		// Register queue handler
 		this._register(this._queueService.registerHandler(this._handleQueueMessage.bind(this)));
 		// Restore state on initialization
@@ -1497,7 +1505,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 			// Parse and validate agent type using the centralized parser
 			const rawAgentType = task.agent || '@agent';
-			let parsedAgentType;
+			let parsedAgentType: ParsedAgentType;
 			try {
 				parsedAgentType = parseAgentType(rawAgentType, task.modelId);
 			} catch (error) {
@@ -1507,16 +1515,19 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				throw error;
 			}
 
-			// Currently only Copilot backend is supported
-			if (parsedAgentType.backend !== 'copilot') {
+			// Validate that we have an executor for this backend type
+			if (!this._executorRegistry.hasExecutor(parsedAgentType.backend)) {
+				const availableBackends = this._executorRegistry.getRegisteredBackends();
 				throw new Error(
-					`Unsupported backend '${parsedAgentType.backend}' for task ${task.id}.\n` +
+					`No executor registered for backend '${parsedAgentType.backend}' for task ${task.id}.\n` +
 					`Agent type: ${rawAgentType}\n\n` +
-					`Currently supported:\n` +
-					`- Copilot agents: @agent, @architect, @reviewer\n\n` +
-					`Please use Copilot agent types.`
+					`Available backends: ${availableBackends.join(', ') || 'none'}\n\n` +
+					`Please ensure the backend is properly registered.`
 				);
 			}
+
+			// Store the parsed agent type in the task for use during execution
+			task.parsedAgentType = parsedAgentType;
 
 			// Load agent instructions using the normalized agent name
 			const agentId = parsedAgentType.agentName;
@@ -2389,7 +2400,8 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			);
 		}
 
-		const worktreesDir = path.join(workspaceFolder, '..', '.worktrees');
+		// Use path.dirname() to reliably get the parent directory on all platforms
+		const worktreesDir = path.join(path.dirname(workspaceFolder), '.worktrees');
 		if (!fs.existsSync(worktreesDir)) {
 			fs.mkdirSync(worktreesDir, { recursive: true });
 		}
@@ -2502,6 +2514,23 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		}
 		const circuitBreaker = this._circuitBreakers.get(worker.id)!;
 
+		// Get the parsed agent type - dispatch to appropriate executor based on backend
+		const parsedAgentType = task.parsedAgentType;
+		if (!parsedAgentType) {
+			// This shouldn't happen since we set it during deploy, but handle gracefully
+			worker.error('Task is missing parsed agent type');
+			this._healthMonitor.stopMonitoring(worker.id);
+			return;
+		}
+
+		// For non-Copilot backends, use the executor registry directly
+		// The executor handles its own conversation management
+		if (parsedAgentType.backend !== 'copilot') {
+			await this._runExecutorBasedTask(worker, task, parsedAgentType, circuitBreaker);
+			return;
+		}
+
+		// For Copilot backend, use the existing sophisticated conversation loop
 		let currentPrompt = task.description;
 		if (task.context?.additionalInstructions) {
 			currentPrompt = `${task.context.additionalInstructions}\n\n${currentPrompt}`;
@@ -2730,6 +2759,197 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				}
 
 				this._logService.error(`[Orchestrator] Worker ${worker.id} failed after ${consecutiveFailures} attempts: ${errorMessage}`);
+				worker.error(errorMessage);
+				break;
+			}
+		}
+
+		// Stop monitoring when worker loop ends
+		this._healthMonitor.stopMonitoring(worker.id);
+	}
+
+	/**
+	 * Run a task using an executor from the registry (for non-Copilot backends like Claude).
+	 * The executor handles its own conversation management and tools.
+	 */
+	private async _runExecutorBasedTask(
+		worker: WorkerSession,
+		task: WorkerTask,
+		parsedAgentType: ParsedAgentType,
+		circuitBreaker: CircuitBreaker
+	): Promise<void> {
+		const MAX_RETRIES = 10;
+		let consecutiveFailures = 0;
+
+		let currentPrompt = task.description;
+		if (task.context?.additionalInstructions) {
+			currentPrompt = `${task.context.additionalInstructions}\n\n${currentPrompt}`;
+		}
+
+		// Get the executor for this backend
+		const executor = this._executorRegistry.getExecutor(parsedAgentType);
+
+		// Get the worker's scoped tool set
+		const workerToolSet = this._workerToolSets.get(worker.id);
+
+		// Get initial model
+		const modelOverride = this._workerModelOverrides.get(worker.id);
+		const model = await this._selectModel(modelOverride ?? task.modelId);
+
+		// Build conversation history
+		const history = this._buildConversationHistory(worker, currentPrompt);
+
+		// Paused event emitter for the executor
+		const pausedEmitter = new Emitter<boolean>();
+		this._register(worker.onDidChange(() => {
+			if (worker.status === 'paused') {
+				pausedEmitter.fire(true);
+			} else if (worker.status === 'running') {
+				pausedEmitter.fire(false);
+			}
+		}));
+
+		this._logService.info(`[OrchestratorService] Running task ${task.id} with ${parsedAgentType.backend} executor`);
+
+		// Conversation loop for executor-based tasks
+		while (worker.isActive) {
+			try {
+				// Check circuit breaker
+				if (!circuitBreaker.canExecute()) {
+					const waitTime = Math.ceil((30000 - (Date.now() - (circuitBreaker.lastFailureTime || 0))) / 1000);
+					if (waitTime > 0) {
+						worker.addAssistantMessage(`[System: Circuit breaker open. Waiting ${waitTime}s before retrying...]`);
+						await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
+						if (!circuitBreaker.canExecute()) {
+							continue;
+						}
+					}
+				}
+
+				worker.addUserMessage(currentPrompt);
+
+				// Record activity start
+				this._healthMonitor.recordActivity(worker.id, 'message');
+
+				// Create response stream for the executor
+				const stream = new WorkerResponseStream(worker);
+
+				// Execute using the executor
+				const result = await executor.execute(
+					{
+						taskId: task.id,
+						prompt: currentPrompt,
+						worktreePath: worker.worktreePath,
+						agentType: parsedAgentType,
+						parentWorkerId: task.parentWorkerId,
+						model,
+						modelId: modelOverride ?? task.modelId,
+						options: {
+							maxToolCallIterations: 200,
+						},
+						history,
+						additionalInstructions: task.context?.additionalInstructions,
+						workerToolSet,
+						toolInvocationToken: worker.toolInvocationToken,
+						token: worker.cancellationToken,
+						onPaused: pausedEmitter.event,
+					},
+					stream as unknown as vscode.ChatResponseStream
+				);
+
+				stream.flush();
+
+				if (result.status === 'failed' && result.error) {
+					// Record failure
+					this._healthMonitor.recordActivity(worker.id, 'error');
+					circuitBreaker.recordFailure();
+
+					// Check if this was a cancellation
+					const isCancellation = result.error.includes('Canceled') ||
+						result.error.includes('cancelled') ||
+						result.error.includes('aborted') ||
+						worker.status === 'idle';
+
+					if (isCancellation) {
+						const nextMessage = await worker.waitForClarification();
+						if (!nextMessage) {
+							break;
+						}
+						currentPrompt = nextMessage;
+						worker.start();
+						continue;
+					}
+
+					consecutiveFailures++;
+
+					// Check if error is retryable
+					const errorLower = result.error.toLowerCase();
+					const isRateLimit = errorLower.includes('rate limit') ||
+						errorLower.includes('rate_limit') ||
+						errorLower.includes('429') ||
+						errorLower.includes('quota');
+					const isRetryable = isRateLimit ||
+						errorLower.includes('timeout') ||
+						errorLower.includes('network');
+
+					if (isRetryable && consecutiveFailures < MAX_RETRIES) {
+						const baseDelay = isRateLimit ? 30000 : 2000;
+						const delay = baseDelay * consecutiveFailures;
+						this._logService.warn(`[OrchestratorService] Executor error for worker ${worker.id}: ${result.error} (retry ${consecutiveFailures}/${MAX_RETRIES})`);
+						worker.addAssistantMessage(`[System: ${isRateLimit ? 'Rate limited' : 'Error'}. Retrying in ${Math.ceil(delay / 1000)}s]`);
+						await new Promise(resolve => setTimeout(resolve, delay));
+						continue;
+					}
+
+					this._logService.error(`[OrchestratorService] Executor failed for worker ${worker.id}: ${result.error}`);
+					worker.error(result.error);
+					break;
+				}
+
+				// Record success
+				this._healthMonitor.recordActivity(worker.id, 'success');
+				circuitBreaker.recordSuccess();
+				consecutiveFailures = 0;
+
+				// Mark as idle and wait for next message
+				worker.idle();
+
+				const nextMessage = await worker.waitForClarification();
+				if (!nextMessage) {
+					break;
+				}
+
+				currentPrompt = nextMessage;
+				worker.start();
+
+			} catch (error) {
+				this._healthMonitor.recordActivity(worker.id, 'error');
+				circuitBreaker.recordFailure();
+
+				const errorMessage = String(error);
+				const isCancellation = errorMessage.includes('Canceled') ||
+					errorMessage.includes('cancelled') ||
+					worker.status === 'idle';
+
+				if (isCancellation) {
+					const nextMessage = await worker.waitForClarification();
+					if (!nextMessage) {
+						break;
+					}
+					currentPrompt = nextMessage;
+					worker.start();
+					continue;
+				}
+
+				consecutiveFailures++;
+				if (consecutiveFailures < MAX_RETRIES) {
+					const delay = 2000 * consecutiveFailures;
+					this._logService.warn(`[OrchestratorService] Executor exception for worker ${worker.id}: ${errorMessage} (retry ${consecutiveFailures}/${MAX_RETRIES})`);
+					await new Promise(resolve => setTimeout(resolve, delay));
+					continue;
+				}
+
+				this._logService.error(`[OrchestratorService] Executor failed for worker ${worker.id}: ${errorMessage}`);
 				worker.error(errorMessage);
 				break;
 			}

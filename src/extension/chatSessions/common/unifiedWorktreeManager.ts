@@ -265,7 +265,8 @@ export class UnifiedWorktreeManager extends Disposable implements IUnifiedWorktr
 		stream?: vscode.ChatResponseStream
 	): Promise<string | undefined> {
 		const branchName = options?.branchName || `session/${sessionId}`;
-		const worktreesDir = path.join(workspaceFolder, '..', '.worktrees');
+		// Use path.dirname() to reliably get the parent directory on all platforms
+		const worktreesDir = path.join(path.dirname(workspaceFolder), '.worktrees');
 		const worktreePath = options?.worktreePath || path.join(worktreesDir, sessionId);
 
 		try {

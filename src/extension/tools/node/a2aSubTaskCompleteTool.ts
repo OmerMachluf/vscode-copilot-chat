@@ -381,8 +381,9 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 			const gitDir = await execGit(['rev-parse', '--git-dir'], worktreePath);
 			let mainRepoPath = worktreePath;
 
-			if (gitDir.includes('.git/worktrees/')) {
-				const match = gitDir.match(/(.+)\.git\/worktrees\//);
+			// Handle both forward slashes (Unix) and backslashes (Windows)
+			if (gitDir.includes('.git/worktrees/') || gitDir.includes('.git\\worktrees\\')) {
+				const match = gitDir.match(/(.+)[/\\]\.git[/\\]worktrees[/\\]/);
 				if (match) {
 					mainRepoPath = match[1];
 				}

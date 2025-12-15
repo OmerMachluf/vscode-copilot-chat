@@ -160,7 +160,6 @@ it('should throw when executor does not support agent type', () => {
 const executor = new MockAgentExecutor('copilot');
 registry.register(executor);
 const parsedType = parseAgentType('claude:sonnet');
-// Register copilot but try to get claude
 expect(() => registry.getExecutor(parsedType)).toThrow(/No executor registered/);
 });
 
@@ -234,5 +233,56 @@ const executor = new MockAgentExecutor('copilot');
 expect(executor.supports(parseAgentType('@agent'))).toBe(true);
 expect(executor.supports(parseAgentType('claude:sonnet'))).toBe(false);
 });
+});
+});
+
+describe('Executor Routing', () => {
+let registry: AgentExecutorRegistry;
+let logService: ILogService;
+let copilotExecutor: MockAgentExecutor;
+let claudeExecutor: MockAgentExecutor;
+let cliExecutor: MockAgentExecutor;
+
+beforeEach(() => {
+logService = createMockLogService();
+registry = new AgentExecutorRegistry(logService);
+copilotExecutor = new MockAgentExecutor('copilot');
+claudeExecutor = new MockAgentExecutor('claude');
+cliExecutor = new MockAgentExecutor('cli');
+registry.register(copilotExecutor);
+registry.register(claudeExecutor);
+registry.register(cliExecutor);
+});
+
+it('should route @agent to copilot executor', () => {
+const parsedType = parseAgentType('@agent');
+const executor = registry.getExecutor(parsedType);
+expect(executor.backendType).toBe('copilot');
+});
+
+it('should route claude:sonnet to claude executor', () => {
+const parsedType = parseAgentType('claude:sonnet');
+const executor = registry.getExecutor(parsedType);
+expect(executor.backendType).toBe('claude');
+});
+
+it('should route cli:local-agent to cli executor', () => {
+const parsedType = parseAgentType('cli:local-agent');
+const executor = registry.getExecutor(parsedType);
+expect(executor.backendType).toBe('cli');
+});
+
+it('should verify hasExecutor returns correct values', () => {
+expect(registry.hasExecutor('copilot')).toBe(true);
+expect(registry.hasExecutor('claude')).toBe(true);
+expect(registry.hasExecutor('cli')).toBe(true);
+expect(registry.hasExecutor('unknown' as AgentBackendType)).toBe(false);
+});
+
+it('should fail when routing to unregistered backend', () => {
+const limitedRegistry = new AgentExecutorRegistry(logService);
+limitedRegistry.register(new MockAgentExecutor('copilot'));
+const claudeType = parseAgentType('claude:sonnet');
+expect(() => limitedRegistry.getExecutor(claudeType)).toThrow(/No executor registered/);
 });
 });

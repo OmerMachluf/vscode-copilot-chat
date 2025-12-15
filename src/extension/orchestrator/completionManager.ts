@@ -3,10 +3,10 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { WorkerSession } from './workerSession';
-import { IOrchestratorPermissionService } from './orchestratorPermissions';
-import { ILogService } from '../../platform/log/common/logService';
 import * as cp from 'child_process';
+import { ILogService } from '../../platform/log/common/logService';
+import { IOrchestratorPermissionService } from './orchestratorPermissions';
+import { WorkerSession } from './workerSession';
 
 /**
  * Summary of a worker's completed work
@@ -824,12 +824,13 @@ export class CompletionManager {
 		// For worktrees, the git dir is usually .git/worktrees/<name>
 		// The main repo is two levels up from there
 		const normalized = gitDir.trim();
-		if (normalized.includes('.git/worktrees/')) {
-			const parts = normalized.split('.git/worktrees/');
+		// Handle both forward slashes (Unix) and backslashes (Windows)
+		if (normalized.includes('.git/worktrees/') || normalized.includes('.git\\worktrees\\')) {
+			const parts = normalized.split(/[/\\]\.git[/\\]worktrees[/\\]/);
 			return parts[0];
 		}
 		// Fallback: just use the parent of .git
-		return normalized.replace(/\/.git$/, '').replace(/\\.git$/, '');
+		return normalized.replace(/[/\\]\.git$/, '');
 	}
 
 	private extractBranchFromWorktree(worktreePath: string): string {
