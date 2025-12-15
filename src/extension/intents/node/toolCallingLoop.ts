@@ -142,7 +142,7 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 			this.turn.request.message;
 		// exclude turns from the history that errored due to prompt filtration
 		const history = this.options.conversation.turns.slice(0, -1).filter(turn => turn.responseStatus !== TurnStatus.PromptFiltered);
-		this._logService.info(`[ToolCallingLoops] worker with toolinvocationtoken ${request.toolInvocationToken} `);
+		this._logService.info(`[ToolCallingLoops] worker with toolinvocationtoken ${JSON.stringify(request.toolInvocationToken)} `);
 
 		return {
 			requestId: this.turn.id,
