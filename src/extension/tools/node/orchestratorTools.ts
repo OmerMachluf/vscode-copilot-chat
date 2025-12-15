@@ -575,3 +575,319 @@ class CompleteTaskTool implements ICopilotTool<ICompleteTaskParams> {
 }
 
 ToolRegistry.registerTool(CompleteTaskTool);
+
+// ============================================================================
+// Await Workers Tool
+// ============================================================================
+
+interface IAwaitWorkersParams {
+	/** Worker IDs to monitor. Can use task IDs which will be resolved to worker IDs. */
+	workerIds: string[];
+	/** Maximum time to wait in milliseconds. Default: 30 minutes (1800000ms) */
+	timeoutMs?: number;
+	/** Interval in milliseconds for escalation callbacks. Default: 5 minutes (300000ms) */
+	escalationIntervalMs?: number;
+}
+
+type WorkerAwaitResult = {
+	workerId: string;
+	taskId?: string;
+	taskName?: string;
+	status: string;
+	lastActivityAt: number;
+	errorMessage?: string;
+	changedDuringWait: boolean;
+};
+
+/**
+ * Tool for orchestrators to await completion of workers.
+ * This puts the orchestrator into a "sleep" mode where it polls worker status
+ * internally without sending messages to the LLM. It wakes up when:
+ * - Any worker goes idle, completed, or error
+ * - The escalation interval passes (prompts orchestrator to check in)
+ * - The overall timeout is reached
+ */
+class AwaitWorkersTool implements ICopilotTool<IAwaitWorkersParams> {
+	public static readonly toolName = ToolName.OrchestratorAwaitWorkers;
+
+	constructor(
+		@IOrchestratorService private readonly _orchestratorService: IOrchestratorService
+	) { }
+
+	prepareInvocation(_options: LanguageModelToolInvocationPrepareOptions<IAwaitWorkersParams>, _token: CancellationToken): ProviderResult<any> {
+		return { presentation: 'hidden' };
+	}
+
+	async invoke(options: LanguageModelToolInvocationOptions<IAwaitWorkersParams>, token: CancellationToken): Promise<LanguageModelToolResult> {
+		const {
+			workerIds,
+			timeoutMs = 30 * 60 * 1000, // 30 minutes default
+			escalationIntervalMs = 5 * 60 * 1000 // 5 minutes default
+		} = options.input;
+
+		if (!workerIds || workerIds.length === 0) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart('ERROR: No worker IDs provided to monitor.')
+			]);
+		}
+
+		// Resolve task IDs to worker IDs if needed
+		const resolvedWorkerIds: Map<string, { workerId: string; taskId?: string; taskName?: string }> = new Map();
+		const tasks = this._orchestratorService.getTasks();
+
+		for (const id of workerIds) {
+			// First check if it's a worker ID directly
+			const workerState = this._orchestratorService.getWorkerState(id);
+			if (workerState) {
+				const task = tasks.find(t => t.workerId === id);
+				resolvedWorkerIds.set(id, { workerId: id, taskId: task?.id, taskName: task?.name });
+			} else {
+				// Check if it's a task ID
+				const task = tasks.find(t => t.id === id);
+				if (task?.workerId) {
+					resolvedWorkerIds.set(task.workerId, { workerId: task.workerId, taskId: task.id, taskName: task.name });
+				} else {
+					// Unknown ID - will be reported as not found
+					resolvedWorkerIds.set(id, { workerId: id });
+				}
+			}
+		}
+
+		// Capture initial states
+		const initialStates: Map<string, string> = new Map();
+		for (const [workerId] of resolvedWorkerIds) {
+			const state = this._orchestratorService.getWorkerState(workerId);
+			initialStates.set(workerId, state?.status ?? 'unknown');
+		}
+
+		const startTime = Date.now();
+		let lastEscalationTime = startTime;
+		let wakeReason: 'status_change' | 'escalation_timeout' | 'overall_timeout' | 'cancelled' = 'overall_timeout';
+		const changedWorkers: Set<string> = new Set();
+
+		// Poll loop
+		while (Date.now() - startTime < timeoutMs) {
+			if (token.isCancellationRequested) {
+				wakeReason = 'cancelled';
+				break;
+			}
+
+			// Check for status changes
+			let foundChange = false;
+			for (const [workerId] of resolvedWorkerIds) {
+				const currentState = this._orchestratorService.getWorkerState(workerId);
+				const initialStatus = initialStates.get(workerId);
+				const currentStatus = currentState?.status ?? 'unknown';
+
+				// Detect meaningful status changes (not just running -> running)
+				if (currentStatus !== initialStatus) {
+					changedWorkers.add(workerId);
+				}
+
+				// Wake up immediately on these terminal/actionable states
+				if (currentStatus === 'idle' || currentStatus === 'completed' || currentStatus === 'error') {
+					foundChange = true;
+					changedWorkers.add(workerId);
+				}
+			}
+
+			if (foundChange) {
+				wakeReason = 'status_change';
+				break;
+			}
+
+			// Check for escalation timeout
+			const timeSinceLastEscalation = Date.now() - lastEscalationTime;
+			if (timeSinceLastEscalation >= escalationIntervalMs) {
+				wakeReason = 'escalation_timeout';
+				break;
+			}
+
+			// Wait before polling again (1 second)
+			await new Promise(resolve => setTimeout(resolve, 1000));
+		}
+
+		// Build results
+		const results: WorkerAwaitResult[] = [];
+		for (const [workerId, info] of resolvedWorkerIds) {
+			const state = this._orchestratorService.getWorkerState(workerId);
+			results.push({
+				workerId,
+				taskId: info.taskId,
+				taskName: info.taskName,
+				status: state?.status ?? 'not_found',
+				lastActivityAt: state?.lastActivityAt ?? 0,
+				errorMessage: state?.errorMessage,
+				changedDuringWait: changedWorkers.has(workerId),
+			});
+		}
+
+		// Format response
+		const lines: string[] = [];
+		const elapsed = Math.round((Date.now() - startTime) / 1000);
+
+		// Header with wake reason
+		switch (wakeReason) {
+			case 'status_change':
+				lines.push('## ⚡ Worker Status Changed\n');
+				lines.push(`Waited ${elapsed}s before detecting a status change.\n`);
+				break;
+			case 'escalation_timeout':
+				lines.push('## ⏰ Escalation Check-in\n');
+				lines.push(`${Math.round(escalationIntervalMs / 60000)} minutes have passed. Time to check on your workers.\n`);
+				break;
+			case 'overall_timeout':
+				lines.push('## ⏱️ Timeout Reached\n');
+				lines.push(`Maximum wait time of ${Math.round(timeoutMs / 60000)} minutes reached.\n`);
+				break;
+			case 'cancelled':
+				lines.push('## 🛑 Cancelled\n');
+				lines.push(`Wait was cancelled after ${elapsed}s.\n`);
+				break;
+		}
+
+		// Worker status table
+		lines.push('### Worker Status\n');
+		for (const result of results) {
+			const statusIcon =
+				result.status === 'running' ? '🔄' :
+					result.status === 'idle' ? '💤' :
+						result.status === 'completed' ? '✅' :
+							result.status === 'error' ? '❌' :
+								result.status === 'waiting-approval' ? '⏳' :
+									result.status === 'paused' ? '⏸️' : '❓';
+
+			const changeMarker = result.changedDuringWait ? ' **[CHANGED]**' : '';
+			const taskInfo = result.taskName ? ` (${result.taskName})` : result.taskId ? ` (${result.taskId})` : '';
+
+			lines.push(`${statusIcon} **${result.workerId}**${taskInfo}${changeMarker}`);
+			lines.push(`   Status: ${result.status}`);
+
+			if (result.errorMessage) {
+				lines.push(`   ⚠️ Error: ${result.errorMessage}`);
+			}
+
+			const lastActivity = result.lastActivityAt ?
+				`${Math.round((Date.now() - result.lastActivityAt) / 1000)}s ago` : 'unknown';
+			lines.push(`   Last activity: ${lastActivity}`);
+			lines.push('');
+		}
+
+		// Guidance based on wake reason
+		lines.push('### Recommended Actions\n');
+		if (wakeReason === 'status_change') {
+			const idleWorkers = results.filter(r => r.status === 'idle');
+			const errorWorkers = results.filter(r => r.status === 'error');
+			const completedWorkers = results.filter(r => r.status === 'completed');
+
+			if (errorWorkers.length > 0) {
+				lines.push('**FAILED WORKERS require immediate attention:**');
+				for (const w of errorWorkers) {
+					lines.push(`- Review ${w.workerId}: ${w.errorMessage ?? 'Unknown error'}`);
+					lines.push(`  Options: retry task, modify approach, or mark as blocked`);
+				}
+				lines.push('');
+			}
+
+			if (completedWorkers.length > 0) {
+				lines.push('**COMPLETED WORKERS ready for review:**');
+				for (const w of completedWorkers) {
+					lines.push(`- Review ${w.workerId}'s work and pull changes if satisfactory`);
+				}
+				lines.push('');
+			}
+
+			if (idleWorkers.length > 0) {
+				lines.push('**IDLE WORKERS need direction:**');
+				for (const w of idleWorkers) {
+					lines.push(`- ${w.workerId} is waiting for input. Send clarification or complete the task.`);
+				}
+				lines.push('');
+			}
+		} else if (wakeReason === 'escalation_timeout') {
+			lines.push('Consider these actions:');
+			lines.push('1. **Check progress**: Ask workers what they are working on');
+			lines.push('2. **Verify health**: Ensure workers are making progress');
+			lines.push('3. **Continue waiting**: Call orchestrator_awaitWorkers again');
+			lines.push('4. **Intervene**: Send clarification to specific workers');
+			lines.push('');
+		}
+
+		return new LanguageModelToolResult([new LanguageModelTextPart(lines.join('\n'))]);
+	}
+}
+
+ToolRegistry.registerTool(AwaitWorkersTool);
+
+// ============================================================================
+// Send Message to Worker Tool
+// ============================================================================
+
+interface ISendToWorkerParams {
+	/** Worker ID to send message to. Can also use task ID. */
+	workerId: string;
+	/** Message to send to the worker (will interrupt their current work) */
+	message: string;
+}
+
+/**
+ * Tool for sending a message/clarification to a running worker.
+ * This allows the orchestrator to "interfere" with a worker's execution
+ * to ask for status updates, provide additional context, or redirect work.
+ */
+class SendToWorkerTool implements ICopilotTool<ISendToWorkerParams> {
+	public static readonly toolName = ToolName.OrchestratorSendToWorker;
+
+	constructor(
+		@IOrchestratorService private readonly _orchestratorService: IOrchestratorService
+	) { }
+
+	prepareInvocation(_options: LanguageModelToolInvocationPrepareOptions<ISendToWorkerParams>, _token: CancellationToken): ProviderResult<any> {
+		return {
+			confirmationMessages: {
+				title: 'Send Message to Worker',
+				message: `Send message to worker "${_options.input.workerId}"? This will interrupt their current work.`
+			}
+		};
+	}
+
+	async invoke(options: LanguageModelToolInvocationOptions<ISendToWorkerParams>, _token: CancellationToken): Promise<LanguageModelToolResult> {
+		let { workerId, message } = options.input;
+
+		// Try to resolve task ID to worker ID
+		const tasks = this._orchestratorService.getTasks();
+		const task = tasks.find(t => t.id === workerId);
+		if (task?.workerId) {
+			workerId = task.workerId;
+		}
+
+		// Check if worker exists
+		const workerState = this._orchestratorService.getWorkerState(workerId);
+		if (!workerState) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`❌ Worker "${workerId}" not found.`)
+			]);
+		}
+
+		// Send the message
+		try {
+			this._orchestratorService.sendMessageToWorker(workerId, message);
+
+			const statusNote = workerState.status === 'running'
+				? 'The worker will receive this message and respond when they reach a stopping point.'
+				: workerState.status === 'idle'
+					? 'The worker was idle and will now process your message.'
+					: `The worker is currently in "${workerState.status}" status.`;
+
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`✅ Message sent to worker "${workerId}".\n\n${statusNote}`)
+			]);
+		} catch (e: any) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`❌ Failed to send message: ${e.message}`)
+			]);
+		}
+	}
+}
+
+ToolRegistry.registerTool(SendToWorkerTool);

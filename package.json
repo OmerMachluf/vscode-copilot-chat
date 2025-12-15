@@ -1557,6 +1557,57 @@
 				}
 			},
 			{
+				"name": "copilot_orchestratorAwaitWorkers",
+				"toolReferenceName": "orchestrator_awaitWorkers",
+				"displayName": "Await Workers",
+				"modelDescription": "Waits for workers to complete, fail, or go idle. This is a blocking tool that puts the orchestrator into 'sleep mode' while monitoring worker status. It wakes up when: (1) any worker goes idle/completed/error, (2) the escalation interval passes (default 5 minutes), or (3) the overall timeout is reached. Use this to efficiently wait for workers without busy polling.",
+				"userDescription": "Wait for workers to complete or need attention",
+				"icon": "$(watch)",
+				"tags": ["vscode_codesearch"],
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"workerIds": {
+							"type": "array",
+							"items": { "type": "string" },
+							"description": "Worker IDs or task IDs to monitor. Task IDs will be resolved to their worker IDs."
+						},
+						"timeoutMs": {
+							"type": "number",
+							"description": "Maximum time to wait in milliseconds (default: 30 minutes / 1800000ms)."
+						},
+						"escalationIntervalMs": {
+							"type": "number",
+							"description": "Interval for escalation callbacks in milliseconds (default: 5 minutes / 300000ms). When this interval passes without status changes, the tool returns so the orchestrator can check on workers."
+						}
+					},
+					"required": ["workerIds"]
+				}
+			},
+			{
+				"name": "copilot_orchestratorSendToWorker",
+				"toolReferenceName": "orchestrator_sendToWorker",
+				"displayName": "Send Message to Worker",
+				"modelDescription": "Sends a message or clarification to a running worker, allowing the orchestrator to interfere with their work. Use this to ask workers for status updates, provide additional context, request changes, or redirect their approach. The worker will receive the message and respond when they reach a stopping point.",
+				"userDescription": "Send a message to a worker",
+				"icon": "$(comment)",
+				"tags": ["vscode_codesearch"],
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"workerId": {
+							"type": "string",
+							"description": "Worker ID or task ID to send the message to. Task IDs will be resolved to their worker IDs."
+						},
+						"message": {
+							"type": "string",
+							"description": "The message to send to the worker. This will interrupt their current work."
+						}
+					},
+					"required": ["workerId", "message"]
+				}
+			},
+			{
 				"name": "copilot_a2aSpawnSubTask",
 				"toolReferenceName": "a2a_spawnSubTask",
 				"displayName": "Spawn Sub-Task",
@@ -1765,7 +1816,9 @@
 					"orchestrator_listWorkers",
 					"orchestrator_cancelTask",
 					"orchestrator_retryTask",
-					"orchestrator_completeTask"
+					"orchestrator_completeTask",
+					"orchestrator_awaitWorkers",
+					"orchestrator_sendToWorker"
 				]
 			},
 			{
