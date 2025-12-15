@@ -1577,7 +1577,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			// CRITICAL: Forge a toolInvocationToken for this worker.
 			// VS Code's tool UI requires a token with sessionId and sessionResource.
 			// Without this, tool invocation bubbles won't appear in the chat UI.
-			// 
+			//
 			// The token format (from debugging a working session) is:
 			// {
 			//   "sessionId": "orchestrator:/worker-{id}",
