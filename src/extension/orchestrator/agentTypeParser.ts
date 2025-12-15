@@ -31,13 +31,32 @@ export type AgentBackendType = 'copilot' | 'claude' | 'cli' | 'cloud';
 export type WellKnownAgentName = 'agent' | 'architect' | 'reviewer' | 'planner';
 
 /**
- * Mapping from agent names to Claude slash commands.
+ * Built-in agent names that are reserved and cannot be used by custom agents.
  */
-const CLAUDE_SLASH_COMMANDS: Record<string, string> = {
-	'architect': '/architect',
-	'reviewer': '/review',
-	'planner': '/plan',
-};
+export const BUILTIN_AGENT_NAMES: ReadonlySet<string> = new Set([
+	'agent',
+	'architect',
+	'reviewer',
+	'planner',
+	'repository-researcher',
+]);
+
+/**
+ * Mapping from agent names to Claude slash commands.
+ * This map includes built-in agents and can be extended with custom agents.
+ */
+const CLAUDE_SLASH_COMMANDS: Map<string, string> = new Map([
+	['agent', '/agent'],
+	['architect', '/architect'],
+	['reviewer', '/review'],
+	['planner', '/plan'],
+	['repository-researcher', '/repository-researcher'],
+]);
+
+/**
+ * Custom agent slash commands registered at runtime.
+ */
+const _customSlashCommands: Map<string, string> = new Map();
 
 // ============================================================================
 // Parsed Agent Type
@@ -120,10 +139,13 @@ function parseBackendPrefixedType(
 
 	const backend = validateBackendType(backendStr, agentType);
 
-	// For Claude backend, determine if there's a slash command
+	// For Claude backend, determine the slash command
+	// Check both built-in and custom slash commands, with fallback to /{agentName}
 	let slashCommand: string | undefined;
 	if (backend === 'claude') {
-		slashCommand = CLAUDE_SLASH_COMMANDS[agentName];
+		slashCommand = CLAUDE_SLASH_COMMANDS.get(agentName)
+			?? _customSlashCommands.get(agentName)
+			?? `/${agentName}`; // Default slash command for custom agents
 	}
 
 	return {
@@ -297,9 +319,79 @@ export function createAgentTypeString(backend: AgentBackendType, agentName: stri
 
 /**
  * Gets the slash command for a Claude agent, if applicable.
+ * Checks both built-in and custom slash commands.
  */
 export function getClaudeSlashCommand(agentName: string): string | undefined {
-	return CLAUDE_SLASH_COMMANDS[agentName.toLowerCase()];
+	const normalized = agentName.toLowerCase();
+	return CLAUDE_SLASH_COMMANDS.get(normalized) ?? _customSlashCommands.get(normalized);
+}
+
+/**
+ * Registers a custom agent's slash command for Claude backend.
+ * Custom agents get a slash command matching their name: `my-agent` → `/my-agent`
+ *
+ * @param agentName - The name of the custom agent
+ * @param slashCommand - Optional custom slash command (defaults to `/{agentName}`)
+ * @throws Error if the agent name conflicts with a built-in agent
+ */
+export function registerCustomAgentSlashCommand(agentName: string, slashCommand?: string): void {
+	const normalized = agentName.toLowerCase();
+
+	if (isBuiltInAgentName(normalized)) {
+		throw new AgentNameConflictError(
+			`Cannot register custom agent '${agentName}' - conflicts with built-in agent name`,
+			agentName
+		);
+	}
+
+	_customSlashCommands.set(normalized, slashCommand ?? `/${normalized}`);
+}
+
+/**
+ * Unregisters a custom agent's slash command.
+ */
+export function unregisterCustomAgentSlashCommand(agentName: string): boolean {
+	return _customSlashCommands.delete(agentName.toLowerCase());
+}
+
+/**
+ * Clears all custom agent slash commands.
+ * Primarily useful for testing.
+ */
+export function clearCustomAgentSlashCommands(): void {
+	_customSlashCommands.clear();
+}
+
+/**
+ * Gets all registered slash commands (built-in + custom).
+ */
+export function getAllSlashCommands(): Map<string, string> {
+	const all = new Map(CLAUDE_SLASH_COMMANDS);
+	for (const [name, command] of _customSlashCommands) {
+		all.set(name, command);
+	}
+	return all;
+}
+
+/**
+ * Checks if an agent name is a built-in agent name.
+ */
+export function isBuiltInAgentName(agentName: string): boolean {
+	return BUILTIN_AGENT_NAMES.has(agentName.toLowerCase());
+}
+
+/**
+ * Validates that a custom agent name does not conflict with built-in names.
+ * @throws AgentNameConflictError if the name conflicts
+ */
+export function validateCustomAgentName(agentName: string): void {
+	if (isBuiltInAgentName(agentName)) {
+		throw new AgentNameConflictError(
+			`Custom agent name '${agentName}' conflicts with built-in agent. ` +
+			`Reserved names: ${[...BUILTIN_AGENT_NAMES].join(', ')}`,
+			agentName
+		);
+	}
 }
 
 // ============================================================================
@@ -316,5 +408,18 @@ export class AgentTypeParseError extends Error {
 	) {
 		super(message);
 		this.name = 'AgentTypeParseError';
+	}
+}
+
+/**
+ * Error thrown when a custom agent name conflicts with a built-in agent.
+ */
+export class AgentNameConflictError extends Error {
+	constructor(
+		message: string,
+		public readonly agentName: string
+	) {
+		super(message);
+		this.name = 'AgentNameConflictError';
 	}
 }
