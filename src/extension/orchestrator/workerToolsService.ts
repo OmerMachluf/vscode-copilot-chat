@@ -42,6 +42,17 @@ function resolveRealPath(inputPath: string): string {
 }
 
 /**
+ * Escape a file path for safe display in markdown.
+ * On Windows, backslashes need to be doubled to prevent markdown escape sequences.
+ */
+function escapePathForMarkdown(filePath: string | undefined): string {
+	if (!filePath) {
+		return '';
+	}
+	return filePath.replace(/\\/g, '\\\\');
+}
+
+/**
  * Check if a path is within a base directory, properly handling symlinks.
  * Both paths are resolved to their real paths before comparison.
  *
@@ -557,14 +568,15 @@ export class WorkerToolSet extends Disposable implements IToolsService {
 		const pathValidation = this._validateInputPathsAreInWorktree(options.input);
 		if (!pathValidation.valid) {
 			this._logService.error(`[WorkerToolSet] WORKTREE BOUNDARY VIOLATION: Worker ${this.workerId} attempted to access paths outside worktree ${this.worktreePath}: ${pathValidation.violations.join(', ')}`);
+			const escapedWorktree = escapePathForMarkdown(this.worktreePath);
 			return new vscode.LanguageModelToolResult([
 				new vscode.LanguageModelTextPart(
 					`❌ **WORKTREE BOUNDARY VIOLATION**\n\n` +
 					`You attempted to access files outside your designated worktree.\n\n` +
-					`**Your worktree:** \`${this.worktreePath}\`\n\n` +
-					`**Forbidden paths:**\n${pathValidation.violations.map(v => `- \`${v}\``).join('\n')}\n\n` +
+					`**Your worktree:** \`${escapedWorktree}\`\n\n` +
+					`**Forbidden paths:**\n${pathValidation.violations.map(v => `- \`${escapePathForMarkdown(v)}\``).join('\n')}\n\n` +
 					`**Working outside your worktree is EXPLICITLY FORBIDDEN.**\n\n` +
-					`You can ONLY read, write, or modify files within: \`${this.worktreePath}\`\n\n` +
+					`You can ONLY read, write, or modify files within: \`${escapedWorktree}\`\n\n` +
 					`Please correct the file paths to be within your worktree and try again.`
 				)
 			]);

@@ -22,6 +22,17 @@ import { SubTaskResultAggregator } from './subTaskAggregator';
 export { IAgentHistoryEntry, IAgentRunner, IAgentRunOptions, IAgentRunResult };
 
 /**
+ * Escape a file path for safe display in markdown.
+ * On Windows, backslashes need to be doubled to prevent markdown escape sequences.
+ */
+function escapePathForMarkdown(filePath: string | undefined): string {
+	if (!filePath) {
+		return '';
+	}
+	return filePath.replace(/\\/g, '\\\\');
+}
+
+/**
  * Implementation of the agent runner service
  */
 export class AgentRunnerService extends Disposable implements IAgentRunner {
@@ -67,9 +78,10 @@ export class AgentRunnerService extends Disposable implements IAgentRunner {
 			// Prepend worktree instructions if operating in a worktree
 			// This ensures tools use absolute paths in the worktree directory
 			if (effectiveWorktreePath) {
-				promptParts.push(`IMPORTANT: You are working in a git worktree located at: ${effectiveWorktreePath}
+				const escapedPath = escapePathForMarkdown(effectiveWorktreePath);
+				promptParts.push(`IMPORTANT: You are working in a git worktree located at: ${escapedPath}
 All file operations (create, edit, read) MUST use absolute paths within this worktree directory.
-When using tools like create_file, replace_string_in_file, read_file, etc., always use the full absolute path starting with "${effectiveWorktreePath}".
+When using tools like create_file, replace_string_in_file, read_file, etc., always use the full absolute path starting with "${escapedPath}".
 Do NOT use paths relative to any other workspace folder.`);
 			}
 

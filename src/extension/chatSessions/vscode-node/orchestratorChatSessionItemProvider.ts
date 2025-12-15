@@ -27,22 +27,57 @@ export class OrchestratorChatSessionItemProvider extends Disposable implements v
 	private readonly _onDidCommitChatSessionItem = this._register(new Emitter<{ original: vscode.ChatSessionItem; modified: vscode.ChatSessionItem }>());
 	public readonly onDidCommitChatSessionItem: Event<{ original: vscode.ChatSessionItem; modified: vscode.ChatSessionItem }> = this._onDidCommitChatSessionItem.event;
 
+	// Debounce settings
+	private _refreshDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+	private _lastRefreshTime = 0;
+	private static readonly REFRESH_DEBOUNCE_MS = 100;  // Slightly higher for session list
+	private static readonly REFRESH_THROTTLE_MS = 300;
+
 	constructor(
 		private readonly orchestratorService: IOrchestratorService,
 	) {
 		super();
 
-		// Listen for orchestrator state changes
+		// Listen for orchestrator state changes (debounced)
 		this._register(this.orchestratorService.onDidChangeWorkers(() => {
-			this.refresh();
+			this._scheduleRefresh();
 		}));
 
-		// Listen for orchestrator events
+		// Listen for orchestrator events (debounced)
 		this._register(this.orchestratorService.onOrchestratorEvent((event) => {
 			if (event.type.startsWith('task.') || event.type.startsWith('worker.')) {
-				this.refresh();
+				this._scheduleRefresh();
 			}
 		}));
+	}
+
+	private _scheduleRefresh(): void {
+		const now = Date.now();
+		const timeSinceLastRefresh = now - this._lastRefreshTime;
+
+		// Throttle: update immediately if enough time has passed
+		if (timeSinceLastRefresh >= OrchestratorChatSessionItemProvider.REFRESH_THROTTLE_MS) {
+			this._executeRefresh();
+			return;
+		}
+
+		// Debounce: wait for more updates to coalesce
+		if (this._refreshDebounceTimer) {
+			clearTimeout(this._refreshDebounceTimer);
+		}
+
+		this._refreshDebounceTimer = setTimeout(() => {
+			this._executeRefresh();
+		}, OrchestratorChatSessionItemProvider.REFRESH_DEBOUNCE_MS);
+	}
+
+	private _executeRefresh(): void {
+		if (this._refreshDebounceTimer) {
+			clearTimeout(this._refreshDebounceTimer);
+			this._refreshDebounceTimer = undefined;
+		}
+		this._lastRefreshTime = Date.now();
+		this.refresh();
 	}
 
 	/**
@@ -134,5 +169,13 @@ export class OrchestratorChatSessionItemProvider extends Disposable implements v
 	private _getRelativePath(fullPath: string): string {
 		const parts = fullPath.split(/[/\\]/);
 		return parts[parts.length - 1] || fullPath;
+	}
+
+	public override dispose(): void {
+		if (this._refreshDebounceTimer) {
+			clearTimeout(this._refreshDebounceTimer);
+			this._refreshDebounceTimer = undefined;
+		}
+		super.dispose();
 	}
 }

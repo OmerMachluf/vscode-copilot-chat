@@ -11,6 +11,16 @@ import { ISubTask, ISubTaskManager, ISubTaskResult } from './orchestratorInterfa
 import { IOrchestratorQueueMessage, IOrchestratorQueueService } from './orchestratorQueue';
 import { WorkerSession } from './workerSession';
 
+/**
+ * Escape a file path for safe display in markdown.
+ */
+function escapePathForMarkdown(filePath: string | undefined): string {
+	if (!filePath) {
+		return '';
+	}
+	return filePath.replace(/\\/g, '\\\\');
+}
+
 export const IParentCompletionService = createServiceIdentifier<IParentCompletionService>('parentCompletionService');
 
 /**
@@ -236,7 +246,7 @@ export class ParentCompletionService extends Disposable implements IParentComple
 
 		// Include worktree path
 		lines.push('');
-		lines.push(`**Worktree:** ${message.worktreePath}`);
+		lines.push(`**Worktree:** ${escapePathForMarkdown(message.worktreePath)}`);
 
 		// Include changed files stats if available
 		if (message.changedFilesCount !== undefined) {

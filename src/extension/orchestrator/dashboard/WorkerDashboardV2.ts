@@ -16,6 +16,13 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 	public static readonly viewType = 'copilot.orchestrator.dashboard';
 	private _view?: vscode.WebviewView;
 	private _auditLogFilter: IAuditLogFilter = {};
+	private _updateDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+	private _pendingUpdate = false;
+	private _lastUpdateTime = 0;
+
+	// Debounce settings: coalesce rapid updates, but ensure minimum responsiveness
+	private static readonly UPDATE_DEBOUNCE_MS = 50;  // Wait this long for more updates
+	private static readonly UPDATE_THROTTLE_MS = 200; // But update at least this often during activity
 
 	constructor(
 		private readonly _orchestrator: IOrchestratorService,
@@ -41,7 +48,11 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			console.log('[Orchestrator Dashboard] Received message:', data.type, data);
 			switch (data.type) {
 				case 'refresh':
-					this._update();
+					// User-initiated refresh - do it immediately, not debounced
+					this._updateImmediate();
+					// Also refresh inbox and audit logs on explicit refresh
+					this._sendInboxItems();
+					this._sendAuditLogs(this._auditLogFilter);
 					break;
 				case 'getModels':
 					await this._sendAvailableModels();
@@ -220,11 +231,11 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 			}
 		});
 
-		// Subscribe to updates
-		this._orchestrator.onDidChangeWorkers(() => this._update());
+		// Subscribe to updates with debouncing to avoid excessive UI refreshes
+		this._orchestrator.onDidChangeWorkers(() => this._scheduleUpdate());
 
-		// Initial update
-		this._update();
+		// Initial update (immediate, not debounced)
+		this._updateImmediate();
 	}
 
 	private async _sendAvailableModels(): Promise<void> {
@@ -374,7 +385,51 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 		await vscode.window.showTextDocument(doc);
 	}
 
-	private _update() {
+	/**
+	 * Schedule a debounced update. This coalesces rapid-fire events into
+	 * fewer actual updates while maintaining responsiveness.
+	 */
+	private _scheduleUpdate(): void {
+		this._pendingUpdate = true;
+
+		// If we haven't updated recently, do it immediately (throttle)
+		const now = Date.now();
+		const timeSinceLastUpdate = now - this._lastUpdateTime;
+
+		if (timeSinceLastUpdate >= WorkerDashboardProviderV2.UPDATE_THROTTLE_MS) {
+			// Enough time has passed - update immediately
+			this._executeUpdate();
+			return;
+		}
+
+		// Otherwise debounce - wait for more updates to coalesce
+		if (this._updateDebounceTimer) {
+			clearTimeout(this._updateDebounceTimer);
+		}
+
+		this._updateDebounceTimer = setTimeout(() => {
+			this._executeUpdate();
+		}, WorkerDashboardProviderV2.UPDATE_DEBOUNCE_MS);
+	}
+
+	/**
+	 * Execute the actual update. Called either immediately (throttled) or after debounce.
+	 */
+	private _executeUpdate(): void {
+		if (this._updateDebounceTimer) {
+			clearTimeout(this._updateDebounceTimer);
+			this._updateDebounceTimer = undefined;
+		}
+		this._pendingUpdate = false;
+		this._lastUpdateTime = Date.now();
+		this._updateImmediate();
+	}
+
+	/**
+	 * Perform the immediate update - sends all state to the webview.
+	 * This is the actual implementation that was previously _update().
+	 */
+	private _updateImmediate() {
 		if (this._view) {
 			const workers = this._orchestrator.getWorkerStates();
 			const plan = this._orchestrator.getPlan();
@@ -410,9 +465,14 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 				pendingApprovals,
 			});
 
-			// Also send inbox and audit data on update
-			this._sendInboxItems();
-			this._sendAuditLogs(this._auditLogFilter);
+			// Only send inbox items when there are pending approvals (optimization)
+			// Inbox items are derived from pendingApprovals so they only change when approvals change
+			if (pendingApprovals > 0) {
+				this._sendInboxItems();
+			}
+
+			// Audit logs don't need to be sent on every worker update
+			// They are sent on demand via the 'getAuditLogs' message
 		}
 	}
 

@@ -687,15 +687,87 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 				}
 			});
 
-			// Execute all in parallel
+			// Execute all in parallel with IMMEDIATE failure handling
+			// Track results as they complete for immediate action
+			const results: ISubTaskResult[] = new Array(createdTasks.length);
+			const completionOrder: number[] = [];
+			const failedTasks: { index: number; error: string; taskId: string }[] = [];
+
 			const resultPromises = createdTasks.map((task, i) =>
 				this._subTaskManager.executeSubTask(task.id, token).then(result => {
 					progressHandles[i].complete(result);
+					results[i] = result;
+					completionOrder.push(i);
+
+					// IMMEDIATE FAILURE HANDLING: Notify parent as soon as a task fails
+					if (result.status !== 'success') {
+						const errorMsg = result.error || 'Unknown error';
+						failedTasks.push({ index: i, error: errorMsg, taskId: task.id });
+						this._logService.warn(`[A2ASpawnParallelSubTasksTool] IMMEDIATE FAILURE: Task ${task.id} (${subtasks[i].agentType}) failed: ${errorMsg}`);
+
+						// Send immediate notification to parent via queue
+						this._queueService.enqueueMessage({
+							id: generateUuid(),
+							timestamp: Date.now(),
+							priority: 'high',
+							planId: planId,
+							taskId: taskId,
+							workerId: workerId,
+							worktreePath: worktreePath || '',
+							type: 'error',
+							content: {
+								immediateFailure: true,
+								failedTaskId: task.id,
+								failedAgentType: subtasks[i].agentType,
+								error: errorMsg,
+								remainingTasks: createdTasks.filter((_, j) => !completionOrder.includes(j)).length,
+								suggestion: this._analyzeFailureAndSuggest(errorMsg, subtasks[i]),
+							}
+						});
+					}
+
 					return result;
+				}).catch(error => {
+					// Handle execution errors (not just failed status)
+					const errorMsg = error instanceof Error ? error.message : String(error);
+					progressHandles[i].fail(errorMsg);
+					const failedResult: ISubTaskResult = {
+						status: 'failed',
+						output: '',
+						error: errorMsg,
+					};
+					results[i] = failedResult;
+					completionOrder.push(i);
+					failedTasks.push({ index: i, error: errorMsg, taskId: task.id });
+
+					this._logService.error(`[A2ASpawnParallelSubTasksTool] IMMEDIATE FAILURE (exception): Task ${task.id} failed: ${errorMsg}`);
+
+					// Send immediate notification
+					this._queueService.enqueueMessage({
+						id: generateUuid(),
+						timestamp: Date.now(),
+						priority: 'high',
+						planId: planId,
+						taskId: taskId,
+						workerId: workerId,
+						worktreePath: worktreePath || '',
+						type: 'error',
+						content: {
+							immediateFailure: true,
+							failedTaskId: task.id,
+							failedAgentType: subtasks[i].agentType,
+							error: errorMsg,
+							remainingTasks: createdTasks.filter((_, j) => !completionOrder.includes(j)).length,
+							suggestion: this._analyzeFailureAndSuggest(errorMsg, subtasks[i]),
+						}
+					});
+
+					return failedResult;
 				})
 			);
 
-			const results = await Promise.all(resultPromises);
+			// Wait for all tasks (successful or failed) to complete
+			await Promise.all(resultPromises);
 
 			// Report final summary
 			progressRenderer.reportSummary();
@@ -781,6 +853,109 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 			// Always unregister the handler when done
 			handlerDisposable?.dispose();
 		}
+	}
+
+	/**
+	 * Analyze failure and suggest remediation actions.
+	 * Helps orchestrator decide on immediate action when a parallel task fails.
+	 */
+	private _analyzeFailureAndSuggest(errorMsg: string, subtask: SubTaskConfig): {
+		failureCategory: string;
+		likelyCause: string;
+		suggestedAction: string;
+		requiresUserInput: boolean;
+	} {
+		const errorLower = errorMsg.toLowerCase();
+
+		// Missing dependency errors
+		if (errorLower.includes('cannot find module') ||
+			errorLower.includes('module not found') ||
+			errorLower.includes('no such file') ||
+			errorLower.includes('does not exist') ||
+			errorLower.includes('missing dependency') ||
+			errorLower.includes('import') && errorLower.includes('not found')) {
+			return {
+				failureCategory: 'missing_dependency',
+				likelyCause: 'Required file or module not available. Earlier phase may not have completed or committed changes.',
+				suggestedAction: 'Check if earlier phases completed successfully. Use a2a_pull_subtask_changes to merge pending work, or spawn @researcher to investigate the dependency chain.',
+				requiresUserInput: false,
+			};
+		}
+
+		// Build/compilation errors
+		if (errorLower.includes('compile') ||
+			errorLower.includes('typescript') ||
+			errorLower.includes('syntax error') ||
+			errorLower.includes('type error') ||
+			errorLower.includes('build failed')) {
+			return {
+				failureCategory: 'compilation_error',
+				likelyCause: 'Code has syntax or type errors that prevent compilation.',
+				suggestedAction: 'Review the error details. Either fix in current task scope or spawn @agent to address compilation issues.',
+				requiresUserInput: false,
+			};
+		}
+
+		// Timeout errors
+		if (errorLower.includes('timeout') ||
+			errorLower.includes('timed out') ||
+			errorLower.includes('deadline exceeded')) {
+			return {
+				failureCategory: 'timeout',
+				likelyCause: 'Task took too long to complete. May be stuck in a loop or waiting on external resource.',
+				suggestedAction: 'Consider retrying with longer timeout, or break task into smaller subtasks.',
+				requiresUserInput: true,
+			};
+		}
+
+		// Permission errors
+		if (errorLower.includes('permission') ||
+			errorLower.includes('access denied') ||
+			errorLower.includes('unauthorized') ||
+			errorLower.includes('eacces')) {
+			return {
+				failureCategory: 'permission_error',
+				likelyCause: 'Worker lacks permission to perform required operation.',
+				suggestedAction: 'Review permission request and approve if appropriate, or escalate to user.',
+				requiresUserInput: true,
+			};
+		}
+
+		// Network/external service errors
+		if (errorLower.includes('network') ||
+			errorLower.includes('connection') ||
+			errorLower.includes('enotfound') ||
+			errorLower.includes('econnrefused')) {
+			return {
+				failureCategory: 'network_error',
+				likelyCause: 'Failed to connect to external service or network resource.',
+				suggestedAction: 'Check network connectivity. If external API is required, verify it is available.',
+				requiresUserInput: true,
+			};
+		}
+
+		// Git/merge conflicts
+		if (errorLower.includes('merge conflict') ||
+			errorLower.includes('conflict') ||
+			errorLower.includes('git')) {
+			return {
+				failureCategory: 'merge_conflict',
+				likelyCause: 'Git operation failed, possibly due to conflicting changes from parallel tasks.',
+				suggestedAction: 'Use a2a_pull_subtask_changes to manually review and resolve conflicts.',
+				requiresUserInput: false,
+			};
+		}
+
+		// Agent-specific context
+		const agentContext = subtask.agentType ? ` Task was assigned to ${subtask.agentType}.` : '';
+
+		// Default unknown error
+		return {
+			failureCategory: 'unknown',
+			likelyCause: `Unexpected error occurred.${agentContext}`,
+			suggestedAction: 'Review full error details. Consider spawning @researcher to investigate root cause, or escalate to user for guidance.',
+			requiresUserInput: true,
+		};
 	}
 }
 

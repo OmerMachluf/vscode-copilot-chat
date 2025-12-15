@@ -29,6 +29,19 @@ type IOrchestratorService = import('./orchestratorServiceV2').IOrchestratorServi
 export { ISubTask, ISubTaskCreateOptions, ISubTaskManager, ISubTaskResult };
 
 /**
+ * Escape a file path for safe display in markdown.
+ * On Windows, backslashes need to be doubled to prevent markdown escape sequences
+ * like `\.` being interpreted as just `.`.
+ */
+function escapePathForMarkdown(filePath: string | undefined): string {
+	if (!filePath) {
+		return '';
+	}
+	// Double backslashes so they display correctly in markdown
+	return filePath.replace(/\\/g, '\\\\');
+}
+
+/**
  * Represents a sub-task spawned by a parent agent.
  * Sub-tasks execute within the parent's worktree context.
  */
@@ -779,7 +792,7 @@ You are a sub-agent spawned by a PARENT AGENT (not the user).
 ${subTask.targetFiles?.length ? `- **Target Files:** ${subTask.targetFiles.join(', ')}` : ''}
 
 ## YOUR WORKTREE
-You are working in your own dedicated worktree at: ${subTask.worktreePath}
+You are working in your own dedicated worktree at: ${escapePathForMarkdown(subTask.worktreePath)}
 This is separate from your parent's worktree. Your parent will merge your branch when you're done.
 
 ## ⚠️ CRITICAL: YOU MUST COMMIT YOUR CHANGES WHEN COMPLETING
@@ -799,7 +812,7 @@ Example completion:
 **⚠️ WARNING: If you simply stop without calling a2a_subtask_complete with commitMessage, your work will be LOST!**
 
 ## WORKTREE RESTRICTION
-**You can ONLY modify files within your worktree: ${subTask.worktreePath}**
+**You can ONLY modify files within your worktree: ${escapePathForMarkdown(subTask.worktreePath)}**
 Any attempt to read, write, or modify files outside this path is forbidden and will fail.
 
 ## COMMUNICATION WITH PARENT
@@ -842,7 +855,7 @@ Focus on your assigned task and provide a clear, actionable result.`;
 		parts.push(`| Task ID | ${subTask.id} |`);
 		parts.push(`| Parent Worker | ${subTask.parentWorkerId} |`);
 		parts.push(`| Depth Level | ${subTask.depth} |`);
-		parts.push(`| Worktree | ${subTask.worktreePath} |`);
+		parts.push(`| Worktree | ${escapePathForMarkdown(subTask.worktreePath)} |`);
 		parts.push('');
 
 		// Add the actual prompt

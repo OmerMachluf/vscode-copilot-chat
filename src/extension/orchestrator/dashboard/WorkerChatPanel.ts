@@ -32,6 +32,12 @@ export class WorkerChatPanel extends Disposable {
 	private _currentTab: 'chat' | 'changes' = 'chat';
 	private _gitChanges: WorktreeChange[] = [];
 
+	// Debounce settings for updates
+	private _updateDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+	private _lastUpdateTime = 0;
+	private static readonly UPDATE_DEBOUNCE_MS = 50;
+	private static readonly UPDATE_THROTTLE_MS = 200;
+
 	public static createOrShow(
 		orchestrator: IOrchestratorService,
 		workerId: string,
@@ -82,16 +88,21 @@ export class WorkerChatPanel extends Disposable {
 			})
 		);
 
-		// Update when orchestrator state changes
+		// Update when orchestrator state changes (debounced)
 		this._disposables.add(
 			this._orchestrator.onDidChangeWorkers(() => {
-				this._update();
+				this._scheduleUpdate();
 			})
 		);
 
 		// Clean up when panel is closed
 		this._disposables.add(
 			this._panel.onDidDispose(() => {
+				// Clear any pending debounce timer
+				if (this._updateDebounceTimer) {
+					clearTimeout(this._updateDebounceTimer);
+					this._updateDebounceTimer = undefined;
+				}
 				WorkerChatPanel._panels.delete(this._workerId);
 				this.dispose();
 			})
@@ -244,6 +255,38 @@ export class WorkerChatPanel extends Disposable {
 		} catch {
 			return undefined;
 		}
+	}
+
+	/**
+	 * Schedule a debounced update to avoid excessive UI refreshes.
+	 */
+	private _scheduleUpdate(): void {
+		const now = Date.now();
+		const timeSinceLastUpdate = now - this._lastUpdateTime;
+
+		// Throttle: if enough time has passed, update immediately
+		if (timeSinceLastUpdate >= WorkerChatPanel.UPDATE_THROTTLE_MS) {
+			this._executeUpdate();
+			return;
+		}
+
+		// Debounce: wait for more updates to coalesce
+		if (this._updateDebounceTimer) {
+			clearTimeout(this._updateDebounceTimer);
+		}
+
+		this._updateDebounceTimer = setTimeout(() => {
+			this._executeUpdate();
+		}, WorkerChatPanel.UPDATE_DEBOUNCE_MS);
+	}
+
+	private _executeUpdate(): void {
+		if (this._updateDebounceTimer) {
+			clearTimeout(this._updateDebounceTimer);
+			this._updateDebounceTimer = undefined;
+		}
+		this._lastUpdateTime = Date.now();
+		this._update();
 	}
 
 	private _update(): void {
