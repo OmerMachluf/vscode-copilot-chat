@@ -732,6 +732,7 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 					const errorMsg = error instanceof Error ? error.message : String(error);
 					progressHandles[i].fail(errorMsg);
 					const failedResult: ISubTaskResult = {
+						taskId: task.id,
 						status: 'failed',
 						output: '',
 						error: errorMsg,
@@ -859,7 +860,7 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 	 * Analyze failure and suggest remediation actions.
 	 * Helps orchestrator decide on immediate action when a parallel task fails.
 	 */
-	private _analyzeFailureAndSuggest(errorMsg: string, subtask: SubTaskConfig): {
+	private _analyzeFailureAndSuggest(errorMsg: string, subtask: SpawnSubTaskParams): {
 		failureCategory: string;
 		likelyCause: string;
 		suggestedAction: string;

@@ -10,6 +10,16 @@ import { createDecorator } from '../../util/vs/platform/instantiation/common/ins
 import { IAgentHistoryEntry } from './orchestratorInterfaces';
 import { IOrchestratorPermissions } from './orchestratorPermissions';
 import { WorkerToolSet } from './workerToolsService';
+import {
+	AgentBackendType,
+	ParsedAgentType,
+	parseAgentType,
+	isCopilotAgentType,
+	isClaudeAgentType,
+	normalizeAgentName,
+	getBackendType,
+	AgentTypeParseError,
+} from './agentTypeParser';
 
 // Re-export from agentTypeParser for backwards compatibility
 export {
@@ -21,7 +31,7 @@ export {
 	normalizeAgentName,
 	getBackendType,
 	AgentTypeParseError,
-} from './agentTypeParser';
+};
 
 // ============================================================================
 // Worker Status
