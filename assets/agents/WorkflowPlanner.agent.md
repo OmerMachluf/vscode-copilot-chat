@@ -40,9 +40,10 @@ The **Architect** agent designs technical implementation. The **Orchestrator** c
 ## Stage Types
 
 ### Investigation Stage
-- Agent: `@investigation` (if available) or `@agent`
-- Purpose: Gather context, reproduce issues, understand the problem
-- Output: Findings and root cause analysis
+- Agent: `@researcher` (preferred) or `@investigation` (if available) or `@agent`
+- Purpose: Gather context, understand codebase patterns, trace code flow
+- Output: Findings with **file:line references** from symbolic navigation
+- **Key**: The `@researcher` agent uses **symbolic navigation** (definitions, usages, implementations) instead of grep-style searching, producing more accurate and structured findings
 
 ### Architecture/Design Stage
 - Agent: `@architect`
@@ -77,8 +78,8 @@ plan:
   tasks:
     - id: investigate
       name: Investigate Issue
-      agent: "@investigation"  # or @agent if not available
-      description: "Investigate and reproduce the issue: {ORIGINAL USER REQUEST}. Gather logs, identify root cause."
+      agent: "@researcher"  # Uses symbolic navigation for accurate code tracing
+      description: "Investigate and reproduce the issue: {ORIGINAL USER REQUEST}. Use symbolic navigation to trace code flow and identify root cause. Provide findings with file:line references."
       dependencies: []
 
     - id: design
@@ -107,9 +108,9 @@ plan:
   description: Implement {feature description}
   tasks:
     - id: requirements
-      name: Clarify Requirements
-      agent: "@agent"
-      description: "Clarify requirements for: {ORIGINAL USER REQUEST}. Define scope, acceptance criteria, edge cases."
+      name: Research & Requirements
+      agent: "@researcher"  # Uses symbolic navigation to understand existing patterns
+      description: "Research existing patterns and clarify requirements for: {ORIGINAL USER REQUEST}. Use symbolic navigation to understand how similar features are implemented. Define scope, acceptance criteria, edge cases."
       dependencies: []
 
     - id: architecture

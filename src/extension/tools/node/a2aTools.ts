@@ -10,10 +10,9 @@ import { CancellationToken } from '../../../util/vs/base/common/cancellation';
 import { IDisposable } from '../../../util/vs/base/common/lifecycle';
 import { generateUuid } from '../../../util/vs/base/common/uuid';
 import { LanguageModelTextPart, LanguageModelToolResult } from '../../../vscodeTypes';
+import { AgentInfo, IAgentDiscoveryService } from '../../orchestrator/agentDiscoveryService';
 import {
 	AgentTypeParseError,
-	getBackendType,
-	isCopilotAgentType,
 	parseAgentType,
 	ParsedAgentType,
 } from '../../orchestrator/agentTypeParser';
@@ -86,6 +85,12 @@ interface AwaitSubTasksParams {
 export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 	static readonly toolName = ToolName.A2ASpawnSubTask;
 
+	/**
+	 * Persistent handlers for non-blocking subtasks.
+	 * Keyed by subtask ID, cleaned up when subtask completes.
+	 */
+	private static readonly _persistentHandlers = new Map<string, IDisposable>();
+
 	constructor(
 		@ISubTaskManager private readonly _subTaskManager: ISubTaskManager,
 		@IWorkerContext private readonly _workerContext: IWorkerContext,
@@ -93,6 +98,17 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 		@ISubtaskProgressService private readonly _progressService: ISubtaskProgressService,
 		@ILogService private readonly _logService: ILogService,
 	) { }
+
+	/**
+	 * Clean up a persistent handler for a completed subtask.
+	 */
+	private static _cleanupPersistentHandler(subtaskId: string): void {
+		const handler = A2ASpawnSubTaskTool._persistentHandlers.get(subtaskId);
+		if (handler) {
+			handler.dispose();
+			A2ASpawnSubTaskTool._persistentHandlers.delete(subtaskId);
+		}
+	}
 
 	get enabled(): boolean {
 		// Always enabled to allow top-level usage
@@ -247,14 +263,53 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 				stream: parentStream,
 			});
 
+			// Register a persistent handler for non-blocking subtasks
+			// This handler stays active until the subtask completes
+			const parentWorkerId = this._workerContext?.workerId;
+			if (parentWorkerId) {
+				this._logService.debug(`[A2ASpawnSubTaskTool] Non-blocking: Registering persistent handler for parentWorkerId '${parentWorkerId}'`);
+				const handlerDisposable = this._queueService.registerOwnerHandler(parentWorkerId, async (message) => {
+					this._logService.info(`[A2ASpawnSubTaskTool] Non-blocking: RECEIVED MESSAGE from subtask: type=${message.type}, taskId=${message.taskId}`);
+					// Update progress with the message
+					const content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
+					progressHandle.update(`[${message.type}] ${content.slice(0, 50)}...`);
+
+					// If this is a completion message for this subtask, notify parent
+					if (message.type === 'completion' && message.subTaskId === subTask.id) {
+						this._logService.info(`[A2ASpawnSubTaskTool] Non-blocking: Subtask ${subTask.id} completed, notifying parent`);
+						// Send a notification to the parent that the background task is done
+						this._queueService.enqueueMessage({
+							id: generateUuid(),
+							timestamp: Date.now(),
+							priority: 'normal',
+							planId,
+							taskId,
+							workerId: parentWorkerId,
+							worktreePath: worktreePath || '',
+							subTaskId: subTask.id,
+							owner: { ownerType: 'worker', ownerId: parentWorkerId },
+							type: 'status_update',
+							content: { backgroundSubtaskComplete: subTask.id, result: message.content },
+						});
+					}
+				});
+				// Store the handler for cleanup when subtask completes
+				A2ASpawnSubTaskTool._persistentHandlers.set(subTask.id, handlerDisposable);
+			}
+
 			// Start execution in background (don't await)
 			this._subTaskManager.executeSubTask(subTask.id, token)
 				.then(result => {
 					progressHandle.complete(result);
+					// Clean up the persistent handler
+					A2ASpawnSubTaskTool._cleanupPersistentHandler(subTask.id);
+					this._logService.info(`[A2ASpawnSubTaskTool] Non-blocking: Subtask ${subTask.id} execution completed, handler cleaned up`);
 				})
 				.catch(error => {
 					progressHandle.fail(error instanceof Error ? error.message : String(error));
 					this._logService.error(`[A2ASpawnSubTaskTool] Background sub-task ${subTask.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+					// Clean up the persistent handler even on failure
+					A2ASpawnSubTaskTool._cleanupPersistentHandler(subTask.id);
 				});
 
 			return new LanguageModelToolResult([
@@ -1240,6 +1295,202 @@ export class A2ASendMessageToWorkerTool implements ICopilotTool<SendMessageToWor
 	}
 }
 
+// --- Specialist Registry ---
+
+/**
+ * Registry of specialist agents available for delegation.
+ */
+export interface ISpecialist {
+	agentType: string;
+	expertise: string[];
+	whenToUse: string;
+	triggers: string[];
+}
+
+export const SPECIALIST_REGISTRY: ISpecialist[] = [
+	{
+		agentType: '@architect',
+		expertise: ['system design', 'API design', 'data models', 'architectural decisions'],
+		whenToUse: 'When you need to make structural decisions about the codebase',
+		triggers: ['design', 'architecture', 'structure', 'API', 'model'],
+	},
+	{
+		agentType: '@researcher',
+		expertise: ['codebase investigation', 'symbolic navigation', 'tracing code flow', 'understanding existing code'],
+		whenToUse: 'When you need to understand how something works - uses symbolic navigation (definitions, usages, implementations) instead of grep',
+		triggers: ['how does', 'understand', 'investigate', 'find', 'explain', 'trace', 'flow', 'explore'],
+	},
+	{
+		agentType: '@reviewer',
+		expertise: ['code review', 'quality checks', 'security review'],
+		whenToUse: 'Before completing significant code changes',
+		triggers: ['review', 'check', 'verify', 'audit', 'quality'],
+	},
+	{
+		agentType: '@tester',
+		expertise: ['test strategy', 'test generation', 'edge cases', 'test coverage'],
+		whenToUse: 'When code needs tests or you need help with test strategy',
+		triggers: ['test', 'coverage', 'edge cases', 'unit test', 'integration'],
+	},
+	{
+		agentType: '@product',
+		expertise: ['UX decisions', 'user perspective', 'requirements', 'user-facing decisions'],
+		whenToUse: 'When making user-facing decisions or unclear on requirements',
+		triggers: ['user', 'UX', 'experience', 'requirements', 'feature'],
+	},
+];
+
+/**
+ * Suggest a specialist based on task description.
+ */
+export function suggestSpecialist(taskDescription: string): ISpecialist | null {
+	const lowerTask = taskDescription.toLowerCase();
+	for (const specialist of SPECIALIST_REGISTRY) {
+		if (specialist.triggers.some(t => lowerTask.includes(t.toLowerCase()))) {
+			return specialist;
+		}
+	}
+	return null;
+}
+
+/**
+ * Convert an AgentInfo from discovery service to specialist format.
+ * Extracts expertise keywords from description and capabilities.
+ */
+function agentInfoToSpecialist(agent: AgentInfo): ISpecialist {
+	// Extract keywords from description for triggers
+	const triggers = extractKeywords(agent.description);
+
+	// Combine capabilities and description for expertise
+	const expertise = agent.capabilities?.length
+		? agent.capabilities
+		: [agent.description.split('.')[0]]; // Use first sentence as expertise
+
+	return {
+		agentType: `@${agent.id}`,
+		expertise,
+		whenToUse: agent.description,
+		triggers,
+	};
+}
+
+/**
+ * Extract keywords from a description for trigger matching.
+ */
+function extractKeywords(description: string): string[] {
+	const words = description.toLowerCase()
+		.replace(/[^\w\s]/g, ' ')
+		.split(/\s+/)
+		.filter(w => w.length > 3);
+
+	// Common action words that make good triggers
+	const actionWords = ['design', 'review', 'test', 'implement', 'analyze', 'investigate',
+		'create', 'plan', 'research', 'check', 'find', 'understand', 'explore'];
+
+	return words.filter(w => actionWords.includes(w) || description.includes(w));
+}
+
+/**
+ * Tool for listing available specialist agents.
+ * Combines static specialist registry with dynamically discovered agents.
+ */
+export class A2AListSpecialistsTool implements ICopilotTool<Record<string, never>> {
+	static readonly toolName = ToolName.A2AListSpecialists;
+
+	constructor(
+		@ILogService private readonly _logService: ILogService,
+		@IAgentDiscoveryService private readonly _agentDiscoveryService: IAgentDiscoveryService,
+	) { }
+
+	get enabled(): boolean {
+		return true;
+	}
+
+	prepareInvocation(_options: vscode.LanguageModelToolInvocationPrepareOptions<Record<string, never>>, _token: CancellationToken): vscode.ProviderResult<vscode.PreparedToolInvocation> {
+		return { invocationMessage: 'Discovering available specialists...' };
+	}
+
+	async invoke(
+		_options: vscode.LanguageModelToolInvocationOptions<Record<string, never>>,
+		_token: CancellationToken
+	): Promise<LanguageModelToolResult> {
+		this._logService.debug('[A2AListSpecialistsTool] Discovering specialists');
+
+		// Get dynamically discovered agents
+		const discoveredAgents = await this._agentDiscoveryService.getAvailableAgents();
+		this._logService.debug(`[A2AListSpecialistsTool] Found ${discoveredAgents.length} agents from discovery service`);
+
+		// Build combined specialist list
+		const specialists = new Map<string, ISpecialist>();
+
+		// Add static specialists first (these have curated metadata)
+		for (const specialist of SPECIALIST_REGISTRY) {
+			specialists.set(specialist.agentType, specialist);
+		}
+
+		// Add/augment with discovered agents
+		for (const agent of discoveredAgents) {
+			const agentType = `@${agent.id}`;
+
+			// Skip generic agents that aren't specialists
+			if (['agent', 'ask', 'edit'].includes(agent.id)) {
+				continue;
+			}
+
+			// If not already in registry, add it
+			if (!specialists.has(agentType)) {
+				specialists.set(agentType, agentInfoToSpecialist(agent));
+				this._logService.debug(`[A2AListSpecialistsTool] Added discovered specialist: ${agentType}`);
+			}
+		}
+
+		// Build output
+		const lines: string[] = [
+			'# Available Specialist Agents\n',
+			'Use these specialists to delegate tasks that require specific expertise.\n',
+			'_Specialists are auto-discovered from assets/agents/ and .github/agents/_\n',
+		];
+
+		for (const specialist of specialists.values()) {
+			lines.push(`## ${specialist.agentType}`);
+			lines.push(`**Expertise:** ${specialist.expertise.join(', ')}`);
+			lines.push(`**When to use:** ${specialist.whenToUse}`);
+			if (specialist.triggers.length > 0) {
+				lines.push(`**Trigger keywords:** ${specialist.triggers.join(', ')}`);
+			}
+			lines.push('');
+		}
+
+		lines.push('## How to Delegate');
+		lines.push('Use `a2a_spawn_subtask` with the agentType set to the specialist you need.');
+		lines.push('');
+		lines.push('Example:');
+		lines.push('```');
+		lines.push('a2a_spawn_subtask({');
+		lines.push('  agentType: "@researcher",');
+		lines.push('  prompt: "How is authentication implemented in this codebase?",');
+		lines.push('  expectedOutput: "Explanation of auth flow with file:line references"');
+		lines.push('})');
+		lines.push('```');
+		lines.push('');
+		lines.push('## Adding New Specialists');
+		lines.push('Create a new agent file in `assets/agents/{Name}.agent.md` with:');
+		lines.push('```yaml');
+		lines.push('---');
+		lines.push('name: MySpecialist');
+		lines.push('description: What this specialist does');
+		lines.push('tools: [\'read_file\', \'edit_file\', \'a2a_spawn_subtask\']');
+		lines.push('---');
+		lines.push('# MySpecialist Agent (@myspecialist)');
+		lines.push('...');
+		lines.push('```');
+
+		return new LanguageModelToolResult([
+			new LanguageModelTextPart(lines.join('\n')),
+		]);
+	}
+}
+
 // Register the tools
 ToolRegistry.registerTool(A2ASpawnSubTaskTool);
 ToolRegistry.registerTool(A2ASpawnParallelSubTasksTool);
@@ -1247,3 +1498,4 @@ ToolRegistry.registerTool(A2AAwaitSubTasksTool);
 ToolRegistry.registerTool(A2ANotifyOrchestratorTool);
 ToolRegistry.registerTool(A2APullSubTaskChangesTool);
 ToolRegistry.registerTool(A2ASendMessageToWorkerTool);
+ToolRegistry.registerTool(A2AListSpecialistsTool);

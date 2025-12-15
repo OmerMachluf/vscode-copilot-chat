@@ -372,6 +372,36 @@ Use `orchestrator_retryTask` then redeploy via A2A tools.
     - Notify user: "Plan fix-login-bug completed!"
 ```
 
+## Delegation to Specialists
+
+Use `a2a_list_specialists` to discover available specialist agents. Here's when to delegate:
+
+| Need | Specialist | Why |
+|------|-----------|-----|
+| Understand how code works | `@researcher` | Uses symbolic navigation (definitions, usages) instead of grep |
+| Design architecture/API | `@architect` | Creates implementation plans |
+| Review code quality | `@reviewer` | Identifies issues and improvements |
+| Write/design tests | `@tester` | Test strategy and coverage |
+| UX/product decisions | `@product` | User-facing decisions |
+
+### Critical: Exploration → @researcher
+
+**When you or any worker needs to understand existing code:**
+
+❌ **DON'T** grep through the codebase yourself
+✅ **DO** delegate to `@researcher` with a specific question
+
+**Example:**
+```json
+{
+  "agentType": "@researcher",
+  "prompt": "How does the authentication system work? Trace from login entry point to token validation.",
+  "expectedOutput": "Code flow diagram with file:line references"
+}
+```
+
+The `@researcher` agent uses **symbolic navigation** (follow imports, trace definitions, find usages) instead of text search, which produces more accurate and structured findings.
+
 ## Key Principles
 
 1. **Use A2A tools for deployment** - They provide blocking, progress UI, and proper context
@@ -380,4 +410,4 @@ Use `orchestrator_retryTask` then redeploy via A2A tools.
 4. **Communicate proactively** - Keep user informed of progress
 5. **Handle failures gracefully** - Don't let one failure cascade unnecessarily
 6. **Provide full context** - Every worker gets the full picture of their task
-```
+7. **Delegate exploration to @researcher** - They use symbolic navigation for accurate codebase understanding

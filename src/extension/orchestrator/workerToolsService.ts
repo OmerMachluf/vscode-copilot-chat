@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { ILogService } from '../../platform/log/common/logService';
 import { IChatEndpoint } from '../../platform/networking/common/networking';
@@ -20,6 +22,46 @@ import { getContributedToolName, getToolName, mapContributedToolNamesInSchema, m
 import { ICopilotTool, ICopilotToolExtension, ToolRegistry } from '../tools/common/toolsRegistry';
 import { IToolsService, IToolValidationResult } from '../tools/common/toolsService';
 import { SpawnContext } from './safetyLimits';
+
+/**
+ * Resolve a path to its real path, handling symlinks and junction points.
+ * Returns the input path if resolution fails (e.g., path doesn't exist yet).
+ *
+ * @param inputPath The path to resolve
+ * @returns The resolved real path, or the original path if resolution fails
+ */
+function resolveRealPath(inputPath: string): string {
+	try {
+		// fs.realpathSync resolves symlinks, junction points, and normalizes the path
+		return fs.realpathSync(inputPath);
+	} catch {
+		// Path might not exist yet (e.g., creating a new file)
+		// Fall back to normalizing what we have
+		return path.normalize(inputPath);
+	}
+}
+
+/**
+ * Check if a path is within a base directory, properly handling symlinks.
+ * Both paths are resolved to their real paths before comparison.
+ *
+ * @param targetPath The path to check
+ * @param basePath The base directory that should contain the target
+ * @returns true if targetPath is within basePath (after symlink resolution)
+ */
+function isPathWithinBase(targetPath: string, basePath: string): boolean {
+	// Resolve both paths to handle symlinks
+	const realTarget = resolveRealPath(targetPath);
+	const realBase = resolveRealPath(basePath);
+
+	// Normalize for cross-platform comparison
+	const normalizedTarget = realTarget.toLowerCase().replace(/\\/g, '/');
+	const normalizedBase = realBase.toLowerCase().replace(/\\/g, '/');
+
+	// Check if target is exactly the base or a child of it
+	return normalizedTarget === normalizedBase ||
+		normalizedTarget.startsWith(normalizedBase + '/');
+}
 
 export const IWorkerToolsService = createServiceIdentifier<IWorkerToolsService>('IWorkerToolsService');
 
@@ -556,6 +598,8 @@ export class WorkerToolSet extends Disposable implements IToolsService {
 	 * Validate that all file paths in the tool input are within the worktree.
 	 * This prevents subtask agents from accidentally or intentionally operating
 	 * on files outside their designated worktree.
+	 *
+	 * Uses symlink resolution to prevent symlink-based escapes from the worktree.
 	 */
 	private _validateInputPathsAreInWorktree(input: Object): { valid: boolean; violations: string[] } {
 		if (!this.worktreePath) {
@@ -564,7 +608,6 @@ export class WorkerToolSet extends Disposable implements IToolsService {
 		}
 
 		const violations: string[] = [];
-		const worktreeUri = URI.file(this.worktreePath);
 
 		// Recursively extract all potential file paths from the input
 		const extractPaths = (obj: any, keyPath: string = ''): string[] => {
@@ -623,9 +666,9 @@ export class WorkerToolSet extends Disposable implements IToolsService {
 			}
 
 			try {
-				const pathUri = URI.file(pathStr);
-				// Check if this path is within the worktree
-				if (!extUriBiasedIgnorePathCase.isEqualOrParent(pathUri, worktreeUri)) {
+				// Use symlink-aware path validation to prevent symlink escapes
+				// This resolves both the input path and worktree path to their real paths
+				if (!isPathWithinBase(pathStr, this.worktreePath)) {
 					violations.push(pathStr);
 				}
 			} catch {
@@ -865,16 +908,15 @@ export class WorkerToolsService extends Disposable implements IWorkerToolsServic
 
 	getWorktreeForPath(filePath: string | URI): string | undefined {
 		const filePathStr = typeof filePath === 'string' ? filePath : filePath.fsPath;
-		const normalizedFilePath = filePathStr.toLowerCase().replace(/\\/g, '/');
 
-		this._logService.info(`[WorkerToolsService] getWorktreeForPath: ${normalizedFilePath}`);
+		this._logService.info(`[WorkerToolsService] getWorktreeForPath: ${filePathStr}`);
 		this._logService.info(`[WorkerToolsService] Active worktrees (${this._workerToolSets.size}): ${this.getActiveWorktrees().join(', ')}`);
 
 		for (const [workerId, toolSet] of this._workerToolSets) {
-			const normalizedWorktree = toolSet.worktreePath.toLowerCase().replace(/\\/g, '/');
-			this._logService.info(`[WorkerToolsService] Comparing against worktree[${workerId}]: ${normalizedWorktree}`);
+			this._logService.info(`[WorkerToolsService] Comparing against worktree[${workerId}]: ${toolSet.worktreePath}`);
 
-			if (normalizedFilePath.startsWith(normalizedWorktree + '/') || normalizedFilePath === normalizedWorktree) {
+			// Use symlink-aware path checking
+			if (isPathWithinBase(filePathStr, toolSet.worktreePath)) {
 				this._logService.info(`[WorkerToolsService] Match found! Path is in worktree: ${toolSet.worktreePath}`);
 				return toolSet.worktreePath;
 			}

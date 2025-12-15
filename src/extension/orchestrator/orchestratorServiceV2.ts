@@ -30,6 +30,7 @@ import {
 	IPullRequestResult,
 } from './completionManager';
 import { IOrchestratorPermissionService, IPermissionRequest } from './orchestratorPermissions';
+import { EventDrivenOrchestratorService, IOrchestratorDecision } from './eventDrivenOrchestrator';
 import { IOrchestratorQueueMessage, IOrchestratorQueueService } from './orchestratorQueue';
 import { IParentCompletionService, WorkerSessionWakeUpAdapter } from './parentCompletionService';
 import { ISubTaskManager } from './subTaskManager';
@@ -360,6 +361,14 @@ export interface IOrchestratorService {
 	/** Redirect a worker: inject a high-priority message to change direction */
 	redirectWorker(workerId: string, options: RedirectWorkerOptions): Promise<RedirectWorkerResult>;
 
+	// --- Event-Driven Orchestration ---
+
+	/** Enable or disable LLM-based event handling */
+	setLLMEventHandling(enabled: boolean): void;
+
+	/** Check if LLM event handling is enabled */
+	isLLMEventHandlingEnabled(): boolean;
+
 	// Legacy compatibility
 	getWorkers(): Record<string, any>;
 }
@@ -387,6 +396,8 @@ export interface IOrchestratorInboxItem {
 	processedAt?: number;
 	response?: string;
 	deferReason?: string;
+	/** Suggestion from LLM when escalating to user */
+	llmSuggestion?: string;
 }
 
 export class OrchestratorInbox {
@@ -557,6 +568,12 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 	/** Map of worker ID -> wake-up adapter disposables */
 	private readonly _wakeUpAdapters = new Map<string, { dispose(): void }>();
 
+	/** Event-driven orchestrator service for LLM-based decision making */
+	private readonly _eventDrivenOrchestrator: EventDrivenOrchestratorService;
+
+	/** Configuration for event-driven orchestration */
+	private _enableLLMEventHandling = false;
+
 	constructor(
 		@IAgentInstructionService private readonly _agentInstructionService: IAgentInstructionService,
 		@IAgentRunner private readonly _agentRunner: IAgentRunner,
@@ -574,6 +591,8 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		super();
 		// Initialize completion manager
 		this._completionManager = new CompletionManager(this._permissionService, this._logService);
+		// Initialize event-driven orchestrator for LLM-based decision making
+		this._eventDrivenOrchestrator = this._instantiationService.createInstance(EventDrivenOrchestratorService);
 		// Register built-in agent executors (Copilot, Claude Code, etc.)
 		registerBuiltInExecutors(this._executorRegistry, this._instantiationService);
 		// Register queue handler
@@ -584,6 +603,66 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		this._detectDefaultBranch();
 		// Connect SubTaskManager to this orchestrator service for UI-enabled subtasks
 		this._subTaskManager.setOrchestratorService(this);
+		// Listen for unhealthy workers (stuck, looping, high error rate)
+		this._register(this._healthMonitor.onWorkerUnhealthy(event => {
+			this._handleUnhealthyWorker(event.workerId, event.reason);
+		}));
+	}
+
+	/**
+	 * Handle an unhealthy worker by notifying parent and firing orchestrator event.
+	 * This enables proactive intervention when workers get stuck or enter loops.
+	 */
+	private _handleUnhealthyWorker(workerId: string, reason: 'stuck' | 'looping' | 'high_error_rate'): void {
+		this._logService.warn(`[Orchestrator] Worker ${workerId} is unhealthy: ${reason}`);
+
+		const worker = this._workers.get(workerId);
+		if (!worker) {
+			return;
+		}
+
+		// Fire orchestrator event so UI can show notification
+		this._onOrchestratorEvent.fire({
+			type: 'worker.unhealthy',
+			workerId,
+			reason,
+		} as any); // Type as any since we're adding a new event type
+
+		// Find the task for this worker
+		const task = this._tasks.find(t => t.workerId === workerId);
+		if (!task) {
+			return;
+		}
+
+		// Get the worker's tool set to find its owner (parent)
+		const toolSet = this._workerToolSets.get(workerId);
+		const ownerContext = toolSet?.workerContext?.owner;
+
+		// If this worker has a parent, notify them via the queue
+		if (ownerContext && ownerContext.ownerType === 'worker') {
+			const statusMessage = reason === 'stuck'
+				? `⚠️ Sub-task worker ${workerId} appears to be stuck (no activity for 5+ minutes). Consider checking on it or cancelling.`
+				: reason === 'looping'
+					? `⚠️ Sub-task worker ${workerId} may be in a loop (calling same tool repeatedly). Consider providing guidance or cancelling.`
+					: `⚠️ Sub-task worker ${workerId} has high error rate. Consider cancelling and retrying with different approach.`;
+
+			// Get worktree path from worker or tool set
+			const worktreePath = worker.worktreePath || toolSet?.worktreePath || '';
+
+			this._queueService.enqueueMessage({
+				id: `health-${workerId}-${Date.now()}`,
+				type: 'error',
+				workerId: ownerContext.ownerId,
+				taskId: task.id,
+				planId: task.planId || '',
+				worktreePath,
+				content: { error: statusMessage, isWarning: true },
+				priority: 'high',
+				timestamp: Date.now(),
+			});
+
+			this._logService.info(`[Orchestrator] Notified parent ${ownerContext.ownerId} about unhealthy worker ${workerId}`);
+		}
 	}
 
 	// --- Queue Handling ---
@@ -616,6 +695,35 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				break;
 
 			case 'error':
+				// If LLM event handling is enabled, let the LLM decide what to do
+				if (this._enableLLMEventHandling) {
+					try {
+						const decision = await this._handleWithLLM(message);
+						await this._applyLLMDecision(message, decision);
+						// Only mark as failed if LLM didn't decide to retry
+						if (decision.action !== 'retry') {
+							task.status = 'failed';
+							task.error = String(message.content);
+							this._onOrchestratorEvent.fire({
+								type: 'task.failed',
+								planId: task.planId,
+								taskId: task.id,
+								error: String(message.content),
+							});
+							if (task.planId) {
+								this._checkBlockedTasks(task.planId);
+								this._checkPlanCompletion(task.planId);
+							}
+							this._saveState();
+						}
+						break;
+					} catch (error) {
+						this._logService.error('[Orchestrator] LLM handling failed for error, falling back:', error);
+						// Fall through to default handling
+					}
+				}
+
+				// Default handling: mark as failed
 				task.status = 'failed';
 				task.error = String(message.content);
 				this._onOrchestratorEvent.fire({
@@ -642,6 +750,19 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				break;
 
 			case 'question': {
+				// If LLM event handling is enabled, use the LLM to answer the question
+				if (this._enableLLMEventHandling) {
+					try {
+						const llmDecision = await this._handleWithLLM(message);
+						await this._applyLLMDecision(message, llmDecision);
+						break;
+					} catch (error) {
+						this._logService.error('[Orchestrator] LLM handling failed for question, falling back:', error);
+						// Fall through to default handling
+					}
+				}
+
+				// Default handling: check permissions and add to inbox
 				const decision = this._permissionService.evaluatePermission('ask_question', message.content as any);
 				if (decision === 'auto_approve') {
 					this._autoRespond(message, true);
@@ -686,8 +807,19 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			}
 
 			case 'approval_request': {
-				// Handle approval requests from subtasks
-				// These are requests that need to bubble up to the parent or user
+				// If LLM event handling is enabled and no parent handler, use LLM
+				if (this._enableLLMEventHandling && message.owner?.ownerType !== 'worker') {
+					try {
+						const llmDecision = await this._handleWithLLM(message);
+						await this._applyLLMDecision(message, llmDecision);
+						break;
+					} catch (error) {
+						this._logService.error('[Orchestrator] LLM handling failed for approval, falling back:', error);
+						// Fall through to default handling
+					}
+				}
+
+				// Default handling: route to parent or add to inbox
 				await this._handleApprovalRequest(message);
 				break;
 			}
@@ -782,6 +914,210 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				worker.addAssistantMessage(`[System: Auto-response] ${approved ? 'Approved' : 'Denied'}`);
 			}
 		}
+	}
+
+	// --- Event-Driven Orchestration ---
+
+	/**
+	 * Enable or disable LLM-based event handling.
+	 * When enabled, certain events (questions, errors, approval requests) will be
+	 * handled by invoking the orchestrator LLM for intelligent decision-making.
+	 */
+	setLLMEventHandling(enabled: boolean): void {
+		this._enableLLMEventHandling = enabled;
+		this._logService.info(`[Orchestrator] LLM event handling ${enabled ? 'enabled' : 'disabled'}`);
+	}
+
+	/**
+	 * Check if LLM event handling is enabled.
+	 */
+	isLLMEventHandlingEnabled(): boolean {
+		return this._enableLLMEventHandling;
+	}
+
+	/**
+	 * Handle a message using LLM-based decision making.
+	 * This is called when a message requires intelligent handling and LLM event handling is enabled.
+	 */
+	private async _handleWithLLM(message: IOrchestratorQueueMessage): Promise<IOrchestratorDecision> {
+		const invokeAgent = async (prompt: string): Promise<string> => {
+			return this._invokeOrchestratorLLM(prompt);
+		};
+
+		return this._eventDrivenOrchestrator.handleWithLLM(message, invokeAgent);
+	}
+
+	/**
+	 * Invoke the orchestrator LLM with a prompt and return the response.
+	 * This creates a headless agent invocation without a chat UI.
+	 */
+	private async _invokeOrchestratorLLM(prompt: string): Promise<string> {
+		// Get the default model for orchestrator
+		const model = await this._getOrchestratorModel();
+		if (!model) {
+			throw new Error('No model available for orchestrator LLM invocation');
+		}
+
+		// Create a collector stream to capture the response
+		const collectedResponse: string[] = [];
+		const collectorStream = this._createCollectorStream(collectedResponse);
+
+		// Create a cancellation token
+		const tokenSource = new vscode.CancellationTokenSource();
+
+		try {
+			const result = await this._agentRunner.run(
+				{
+					prompt,
+					model,
+					token: tokenSource.token,
+					maxToolCallIterations: 10, // Limited for orchestrator decisions
+				},
+				collectorStream
+			);
+
+			if (!result.success) {
+				throw new Error(result.error || 'LLM invocation failed');
+			}
+
+			return result.response || collectedResponse.join('');
+		} finally {
+			tokenSource.dispose();
+		}
+	}
+
+	/**
+	 * Get the model for orchestrator LLM invocations.
+	 * Uses the backend selection service to get the appropriate model.
+	 */
+	private async _getOrchestratorModel(): Promise<vscode.LanguageModelChat | undefined> {
+		try {
+			// Use the backend selection service to get the current model
+			const models = await vscode.lm.selectChatModels({ family: 'gpt-4' });
+			if (models.length > 0) {
+				return models[0];
+			}
+			// Fallback to any available model
+			const allModels = await vscode.lm.selectChatModels({});
+			return allModels[0];
+		} catch (error) {
+			this._logService.error('[Orchestrator] Failed to get model for LLM invocation:', error);
+			return undefined;
+		}
+	}
+
+	/**
+	 * Create a collector stream that captures output without displaying it.
+	 */
+	private _createCollectorStream(collected: string[]): vscode.ChatResponseStream {
+		return {
+			markdown: (value: string | vscode.MarkdownString) => {
+				const text = typeof value === 'string' ? value : value.value;
+				collected.push(text);
+			},
+			anchor: () => { },
+			button: () => { },
+			filetree: () => { },
+			progress: () => { },
+			reference: () => { },
+			push: () => { },
+			confirmation: () => { },
+			warning: () => { },
+			textEdit: () => { },
+			codeblockUri: () => { },
+			detectedParticipant: () => { },
+		} as unknown as vscode.ChatResponseStream;
+	}
+
+	/**
+	 * Apply the decision from LLM-based event handling.
+	 */
+	private async _applyLLMDecision(message: IOrchestratorQueueMessage, decision: IOrchestratorDecision): Promise<void> {
+		const worker = this._workers.get(message.workerId);
+		const task = this._tasks.find(t => t.id === message.taskId);
+
+		this._logService.info(`[Orchestrator] Applying LLM decision: ${decision.action} for message from ${message.workerId}`);
+
+		switch (decision.action) {
+			case 'respond':
+				// Send the response to the worker
+				if (worker && decision.response) {
+					worker.addAssistantMessage(`[Orchestrator Response] ${decision.response}`);
+				}
+				break;
+
+			case 'retry':
+				// Retry the task
+				if (task) {
+					this._logService.info(`[Orchestrator] Retrying task ${task.id}: ${decision.reason}`);
+					task.status = 'queued';
+					task.error = undefined;
+					this.deploy(task.id).catch((err: unknown) => {
+						this._logService.error(`[Orchestrator] Failed to retry task: ${err instanceof Error ? err.message : String(err)}`);
+					});
+				}
+				break;
+
+			case 'cancel':
+				// Cancel the task
+				if (task) {
+					this._logService.info(`[Orchestrator] Cancelling task ${task.id}: ${decision.reason}`);
+					task.status = 'failed';
+					task.error = decision.reason || 'Cancelled by orchestrator';
+					this._onOrchestratorEvent.fire({
+						type: 'task.failed',
+						planId: task.planId,
+						taskId: task.id,
+						error: task.error,
+					});
+				}
+				if (worker) {
+					worker.interrupt();
+				}
+				break;
+
+			case 'escalate':
+				// Add to inbox for user decision
+				this._inbox.addItem({
+					id: generateUuid(),
+					message,
+					status: 'pending',
+					requiresUserAction: true,
+					createdAt: Date.now(),
+					llmSuggestion: decision.response,
+				});
+				vscode.window.showInformationMessage(
+					`Orchestrator: Escalated to user - ${decision.reason || 'LLM requires user input'}`
+				);
+				break;
+
+			case 'approve':
+				// Approve the request
+				if (worker) {
+					const approvalId = (message.content as any).approvalId;
+					if (approvalId) {
+						worker.handleApproval(approvalId, true, decision.response);
+					}
+				}
+				break;
+
+			case 'deny':
+				// Deny the request
+				if (worker) {
+					const approvalId = (message.content as any).approvalId;
+					if (approvalId) {
+						worker.handleApproval(approvalId, false, decision.response);
+					}
+				}
+				break;
+
+			case 'continue':
+			default:
+				// No specific action needed
+				break;
+		}
+
+		this._saveState();
 	}
 
 	/**

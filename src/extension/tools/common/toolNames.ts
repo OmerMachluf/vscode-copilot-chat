@@ -88,6 +88,8 @@ export enum ToolName {
 	// Parent-side tools for managing subtask results
 	A2APullSubTaskChanges = 'a2a_pull_subtask_changes',
 	A2ASendMessageToWorker = 'a2a_send_message_to_worker',
+	// Specialist discovery
+	A2AListSpecialists = 'a2a_list_specialists',
 }
 
 export enum ContributedToolName {
@@ -150,6 +152,7 @@ export enum ContributedToolName {
 	A2ASubTaskComplete = 'copilot_a2aSubTaskComplete',
 	A2APullSubTaskChanges = 'copilot_a2aPullSubTaskChanges',
 	A2ASendMessageToWorker = 'copilot_a2aSendMessageToWorker',
+	A2AListSpecialists = 'copilot_a2aListSpecialists',
 }
 
 export const byokEditToolNamesToToolNames = {
@@ -280,6 +283,7 @@ export const toolCategories: Record<ToolName, ToolCategory> = {
 	[ToolName.A2ASubTaskComplete]: ToolCategory.Core,
 	[ToolName.A2APullSubTaskChanges]: ToolCategory.Core,
 	[ToolName.A2ASendMessageToWorker]: ToolCategory.Core,
+	[ToolName.A2AListSpecialists]: ToolCategory.Core,
 } as const;
 
 
