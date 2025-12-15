@@ -1586,7 +1586,10 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			const workerSessionUri = `orchestrator:/${worker.id}`;
 			const forgedToken = {
 				sessionId: workerSessionUri,
-				sessionResource: vscode.Uri.parse(workerSessionUri),
+				sessionResource: vscode.Uri.from({
+					scheme: 'orchestrator',
+					path: `/${worker.id}`,
+				}),
 			} as vscode.ChatParticipantToolToken;
 			worker.setToolInvocationToken(forgedToken);
 			this._logService.debug(`[OrchestratorService] Forged toolInvocationToken for worker ${worker.id}: sessionId=${workerSessionUri}`);
