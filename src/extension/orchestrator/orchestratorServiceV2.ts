@@ -17,6 +17,7 @@ import { registerBuiltInExecutors } from './agentExecutorRegistry';
 import { IAgentInstructionService } from './agentInstructionService';
 import { IAgentRunner } from './agentRunner';
 import { AgentTypeParseError, parseAgentType } from './agentTypeParser';
+import { IBackendSelectionService } from './backendSelectionService';
 import { CircuitBreaker } from './circuitBreaker';
 import {
 	CompletionManager,
@@ -566,6 +567,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		@IParentCompletionService private readonly _parentCompletionService: IParentCompletionService,
 		@ISubtaskProgressService private readonly _subtaskProgressService: ISubtaskProgressService,
 		@IAgentExecutorRegistry private readonly _executorRegistry: IAgentExecutorRegistry,
+		@IBackendSelectionService private readonly _backendSelectionService: IBackendSelectionService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@ILogService private readonly _logService: ILogService,
 	) {
@@ -1505,9 +1507,32 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 			// Parse and validate agent type using the centralized parser
 			const rawAgentType = task.agent || '@agent';
+
+			// Use BackendSelectionService to determine backend with 3-level precedence:
+			// 1. User Request (highest) - explicit hints in prompt
+			// 2. Repo Config - .github/agents/config.yaml
+			// 3. Extension Defaults - VS Code settings
+			const backendSelection = await this._backendSelectionService.selectBackend(
+				task.description,
+				rawAgentType.replace(/^@/, '').toLowerCase()
+			);
+			this._logService.info(`[OrchestratorService] Backend selection for task ${task.id}: backend=${backendSelection.backend}, source=${backendSelection.source}${backendSelection.model ? `, model=${backendSelection.model}` : ''}`);
+
 			let parsedAgentType: ParsedAgentType;
 			try {
-				parsedAgentType = parseAgentType(rawAgentType, task.modelId);
+				// Incorporate selected backend into the parsed agent type
+				// If the selection came from user request or repo config, override the default
+				const effectiveModelId = backendSelection.model ?? task.modelId;
+				parsedAgentType = parseAgentType(rawAgentType, effectiveModelId);
+
+				// Override backend if selection came from user prompt or repo config
+				if (backendSelection.source !== 'extension-default' || parsedAgentType.backend === 'copilot') {
+					parsedAgentType = {
+						...parsedAgentType,
+						backend: backendSelection.backend,
+						model: backendSelection.model ?? parsedAgentType.model,
+					};
+				}
 			} catch (error) {
 				if (error instanceof AgentTypeParseError) {
 					throw new Error(`Invalid agent type '${rawAgentType}' for task ${task.id}: ${error.message}`);

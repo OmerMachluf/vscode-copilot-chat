@@ -98,6 +98,7 @@ import { IAgentExecutorRegistry } from '../../orchestrator/agentExecutor';
 import { AgentExecutorRegistry } from '../../orchestrator/agentExecutorRegistry';
 import { AgentInstructionService, IAgentInstructionService } from '../../orchestrator/agentInstructionService';
 import { AgentRunnerService, IAgentRunner } from '../../orchestrator/agentRunner';
+import { BackendSelectionService, IBackendSelectionService } from '../../orchestrator/backendSelectionService';
 import { IOrchestratorQueueService, OrchestratorQueueService } from '../../orchestrator/orchestratorQueue';
 import { IOrchestratorService, OrchestratorService } from '../../orchestrator/orchestratorServiceV2';
 import { IParentCompletionService, ParentCompletionService } from '../../orchestrator/parentCompletionService';
@@ -193,6 +194,7 @@ export function registerServices(builder: IInstantiationServiceBuilder, extensio
 	builder.define(ISubtaskProgressService, new SyncDescriptor(SubtaskProgressService));
 	builder.define(IOrchestratorQueueService, new SyncDescriptor(OrchestratorQueueService));
 	builder.define(IParentCompletionService, new SyncDescriptor(ParentCompletionService));
+	builder.define(IBackendSelectionService, new SyncDescriptor(BackendSelectionService));
 	builder.define(IOrchestratorService, new SyncDescriptor(OrchestratorService));
 	builder.define(IParserService, new SyncDescriptor(ParserServiceImpl, [/*useWorker*/ true]));
 	builder.define(IIntentService, new SyncDescriptor(IntentService));

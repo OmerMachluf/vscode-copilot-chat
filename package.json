@@ -3091,6 +3091,18 @@
 							}
 						}
 					},
+					"github.copilot.orchestrator.defaultBackend": {
+						"type": "string",
+						"default": "copilot",
+						"enum": ["copilot", "claude", "openai", "custom"],
+						"enumDescriptions": [
+							"Use GitHub Copilot as the default backend",
+							"Use Claude as the default backend",
+							"Use OpenAI as the default backend",
+							"Use a custom backend"
+						],
+						"description": "Default backend for agent execution. Can be overridden by repo config (.github/agents/config.yaml) or user prompts."
+					},
 					"github.copilot.editor.enableCodeActions": {
 						"type": "boolean",
 						"default": true,
