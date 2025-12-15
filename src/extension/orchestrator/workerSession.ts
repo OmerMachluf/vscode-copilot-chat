@@ -598,7 +598,7 @@ export class WorkerSession extends Disposable {
 				}
 				break;
 			// TODO: omerm : validate this even works
-			case 'toolInvocation':
+			/*case 'toolInvocation':
 				// Tool invocation UI is tied to the live request and can't be fully replayed.
 				// Show a summary as markdown instead so the user knows what tools were called.
 				if (part.toolName) {
@@ -613,7 +613,7 @@ export class WorkerSession extends Disposable {
 					}
 				}
 				break;
-			// Other part types are less critical for replay
+			// Other part types are less critical for replay*/
 		}
 	}
 
