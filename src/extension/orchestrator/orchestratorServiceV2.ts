@@ -695,6 +695,9 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				break;
 
 			case 'error':
+				// IMMEDIATELY notify orchestrator of failure - don't wait for other tasks
+				this._notifyOrchestratorOfWorkerFailure(message, String(message.content));
+
 				// If LLM event handling is enabled, let the LLM decide what to do
 				if (this._enableLLMEventHandling) {
 					try {
@@ -1170,6 +1173,100 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		vscode.window.showInformationMessage(
 			`Worker ${message.workerId} completed task "${task.name}". Review in Orchestrator Dashboard.`
 		);
+	}
+
+	/**
+	 * IMMEDIATELY notify the orchestrator agent that a worker has FAILED.
+	 * This is CRITICAL for the orchestrator to take action rather than waiting for other tasks.
+	 */
+	private _notifyOrchestratorOfWorkerFailure(message: IOrchestratorQueueMessage, errorMessage: string): void {
+		const worker = this._workers.get(message.workerId);
+		const task = this._tasks.find(t => t.workerId === message.workerId);
+
+		if (!worker || !task) {
+			return;
+		}
+
+		const workerState = worker.state;
+		const worktreePath = workerState.worktreePath;
+		const branchName = workerState.name || task.name;
+
+		// Build URGENT notification content
+		const notificationContent = {
+			type: 'worker_failure',
+			urgent: true,
+			workerId: message.workerId,
+			taskId: task.id,
+			taskName: task.name,
+			planId: task.planId,
+			branchName,
+			worktreePath,
+			status: 'failed',
+			error: errorMessage,
+			// Include last few messages as context
+			summary: workerState.messages?.slice(-5).map((m: { content: string }) => m.content).join('\n') || 'No messages.',
+			guidance: this._buildFailureGuidance(task, errorMessage),
+			// Count of other tasks that may be affected
+			otherRunningTasks: this._tasks.filter(t =>
+				t.planId === task.planId &&
+				t.id !== task.id &&
+				(t.status === 'running' || t.status === 'queued')
+			).length,
+		};
+
+		// Add to inbox with HIGH PRIORITY
+		this._inbox.addItem({
+			id: generateUuid(),
+			message: {
+				...message,
+				type: 'error',
+				priority: 'critical', // Mark as critical for immediate attention
+				content: notificationContent
+			},
+			status: 'pending',
+			requiresUserAction: true, // This requires immediate action
+			createdAt: Date.now()
+		});
+
+		// Show WARNING notification (not info) to get user attention
+		vscode.window.showWarningMessage(
+			`⚠️ Worker FAILED on task "${task.name}": ${errorMessage.substring(0, 100)}${errorMessage.length > 100 ? '...' : ''}`,
+			'View Dashboard',
+			'Retry Task'
+		).then(choice => {
+			if (choice === 'View Dashboard') {
+				vscode.commands.executeCommand('copilot.orchestrator.dashboard.focus');
+			} else if (choice === 'Retry Task') {
+				this.retryTask(task.id).catch(err => {
+					vscode.window.showErrorMessage(`Failed to retry task: ${err.message}`);
+				});
+			}
+		});
+	}
+
+	/**
+	 * Build guidance text for handling a worker failure.
+	 */
+	private _buildFailureGuidance(task: WorkerTask, errorMessage: string): string {
+		const lines: string[] = [];
+		lines.push('🚨 **IMMEDIATE ACTION REQUIRED** - A worker has FAILED!');
+		lines.push('');
+		lines.push(`**Error:** ${errorMessage}`);
+		lines.push('');
+		lines.push('**As the Orchestrator, you MUST decide how to proceed:**');
+		lines.push('');
+		lines.push('**Option 1 - Retry the task:**');
+		lines.push(`Use \`orchestrator_retryTask\` with taskId "${task.id}"`);
+		lines.push('');
+		lines.push('**Option 2 - Cancel and adjust plan:**');
+		lines.push(`Use \`orchestrator_cancelTask\` with taskId "${task.id}" and reassess the plan`);
+		lines.push('');
+		lines.push('**Option 3 - Investigate first:**');
+		lines.push('Check the worker logs and error details before deciding');
+		lines.push('');
+		lines.push('⚡ **DO NOT** just wait for other tasks - take action now!');
+
+		return lines.join('\n');
 	}
 
 	/**
@@ -2927,6 +3024,21 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		let consecutiveFailures = 0;
 
 		while (worker.isActive) {
+			// CRITICAL: Check if worker was interrupted before each iteration
+			// interrupt() sets status to 'idle' - we should wait for user input before continuing
+			if (worker.status === 'idle') {
+				const nextMessage = await worker.waitForClarification();
+				if (!nextMessage) {
+					// Worker was completed/disposed while waiting - exit loop
+					break;
+				}
+				currentPrompt = nextMessage;
+				worker.start();
+			}
+
+			// Capture the token for THIS iteration - if it gets cancelled, we'll detect it
+			const iterationToken = worker.cancellationToken;
+
 			try {
 				// Check circuit breaker
 				if (!circuitBreaker.canExecute()) {
@@ -2968,7 +3080,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				this._healthMonitor.recordActivity(worker.id, 'message');
 
 				// Run the agent using the proper IAgentRunner service
-				// Use the worker's cancellation token so interrupt() can stop it
+				// Use the captured iterationToken so interrupt() can stop it
 				// Pass the toolInvocationToken if available for inline confirmations
 				const result = await this._agentRunner.run(
 					{
@@ -2977,7 +3089,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 						model,
 						suggestedFiles: task.context?.suggestedFiles,
 						additionalInstructions: combinedInstructions || undefined,
-						token: worker.cancellationToken,
+						token: iterationToken,
 						onPaused: pausedEmitter.event,
 						maxToolCallIterations: 200,
 						workerToolSet,
@@ -2989,6 +3101,14 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				);
 
 				stream.flush();
+
+				// CRITICAL: Check if this iteration was interrupted BEFORE processing results
+				// interrupt() cancels the token - if it's cancelled, don't process as normal
+				if (iterationToken.isCancellationRequested) {
+					this._logService.info(`[OrchestratorService] Worker ${worker.id} iteration was interrupted - stopping loop`);
+					// Worker is already in 'idle' state from interrupt(), loop will wait at top
+					continue;
+				}
 
 				if (!result.success && result.error) {
 					// Record failure
@@ -3174,6 +3294,19 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 		// Conversation loop for executor-based tasks
 		while (worker.isActive) {
+			// CRITICAL: Check if worker was interrupted before each iteration
+			if (worker.status === 'idle') {
+				const nextMessage = await worker.waitForClarification();
+				if (!nextMessage) {
+					break;
+				}
+				currentPrompt = nextMessage;
+				worker.start();
+			}
+
+			// Capture the token for THIS iteration
+			const iterationToken = worker.cancellationToken;
+
 			try {
 				// Check circuit breaker
 				if (!circuitBreaker.canExecute()) {
@@ -3212,13 +3345,19 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 						additionalInstructions: task.context?.additionalInstructions,
 						workerToolSet,
 						toolInvocationToken: worker.toolInvocationToken,
-						token: worker.cancellationToken,
+						token: iterationToken,
 						onPaused: pausedEmitter.event,
 					},
 					stream as unknown as vscode.ChatResponseStream
 				);
 
 				stream.flush();
+
+				// Check if this iteration was interrupted
+				if (iterationToken.isCancellationRequested) {
+					this._logService.info(`[OrchestratorService] Worker ${worker.id} (executor) iteration was interrupted`);
+					continue; // Loop will wait at top for user input
+				}
 
 				if (result.status === 'failed' && result.error) {
 					// Record failure
