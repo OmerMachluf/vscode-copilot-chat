@@ -1574,6 +1574,23 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			task.sessionUri = this._createSessionUri(task.id);
 			this._workers.set(worker.id, worker);
 
+			// CRITICAL: Forge a toolInvocationToken for this worker.
+			// VS Code's tool UI requires a token with sessionId and sessionResource.
+			// Without this, tool invocation bubbles won't appear in the chat UI.
+			// 
+			// The token format (from debugging a working session) is:
+			// {
+			//   "sessionId": "orchestrator:/worker-{id}",
+			//   "sessionResource": { "$mid": 1, "external": "orchestrator:/worker-{id}", "path": "/worker-{id}", "scheme": "orchestrator" }
+			// }
+			const workerSessionUri = `orchestrator:/${worker.id}`;
+			const forgedToken = {
+				sessionId: workerSessionUri,
+				sessionResource: vscode.Uri.parse(workerSessionUri),
+			} as vscode.ChatParticipantToolToken;
+			worker.setToolInvocationToken(forgedToken);
+			this._logService.debug(`[OrchestratorService] Forged toolInvocationToken for worker ${worker.id}: sessionId=${workerSessionUri}`);
+
 			// Register wake-up adapter for parent completion notifications
 			// This ensures workers receive completion messages from their subtasks
 			const wakeUpAdapter = new WorkerSessionWakeUpAdapter(
@@ -2509,6 +2526,9 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			}
 		}));
 
+		// Note: toolInvocationToken is set during deploy() with a synthetic token.
+		// This enables tool UI bubbles without waiting for user interaction.
+
 		// Continuous conversation loop - keeps running until worker is completed
 		const MAX_RETRIES = 10; // Increased from 3 to handle rate limits better
 		let consecutiveFailures = 0;
@@ -2557,7 +2577,6 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				// Run the agent using the proper IAgentRunner service
 				// Use the worker's cancellation token so interrupt() can stop it
 				// Pass the toolInvocationToken if available for inline confirmations
-				this._logService.info(`[OrchestratorService] worker with toolinvocationtoken ${worker.toolInvocationToken} `);
 				const result = await this._agentRunner.run(
 					{
 						prompt: currentPrompt,
