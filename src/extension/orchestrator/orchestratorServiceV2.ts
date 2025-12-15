@@ -29,8 +29,8 @@ import {
 	IPullRequestOptions,
 	IPullRequestResult,
 } from './completionManager';
-import { IOrchestratorPermissionService, IPermissionRequest } from './orchestratorPermissions';
 import { EventDrivenOrchestratorService, IOrchestratorDecision } from './eventDrivenOrchestrator';
+import { IOrchestratorPermissionService, IPermissionRequest } from './orchestratorPermissions';
 import { IOrchestratorQueueMessage, IOrchestratorQueueService } from './orchestratorQueue';
 import { IParentCompletionService, WorkerSessionWakeUpAdapter } from './parentCompletionService';
 import { ISubTaskManager } from './subTaskManager';

@@ -186,9 +186,28 @@ When an **@architect** stage completes with a detailed plan, decide how to split
 **Creating Implementation Tasks from Architect Output:**
 
 1. Read the Architect's output (usually in `plans/ArchitecturePlan.md`)
-2. Identify parallelization groups based on file dependencies
-3. Use `orchestrator_addPlanTask` to add new tasks to the plan
-4. Or directly deploy using `a2a_spawnParallelSubTasks`
+2. **Look for agent hints** in task descriptions (e.g., `@researcher`, `@tester`, `@reviewer`)
+3. Identify parallelization groups based on file dependencies
+4. Use `orchestrator_addPlanTask` to add new tasks to the plan
+5. Or directly deploy using `a2a_spawnParallelSubTasks`
+
+**Parsing Agent Hints from Plans:**
+
+The Architect includes agent recommendations in tasks like:
+```markdown
+1. [ ] Investigate auth patterns `@researcher`
+2. [ ] Implement TokenValidator `@agent`
+3. [ ] Write unit tests `@tester`
+```
+
+When deploying, use the hinted agent type:
+```json
+{
+  "agentType": "@researcher",  // From the hint
+  "prompt": "Investigate auth patterns...",
+  ...
+}
+```
 
 **Task Description Template for Workers:**
 ```markdown

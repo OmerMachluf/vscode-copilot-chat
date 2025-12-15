@@ -5818,6 +5818,21 @@
 				"name": "Reviewer",
 				"path": "./assets/agents/Reviewer.agent.md",
 				"description": "Review code changes for quality, correctness, and best practices"
+			},
+			{
+				"name": "Researcher",
+				"path": "./assets/agents/Researcher.agent.md",
+				"description": "Investigate codebases using symbolic navigation to understand how things work"
+			},
+			{
+				"name": "Tester",
+				"path": "./assets/agents/Tester.agent.md",
+				"description": "Design test strategies and generate comprehensive test cases"
+			},
+			{
+				"name": "Product",
+				"path": "./assets/agents/Product.agent.md",
+				"description": "Provide UX perspective and user-facing decisions"
 			}
 		],
 		"chatPromptFiles": [
