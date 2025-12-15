@@ -5,7 +5,7 @@
 
 import * as vscode from 'vscode';
 import { Disposable } from 'vscode';
-import { IInstantiationService } from '../../util/vs/platform/instantiation/common/instantiation';
+import { IInstantiationService, ServicesAccessor } from '../../util/vs/platform/instantiation/common/instantiation';
 import { IClaudeMigrationService, MigrationStatus } from './claudeMigrationService';
 
 /**
@@ -31,24 +31,22 @@ export class ClaudeMigrationCommands extends Disposable {
 			async () => {
 				try {
 					const migrationService = this.instantiationService.invokeFunction(
-						accessor => accessor.get(IClaudeMigrationService)
+						(accessor: ServicesAccessor) => accessor.get(IClaudeMigrationService)
 					);
 
 					await vscode.window.withProgress(
 						{
 							location: vscode.ProgressLocation.Notification,
 							title: 'Regenerating Claude Configuration...',
-							cancellable: true
+							cancellable: false
 						},
-						async (progress, _token) => {
+						async (progress) => {
 							progress.report({ message: 'Gathering agent definitions...' });
 
 							const result = await migrationService.regenerate();
 
 							if (result.status === MigrationStatus.Completed) {
-								const fileList = result.generatedFiles
-									.map(uri => vscode.workspace.asRelativePath(uri))
-									.join(', ');
+								const fileList = result.generatedFiles.join(', ');
 
 								vscode.window.showInformationMessage(
 									`Claude configuration regenerated successfully. Generated files: ${fileList}`

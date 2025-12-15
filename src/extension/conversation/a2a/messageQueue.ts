@@ -262,7 +262,7 @@ export class A2AMessageQueue extends Disposable implements IA2AMessageQueue {
 	private readonly _messageHistory = new Map<string, IA2AMessage>(); // For debugging/correlation
 
 	private _isProcessing = false;
-	private _cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+	private _cleanupTimer: ReturnType<typeof setInterval> | undefined;
 	private _metrics: {
 		totalEnqueued: number;
 		totalDelivered: number;
@@ -380,7 +380,7 @@ export class A2AMessageQueue extends Disposable implements IA2AMessageQueue {
 	private _startCleanupTimer(): void {
 		this._cleanupTimer = setInterval(() => {
 			this._cleanupExpiredMessages();
-		}, this._config.cleanupInterval) as ReturnType<typeof setTimeout>;
+		}, this._config.cleanupInterval);
 
 		this._register(toDisposable(() => {
 			if (this._cleanupTimer) {
@@ -724,7 +724,7 @@ export class A2AMessageQueue extends Disposable implements IA2AMessageQueue {
 				this._processedMessageIds.add(message.id);
 				this._logService.warn(`[A2AMessageQueue] Acknowledgment timeout for message ${message.id}`);
 			}
-		}, timeout) as ReturnType<typeof setTimeout>;
+		}, timeout);
 
 		this._pendingDeliveries.set(message.id, {
 			message,
