@@ -2557,6 +2557,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				// Run the agent using the proper IAgentRunner service
 				// Use the worker's cancellation token so interrupt() can stop it
 				// Pass the toolInvocationToken if available for inline confirmations
+				this._logService.info(`[OrchestratorService] worker with toolinvocationtoken ${worker.toolInvocationToken} `);
 				const result = await this._agentRunner.run(
 					{
 						prompt: currentPrompt,
