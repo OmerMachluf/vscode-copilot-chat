@@ -4,20 +4,43 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { CancellationToken, Uri, FileType } from 'vscode';
-import { ClaudeMigrationService, MigrationStatus, AgentDefinition } from '../claudeMigrationService';
+import { FileType } from 'vscode';
+import * as vscode from 'vscode';
+import { ClaudeMigrationService, MigrationStatus } from '../claudeMigrationService';
+import { URI } from '../../../util/vs/base/common/uri';
+
+// Mock vscode
+vi.mock('vscode', () => ({
+	workspace: {
+		workspaceFolders: [],
+	},
+	Uri: {
+		file: (path: string) => URI.file(path),
+		joinPath: (base: any, ...paths: string[]) => URI.joinPath(base, ...paths),
+	},
+	FileType: {
+		File: 1,
+		Directory: 2,
+	},
+}));
 
 // Mock file system service
 class MockFileSystemService {
 	private files: Map<string, Uint8Array> = new Map();
 	private directories: Set<string> = new Set();
 
-	async exists(uri: Uri): Promise<boolean> {
+	async stat(uri: URI): Promise<{ type: number }> {
 		const path = uri.toString();
-		return this.files.has(path) || this.directories.has(path);
+		if (this.files.has(path)) {
+			return { type: 1 }; // FileType.File
+		}
+		if (this.directories.has(path)) {
+			return { type: 2 }; // FileType.Directory
+		}
+		throw new Error(`File not found: ${path}`);
 	}
 
-	async readFile(uri: Uri): Promise<Uint8Array> {
+	async readFile(uri: URI): Promise<Uint8Array> {
 		const path = uri.toString();
 		const content = this.files.get(path);
 		if (!content) {
@@ -26,15 +49,15 @@ class MockFileSystemService {
 		return content;
 	}
 
-	async writeFile(uri: Uri, content: Uint8Array): Promise<void> {
+	async writeFile(uri: URI, content: Uint8Array): Promise<void> {
 		this.files.set(uri.toString(), content);
 	}
 
-	async createDirectory(uri: Uri): Promise<void> {
+	async createDirectory(uri: URI): Promise<void> {
 		this.directories.add(uri.toString());
 	}
 
-	async readDirectory(uri: Uri): Promise<[string, FileType][]> {
+	async readDirectory(uri: URI): Promise<[string, FileType][]> {
 		const prefix = uri.toString();
 		const results: [string, FileType][] = [];
 		
@@ -51,11 +74,11 @@ class MockFileSystemService {
 	}
 
 	// Test helpers
-	setFile(uri: Uri, content: string): void {
+	setFile(uri: URI, content: string): void {
 		this.files.set(uri.toString(), new TextEncoder().encode(content));
 	}
 
-	getFile(uri: Uri): string | undefined {
+	getFile(uri: URI): string | undefined {
 		const content = this.files.get(uri.toString());
 		return content ? new TextDecoder().decode(content) : undefined;
 	}
@@ -63,17 +86,6 @@ class MockFileSystemService {
 	clear(): void {
 		this.files.clear();
 		this.directories.clear();
-	}
-}
-
-// Mock workspace service
-class MockWorkspace {
-	workspaceFolders: { uri: Uri }[] | undefined;
-
-	constructor(workspaceRoot?: string) {
-		if (workspaceRoot) {
-			this.workspaceFolders = [{ uri: Uri.file(workspaceRoot) }];
-		}
 	}
 }
 
@@ -89,17 +101,18 @@ class MockLogService {
 describe('ClaudeMigrationService', () => {
 	let service: ClaudeMigrationService;
 	let mockFs: MockFileSystemService;
-	let mockWorkspace: MockWorkspace;
 	let mockLog: MockLogService;
 
 	beforeEach(() => {
 		mockFs = new MockFileSystemService();
-		mockWorkspace = new MockWorkspace('/test/workspace');
 		mockLog = new MockLogService();
-		
+
+		// Set up workspace folders mock
+		(vscode.workspace as any).workspaceFolders = [{ uri: URI.file('/test/workspace') }];
+
+		// Create service with just 2 args (IFileSystemService, ILogService)
 		service = new ClaudeMigrationService(
 			mockFs as any,
-			mockWorkspace as any,
 			mockLog as any
 		);
 	});
@@ -111,14 +124,14 @@ describe('ClaudeMigrationService', () => {
 		});
 
 		it('should return false when workspace has no folders', async () => {
-			mockWorkspace.workspaceFolders = undefined;
+			(vscode.workspace as any).workspaceFolders = undefined;
 			const result = await service.shouldMigrate();
 			expect(result).toBe(false);
 		});
 
 		it('should return false when CLAUDE.md exists but was not auto-generated', async () => {
-			const claudeMdPath = Uri.joinPath(
-				Uri.file('/test/workspace'),
+			const claudeMdPath = URI.joinPath(
+				URI.file('/test/workspace'),
 				'.github',
 				'claude',
 				'CLAUDE.md'
@@ -130,8 +143,8 @@ describe('ClaudeMigrationService', () => {
 		});
 
 		it('should return true when CLAUDE.md is auto-generated but outdated', async () => {
-			const claudeMdPath = Uri.joinPath(
-				Uri.file('/test/workspace'),
+			const claudeMdPath = URI.joinPath(
+				URI.file('/test/workspace'),
 				'.github',
 				'claude',
 				'CLAUDE.md'
@@ -147,8 +160,8 @@ describe('ClaudeMigrationService', () => {
 		});
 
 		it('should return false when CLAUDE.md is auto-generated and current version', async () => {
-			const claudeMdPath = Uri.joinPath(
-				Uri.file('/test/workspace'),
+			const claudeMdPath = URI.joinPath(
+				URI.file('/test/workspace'),
 				'.github',
 				'claude',
 				'CLAUDE.md'
@@ -172,7 +185,7 @@ describe('ClaudeMigrationService', () => {
 
 	describe('migrate', () => {
 		it('should return NotNeeded when no workspace folders', async () => {
-			mockWorkspace.workspaceFolders = undefined;
+			(vscode.workspace as any).workspaceFolders = undefined;
 			
 			const result = await service.migrate();
 			
@@ -186,8 +199,8 @@ describe('ClaudeMigrationService', () => {
 			expect(result.status).toBe(MigrationStatus.Completed);
 			expect(result.generatedFiles).toHaveLength(2);
 			
-			const claudeMdPath = Uri.joinPath(
-				Uri.file('/test/workspace'),
+			const claudeMdPath = URI.joinPath(
+				URI.file('/test/workspace'),
 				'.github',
 				'claude',
 				'CLAUDE.md'
@@ -207,8 +220,8 @@ describe('ClaudeMigrationService', () => {
 			
 			expect(result.status).toBe(MigrationStatus.Completed);
 			
-			const slashCommandsPath = Uri.joinPath(
-				Uri.file('/test/workspace'),
+			const slashCommandsPath = URI.joinPath(
+				URI.file('/test/workspace'),
 				'.github',
 				'claude',
 				'SLASH_COMMANDS.md'
@@ -236,8 +249,8 @@ describe('ClaudeMigrationService', () => {
 
 		it('should include custom agents when present', async () => {
 			// Create a custom agent file
-			const agentPath = Uri.joinPath(
-				Uri.file('/test/workspace'),
+			const agentPath = URI.joinPath(
+				URI.file('/test/workspace'),
 				'.github',
 				'agents',
 				'MyCustomAgent.agent.md'
@@ -252,15 +265,15 @@ describe('ClaudeMigrationService', () => {
 			);
 			
 			// Mark the directory as existing
-			const agentDir = Uri.joinPath(Uri.file('/test/workspace'), '.github', 'agents');
+			const agentDir = URI.joinPath(URI.file('/test/workspace'), '.github', 'agents');
 			await mockFs.createDirectory(agentDir);
 			
 			const result = await service.migrate();
 			
 			expect(result.status).toBe(MigrationStatus.Completed);
 			
-			const claudeMdPath = Uri.joinPath(
-				Uri.file('/test/workspace'),
+			const claudeMdPath = URI.joinPath(
+				URI.file('/test/workspace'),
 				'.github',
 				'claude',
 				'CLAUDE.md'
@@ -330,8 +343,8 @@ describe('ClaudeMigrationService', () => {
 
 	describe('agent file parsing', () => {
 		it('should parse agent file with frontmatter', async () => {
-			const agentPath = Uri.joinPath(
-				Uri.file('/test/workspace'),
+			const agentPath = URI.joinPath(
+				URI.file('/test/workspace'),
 				'.github',
 				'agents',
 				'TestAgent.agent.md'
@@ -345,7 +358,7 @@ describe('ClaudeMigrationService', () => {
 				'Instructions for the test agent.'
 			);
 			
-			const agentDir = Uri.joinPath(Uri.file('/test/workspace'), '.github', 'agents');
+			const agentDir = URI.joinPath(URI.file('/test/workspace'), '.github', 'agents');
 			await mockFs.createDirectory(agentDir);
 			
 			const agents = await service.getAgentDefinitions();
@@ -358,15 +371,15 @@ describe('ClaudeMigrationService', () => {
 		});
 
 		it('should derive name from filename when not in frontmatter', async () => {
-			const agentPath = Uri.joinPath(
-				Uri.file('/test/workspace'),
+			const agentPath = URI.joinPath(
+				URI.file('/test/workspace'),
 				'.github',
 				'agents',
 				'MyFancyAgent.agent.md'
 			);
 			mockFs.setFile(agentPath, 'Just some instructions without frontmatter.');
 			
-			const agentDir = Uri.joinPath(Uri.file('/test/workspace'), '.github', 'agents');
+			const agentDir = URI.joinPath(URI.file('/test/workspace'), '.github', 'agents');
 			await mockFs.createDirectory(agentDir);
 			
 			const agents = await service.getAgentDefinitions();
@@ -378,8 +391,8 @@ describe('ClaudeMigrationService', () => {
 
 		it('should not duplicate built-in agents from custom files', async () => {
 			// Create a file named like a built-in agent
-			const agentPath = Uri.joinPath(
-				Uri.file('/test/workspace'),
+			const agentPath = URI.joinPath(
+				URI.file('/test/workspace'),
 				'.github',
 				'agents',
 				'Architect.agent.md'
@@ -391,7 +404,7 @@ describe('ClaudeMigrationService', () => {
 				'Custom architect override.'
 			);
 			
-			const agentDir = Uri.joinPath(Uri.file('/test/workspace'), '.github', 'agents');
+			const agentDir = URI.joinPath(URI.file('/test/workspace'), '.github', 'agents');
 			await mockFs.createDirectory(agentDir);
 			
 			const agents = await service.getAgentDefinitions();
@@ -407,8 +420,8 @@ describe('ClaudeMigrationService', () => {
 		it('should include version marker in generated files', async () => {
 			await service.migrate();
 			
-			const claudeMdPath = Uri.joinPath(
-				Uri.file('/test/workspace'),
+			const claudeMdPath = URI.joinPath(
+				URI.file('/test/workspace'),
 				'.github',
 				'claude',
 				'CLAUDE.md'
@@ -421,8 +434,8 @@ describe('ClaudeMigrationService', () => {
 		it('should include usage examples', async () => {
 			await service.migrate();
 			
-			const claudeMdPath = Uri.joinPath(
-				Uri.file('/test/workspace'),
+			const claudeMdPath = URI.joinPath(
+				URI.file('/test/workspace'),
 				'.github',
 				'claude',
 				'CLAUDE.md'
@@ -436,8 +449,8 @@ describe('ClaudeMigrationService', () => {
 		it('should include regeneration instructions', async () => {
 			await service.migrate();
 			
-			const claudeMdPath = Uri.joinPath(
-				Uri.file('/test/workspace'),
+			const claudeMdPath = URI.joinPath(
+				URI.file('/test/workspace'),
 				'.github',
 				'claude',
 				'CLAUDE.md'

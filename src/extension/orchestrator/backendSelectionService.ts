@@ -2,9 +2,9 @@
  *  Copyright (c) Microsoft Corporation and GitHub. All rights reserved.
  *--------------------------------------------------------------------------------------------*/
 
+import * as vscode from 'vscode';
 import { createDecorator } from '../../util/vs/platform/instantiation/common/instantiation';
-import { IFileSystemService } from '../../util/common/services/fileSystemService';
-import { IWorkspaceService } from '../../util/common/services/workspaceService';
+import { IFileSystemService } from '../../platform/filesystem/common/fileSystemService';
 import { IConfigurationService } from '../../platform/configuration/common/configurationService';
 import { URI } from '../../util/vs/base/common/uri';
 import { Disposable } from '../../util/vs/base/common/lifecycle';
@@ -118,7 +118,6 @@ export class BackendSelectionService extends Disposable implements IBackendSelec
 
 	constructor(
 		@IFileSystemService private readonly _fileSystemService: IFileSystemService,
-		@IWorkspaceService private readonly _workspaceService: IWorkspaceService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService
 	) {
 		super();
@@ -165,7 +164,7 @@ export class BackendSelectionService extends Disposable implements IBackendSelec
 		this._cachedConfig = undefined;
 		this._configCacheTime = Date.now();
 
-		const workspaceFolders = this._workspaceService.getWorkspaceFolders();
+		const workspaceFolders = vscode.workspace.workspaceFolders;
 		if (!workspaceFolders || workspaceFolders.length === 0) {
 			return;
 		}
@@ -173,7 +172,7 @@ export class BackendSelectionService extends Disposable implements IBackendSelec
 		for (const folder of workspaceFolders) {
 			const configUri = URI.joinPath(folder.uri, AGENT_CONFIG_PATH);
 			try {
-				const exists = await this._fileSystemService.exists(configUri);
+				const exists = await this._exists(configUri);
 				if (exists) {
 					const content = await this._fileSystemService.readFile(configUri);
 					const contentString = new TextDecoder().decode(content);
@@ -217,5 +216,14 @@ export class BackendSelectionService extends Disposable implements IBackendSelec
 			return false;
 		}
 		return true;
+	}
+
+	private async _exists(uri: URI): Promise<boolean> {
+		try {
+			await this._fileSystemService.stat(uri);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 }

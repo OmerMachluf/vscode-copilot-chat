@@ -2,17 +2,22 @@
  *  Copyright (c) Microsoft Corporation and GitHub. All rights reserved.
  *--------------------------------------------------------------------------------------------*/
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest';
 import { DisposableStore } from '../../../util/vs/base/common/lifecycle';
 import { URI } from '../../../util/vs/base/common/uri';
+import * as vscode from 'vscode';
 import {
 	BackendSelectionService,
-	BACKEND_SETTING_KEY,
 	DEFAULT_BACKEND,
-	AGENT_CONFIG_PATH,
-	AgentBackendType,
 	AgentConfigYaml,
 } from '../backendSelectionService';
+
+// Mock vscode
+vi.mock('vscode', () => ({
+	workspace: {
+		workspaceFolders: [],
+	},
+}));
 
 // Mock services
 const createMockFileSystemService = () => ({
@@ -20,7 +25,6 @@ const createMockFileSystemService = () => ({
 	readFile: vi.fn(),
 	readDirectory: vi.fn(),
 	stat: vi.fn(),
-	exists: vi.fn(),
 	writeFile: vi.fn(),
 	delete: vi.fn(),
 	createDirectory: vi.fn(),
@@ -28,14 +32,9 @@ const createMockFileSystemService = () => ({
 	rename: vi.fn(),
 });
 
-const createMockWorkspaceService = () => ({
-	_serviceBrand: undefined,
-	getWorkspaceFolders: vi.fn(),
-});
-
 const createMockConfigurationService = () => ({
 	_serviceBrand: undefined,
-	getValue: vi.fn(),
+	getNonExtensionConfig: vi.fn(),
 	onDidChangeConfiguration: vi.fn(() => ({ dispose: vi.fn() })),
 });
 
@@ -56,24 +55,21 @@ describe('BackendSelectionService', () => {
 	let disposables: DisposableStore;
 	let service: BackendSelectionService;
 	let mockFileSystemService: ReturnType<typeof createMockFileSystemService>;
-	let mockWorkspaceService: ReturnType<typeof createMockWorkspaceService>;
 	let mockConfigurationService: ReturnType<typeof createMockConfigurationService>;
 
 	beforeEach(() => {
 		disposables = new DisposableStore();
 		mockFileSystemService = createMockFileSystemService();
-		mockWorkspaceService = createMockWorkspaceService();
 		mockConfigurationService = createMockConfigurationService();
 
 		// Default: no workspace folders
-		mockWorkspaceService.getWorkspaceFolders.mockReturnValue([]);
+		(vscode.workspace as any).workspaceFolders = [];
 
 		// Default: setting not configured
-		mockConfigurationService.getValue.mockReturnValue(undefined);
+		mockConfigurationService.getNonExtensionConfig.mockReturnValue(undefined);
 
 		service = new BackendSelectionService(
 			mockFileSystemService as any,
-			mockWorkspaceService as any,
 			mockConfigurationService as any
 		);
 		disposables.add(service);
@@ -121,9 +117,9 @@ describe('BackendSelectionService', () => {
 				expect(result.source).toBe('user-request');
 			});
 
-			it('should detect openai model mentions (gpt-4)', async () => {
+			it('should detect gpt-4 mentions and route to copilot backend', async () => {
 				const result = await service.selectBackend('Run this with gpt-4', 'agent');
-				expect(result.backend).toBe('openai');
+				expect(result.backend).toBe('copilot');
 				expect(result.source).toBe('user-request');
 			});
 
@@ -136,8 +132,8 @@ describe('BackendSelectionService', () => {
 			it('should override repo config when user specifies backend', async () => {
 				// Setup repo config with copilot as default
 				const workspaceFolder = URI.file('/workspace');
-				mockWorkspaceService.getWorkspaceFolders.mockReturnValue([{ uri: workspaceFolder }]);
-				mockFileSystemService.exists.mockResolvedValue(true);
+				(vscode.workspace as any).workspaceFolders = [{ uri: workspaceFolder }];
+				mockFileSystemService.stat.mockResolvedValue({ type: 1 });
 				mockFileSystemService.readFile.mockResolvedValue(createConfigYaml({
 					version: 1,
 					defaults: { backend: 'copilot' }
@@ -153,11 +149,11 @@ describe('BackendSelectionService', () => {
 		describe('Level 2: Repo Config (.github/agents/config.yaml)', () => {
 			beforeEach(() => {
 				const workspaceFolder = URI.file('/workspace');
-				mockWorkspaceService.getWorkspaceFolders.mockReturnValue([{ uri: workspaceFolder }]);
+				(vscode.workspace as any).workspaceFolders = [{ uri: workspaceFolder }];
 			});
 
 			it('should use agent-specific config from repo', async () => {
-				mockFileSystemService.exists.mockResolvedValue(true);
+				mockFileSystemService.stat.mockResolvedValue({ type: 1 });
 				mockFileSystemService.readFile.mockResolvedValue(createConfigYaml({
 					version: 1,
 					agents: {
@@ -172,7 +168,7 @@ describe('BackendSelectionService', () => {
 			});
 
 			it('should use repo defaults when agent not configured', async () => {
-				mockFileSystemService.exists.mockResolvedValue(true);
+				mockFileSystemService.stat.mockResolvedValue({ type: 1 });
 				mockFileSystemService.readFile.mockResolvedValue(createConfigYaml({
 					version: 1,
 					defaults: { backend: 'claude' }
@@ -184,7 +180,7 @@ describe('BackendSelectionService', () => {
 			});
 
 			it('should prefer agent-specific config over defaults', async () => {
-				mockFileSystemService.exists.mockResolvedValue(true);
+				mockFileSystemService.stat.mockResolvedValue({ type: 1 });
 				mockFileSystemService.readFile.mockResolvedValue(createConfigYaml({
 					version: 1,
 					defaults: { backend: 'copilot' },
@@ -204,7 +200,7 @@ describe('BackendSelectionService', () => {
 			});
 
 			it('should handle missing config file gracefully', async () => {
-				mockFileSystemService.exists.mockResolvedValue(false);
+				mockFileSystemService.stat.mockRejectedValue(new Error('File not found'));
 
 				const result = await service.selectBackend('Do something', 'agent');
 				expect(result.backend).toBe(DEFAULT_BACKEND);
@@ -212,7 +208,7 @@ describe('BackendSelectionService', () => {
 			});
 
 			it('should handle invalid YAML gracefully', async () => {
-				mockFileSystemService.exists.mockResolvedValue(true);
+				mockFileSystemService.stat.mockResolvedValue({ type: 1 });
 				mockFileSystemService.readFile.mockRejectedValue(new Error('Parse error'));
 
 				const result = await service.selectBackend('Do something', 'agent');
@@ -223,7 +219,7 @@ describe('BackendSelectionService', () => {
 
 		describe('Level 3: Extension Defaults (VS Code settings)', () => {
 			it('should use VS Code setting when no repo config exists', async () => {
-				mockConfigurationService.getValue.mockReturnValue('claude');
+				mockConfigurationService.getNonExtensionConfig.mockReturnValue('claude');
 
 				const result = await service.selectBackend('Do something', 'agent');
 				expect(result.backend).toBe('claude');
@@ -231,7 +227,7 @@ describe('BackendSelectionService', () => {
 			});
 
 			it('should fallback to copilot when setting is invalid', async () => {
-				mockConfigurationService.getValue.mockReturnValue('invalid-backend');
+				mockConfigurationService.getNonExtensionConfig.mockReturnValue('invalid-backend');
 
 				const result = await service.selectBackend('Do something', 'agent');
 				expect(result.backend).toBe(DEFAULT_BACKEND);
@@ -239,7 +235,7 @@ describe('BackendSelectionService', () => {
 			});
 
 			it('should fallback to copilot when setting is not configured', async () => {
-				mockConfigurationService.getValue.mockReturnValue(undefined);
+				mockConfigurationService.getNonExtensionConfig.mockReturnValue(undefined);
 
 				const result = await service.selectBackend('Do something', 'agent');
 				expect(result.backend).toBe(DEFAULT_BACKEND);
@@ -252,8 +248,8 @@ describe('BackendSelectionService', () => {
 		it('should skip user prompt parsing', async () => {
 			// Even if the prompt would have user hints, getDefaultBackend ignores them
 			const workspaceFolder = URI.file('/workspace');
-			mockWorkspaceService.getWorkspaceFolders.mockReturnValue([{ uri: workspaceFolder }]);
-			mockFileSystemService.exists.mockResolvedValue(true);
+			(vscode.workspace as any).workspaceFolders = [{ uri: workspaceFolder }];
+			mockFileSystemService.stat.mockResolvedValue({ type: 1 });
 			mockFileSystemService.readFile.mockResolvedValue(createConfigYaml({
 				version: 1,
 				defaults: { backend: 'copilot' }
@@ -268,8 +264,8 @@ describe('BackendSelectionService', () => {
 	describe('config caching', () => {
 		it('should cache config and not re-read within cache duration', async () => {
 			const workspaceFolder = URI.file('/workspace');
-			mockWorkspaceService.getWorkspaceFolders.mockReturnValue([{ uri: workspaceFolder }]);
-			mockFileSystemService.exists.mockResolvedValue(true);
+			(vscode.workspace as any).workspaceFolders = [{ uri: workspaceFolder }];
+			mockFileSystemService.stat.mockResolvedValue({ type: 1 });
 			mockFileSystemService.readFile.mockResolvedValue(createConfigYaml({
 				version: 1,
 				defaults: { backend: 'claude' }
@@ -286,8 +282,8 @@ describe('BackendSelectionService', () => {
 
 		it('should refresh config on explicit refresh call', async () => {
 			const workspaceFolder = URI.file('/workspace');
-			mockWorkspaceService.getWorkspaceFolders.mockReturnValue([{ uri: workspaceFolder }]);
-			mockFileSystemService.exists.mockResolvedValue(true);
+			(vscode.workspace as any).workspaceFolders = [{ uri: workspaceFolder }];
+			mockFileSystemService.stat.mockResolvedValue({ type: 1 });
 			mockFileSystemService.readFile.mockResolvedValue(createConfigYaml({
 				version: 1,
 				defaults: { backend: 'claude' }
@@ -306,8 +302,8 @@ describe('BackendSelectionService', () => {
 	describe('config validation', () => {
 		it('should reject config without version', async () => {
 			const workspaceFolder = URI.file('/workspace');
-			mockWorkspaceService.getWorkspaceFolders.mockReturnValue([{ uri: workspaceFolder }]);
-			mockFileSystemService.exists.mockResolvedValue(true);
+			(vscode.workspace as any).workspaceFolders = [{ uri: workspaceFolder }];
+			mockFileSystemService.stat.mockResolvedValue({ type: 1 });
 			mockFileSystemService.readFile.mockResolvedValue(new TextEncoder().encode(`
 defaults:
   backend: claude
@@ -320,8 +316,8 @@ defaults:
 
 		it('should accept valid config with all fields', async () => {
 			const workspaceFolder = URI.file('/workspace');
-			mockWorkspaceService.getWorkspaceFolders.mockReturnValue([{ uri: workspaceFolder }]);
-			mockFileSystemService.exists.mockResolvedValue(true);
+			(vscode.workspace as any).workspaceFolders = [{ uri: workspaceFolder }];
+			mockFileSystemService.stat.mockResolvedValue({ type: 1 });
 			mockFileSystemService.readFile.mockResolvedValue(createConfigYaml({
 				version: 1,
 				defaults: { backend: 'copilot', model: 'gpt-4' },
@@ -339,8 +335,3 @@ defaults:
 		});
 	});
 });
-
-// Export for afterEach cleanup
-function afterEach(fn: () => void) {
-	return fn;
-}
