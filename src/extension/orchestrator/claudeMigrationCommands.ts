@@ -5,8 +5,8 @@
 
 import * as vscode from 'vscode';
 import { Disposable } from 'vscode';
-import { IInstantiationService } from '../../util/common/instantiation';
-import { IClaudeMigrationService } from './claudeMigrationService';
+import { IInstantiationService } from '../../util/vs/platform/instantiation/common/instantiation';
+import { IClaudeMigrationService, MigrationStatus } from './claudeMigrationService';
 
 /**
  * Command ID for regenerating Claude configuration files
@@ -40,12 +40,12 @@ export class ClaudeMigrationCommands extends Disposable {
 							title: 'Regenerating Claude Configuration...',
 							cancellable: true
 						},
-						async (progress, token) => {
+						async (progress, _token) => {
 							progress.report({ message: 'Gathering agent definitions...' });
 
-							const result = await migrationService.regenerate(token);
+							const result = await migrationService.regenerate();
 
-							if (result.status === 'completed') {
+							if (result.status === MigrationStatus.Completed) {
 								const fileList = result.generatedFiles
 									.map(uri => vscode.workspace.asRelativePath(uri))
 									.join(', ');
@@ -53,11 +53,11 @@ export class ClaudeMigrationCommands extends Disposable {
 								vscode.window.showInformationMessage(
 									`Claude configuration regenerated successfully. Generated files: ${fileList}`
 								);
-							} else if (result.status === 'failed') {
+							} else if (result.status === MigrationStatus.Failed) {
 								vscode.window.showErrorMessage(
 									`Failed to regenerate Claude configuration: ${result.error || 'Unknown error'}`
 								);
-							} else if (result.status === 'notNeeded') {
+							} else if (result.status === MigrationStatus.NotNeeded) {
 								vscode.window.showInformationMessage(
 									'No workspace folder found. Claude configuration cannot be generated.'
 								);

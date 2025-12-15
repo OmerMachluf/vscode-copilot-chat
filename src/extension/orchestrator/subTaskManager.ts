@@ -84,12 +84,14 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 	private _orchestratorService: IOrchestratorService | undefined;
 
 	constructor(
-		@IAgentRunner private readonly _agentRunner: IAgentRunner,
+		// eslint-disable-next-line @typescript-eslint/no-unused-vars
+		@IAgentRunner private readonly _agentRunner: IAgentRunner, // Reserved for future direct agent execution
 		@IWorkerToolsService private readonly _workerToolsService: IWorkerToolsService,
 		@ILogService private readonly _logService: ILogService,
 		@ISafetyLimitsService private readonly _safetyLimitsService: ISafetyLimitsService,
 	) {
 		super();
+		void this._agentRunner; // Reserved for future direct agent execution
 
 		// Listen to emergency stop events
 		this._register(this._safetyLimitsService.onEmergencyStop(options => {

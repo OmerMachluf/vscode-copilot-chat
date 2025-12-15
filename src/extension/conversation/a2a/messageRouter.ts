@@ -10,7 +10,6 @@ import { generateUuid } from '../../../util/vs/base/common/uuid';
 import { createDecorator } from '../../../util/vs/platform/instantiation/common/instantiation';
 import {
 	IA2AMessage,
-	IA2AMessageContent,
 	IAgentIdentifier,
 	ICompletionContent,
 	ICreateMessageOptions,
@@ -60,6 +59,7 @@ export interface IRoutingRule {
  */
 export interface IMessageRoute {
 	readonly messageId: string;
+	readonly message: IA2AMessage;
 	readonly source: IAgentIdentifier;
 	readonly destination: IAgentIdentifier;
 	readonly hops: IRouteHop[];
@@ -288,6 +288,7 @@ export class A2AMessageRouter extends Disposable implements IA2AMessageRouter {
 		if (this._config.traceRoutes) {
 			const route: IMessageRoute = {
 				messageId: message.id,
+				message,
 				source: message.sender,
 				destination: message.receiver,
 				hops: [{

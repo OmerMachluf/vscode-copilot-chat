@@ -736,11 +736,11 @@ export class NullAgentPermissionService extends Disposable implements IAgentPerm
 		return [];
 	}
 
-	addApprovalRule(): void {
+	addApprovalRule(_rule: Omit<ApprovalRule, 'id' | 'createdAt'>): void {
 		// No-op
 	}
 
-	removeApprovalRule(): void {
+	removeApprovalRule(_ruleId: string): void {
 		// No-op
 	}
 

@@ -64,9 +64,9 @@ public readonly onApprovalDecision = this._onApprovalDecision.event;
 
 constructor(private readonly _messageRouter?: IA2AMessageRouter) {
 super();
-if (_messageRouter) {
+if (this._messageRouter) {
 this._disposables.add(
-_messageRouter.onMessage((message) => this._handleMessage(message))
+this._messageRouter.onMessageRouted((route) => this._handleMessage(route.message))
 );
 }
 }
@@ -74,22 +74,22 @@ _messageRouter.onMessage((message) => this._handleMessage(message))
 private _handleMessage(message: IA2AMessage): void {
 if (message.type === 'status_update') {
 const content = message.content as IStatusUpdateContent;
-this._updateSession(message.sourceId, {
-id: message.sourceId,
+this._updateSession(message.sender.id, {
+id: message.sender.id,
 status: this._mapStatus(content.status),
-taskDescription: content.currentTask,
+taskDescription: content.status,
 startTime: Date.now(),
-worktreePath: content.worktreePath,
+worktreePath: message.sender.worktreePath,
 });
 } else if (message.type === 'completion') {
-const session = this._sessions.get(message.sourceId);
+const session = this._sessions.get(message.sender.id);
 if (session) {
-this._updateSession(message.sourceId, { ...session, status: 'completed' });
+this._updateSession(message.sender.id, { ...session, status: 'completed' });
 }
 } else if (message.type === 'error') {
-const session = this._sessions.get(message.sourceId);
+const session = this._sessions.get(message.sender.id);
 if (session) {
-this._updateSession(message.sourceId, { ...session, status: 'failed' });
+this._updateSession(message.sender.id, { ...session, status: 'failed' });
 }
 }
 }
@@ -258,7 +258,7 @@ return;
 const items: (vscode.QuickPickItem & { approvalId: string })[] = approvals.map((approval) => ({
 label: approval.operation,
 description: approval.description,
-detail: 'Session: ' + approval.sessionId + ' | Level: ' + PermissionLevel[approval.requiredLevel],
+detail: 'Session: ' + approval.sessionId + ' | Level: ' + approval.requiredLevel,
 approvalId: approval.id,
 }));
 

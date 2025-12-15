@@ -137,11 +137,10 @@ describe('ClaudeWorktreeSession', () => {
 
 describe('ClaudeWorktreeSessionManager', () => {
 	let manager: ClaudeWorktreeSessionManager;
-	let services: ReturnType<typeof createExtensionUnitTestingServices>;
 
 	beforeEach(() => {
-		services = createExtensionUnitTestingServices();
-		manager = services.instantiationService.createInstance(ClaudeWorktreeSessionManager);
+		const services = createExtensionUnitTestingServices();
+		manager = services.seal().createInstance(ClaudeWorktreeSessionManager);
 	});
 
 	describe('session management', () => {
@@ -173,11 +172,10 @@ describe('ClaudeWorktreeSessionManager', () => {
 
 describe('ClaudeAgentManager worktree support', () => {
 	let agentManager: ClaudeAgentManager;
-	let services: ReturnType<typeof createExtensionUnitTestingServices>;
 
 	beforeEach(() => {
-		services = createExtensionUnitTestingServices();
-		agentManager = services.instantiationService.createInstance(ClaudeAgentManager);
+		const services = createExtensionUnitTestingServices();
+		agentManager = services.seal().createInstance(ClaudeAgentManager);
 	});
 
 	describe('worktree session management', () => {

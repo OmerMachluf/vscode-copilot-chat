@@ -4,18 +4,15 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Disposable } from '../../../../util/vs/base/common/lifecycle';
 import {
 	A2A_CONFIG_KEYS,
 	AgentPermissionService,
-	IAgentPermissionService,
 	NullAgentPermissionService,
 } from '../permissionService';
 import {
 	ApprovalScope,
 	DEFAULT_PERMISSION_CONFIG,
 	OperationCategory,
-	PermissionLevel,
 	PermissionRequest,
 } from '../permissions';
 

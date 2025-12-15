@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	branchExists,
 	checkout,
@@ -25,7 +25,6 @@ import {
 	getLog,
 	getMainRepoPath,
 	getMergeBase,
-	GitOperationResult,
 	hasUncommittedChanges,
 	isInMerge,
 	isInRebase,
@@ -55,36 +54,42 @@ type ExecCallback = (error: Error | null, stdout: string, stderr: string) => voi
 
 function mockExecSuccess(stdout: string = '', stderr: string = '') {
 	vi.mocked(cp.exec).mockImplementation(
-		(_cmd: string, _options: unknown, callback: ExecCallback) => {
-			callback(null, stdout, stderr);
-			return {} as any;
-		},
+		((_cmd: string, _options: unknown, callback?: ExecCallback) => {
+			if (callback) {
+				callback(null, stdout, stderr);
+			}
+			return {} as cp.ChildProcess;
+		}) as typeof cp.exec,
 	);
 }
 
 function mockExecFailure(error: Error, stdout: string = '', stderr: string = '') {
 	vi.mocked(cp.exec).mockImplementation(
-		(_cmd: string, _options: unknown, callback: ExecCallback) => {
-			callback(error, stdout, stderr);
-			return {} as any;
-		},
+		((_cmd: string, _options: unknown, callback?: ExecCallback) => {
+			if (callback) {
+				callback(error, stdout, stderr);
+			}
+			return {} as cp.ChildProcess;
+		}) as typeof cp.exec,
 	);
 }
 
 function mockExecSequence(results: Array<{ success: boolean; stdout?: string; stderr?: string; error?: Error }>) {
 	let callIndex = 0;
 	vi.mocked(cp.exec).mockImplementation(
-		(_cmd: string, _options: unknown, callback: ExecCallback) => {
+		((_cmd: string, _options: unknown, callback?: ExecCallback) => {
 			const result = results[callIndex++] || results[results.length - 1];
-			if (result.success) {
-				callback(null, result.stdout || '', result.stderr || '');
-			} else {
-				const error = result.error || new Error('Command failed');
-				(error as any).code = 1;
-				callback(error, result.stdout || '', result.stderr || '');
+			if (callback) {
+				if (result.success) {
+					callback(null, result.stdout || '', result.stderr || '');
+				} else {
+					const error = result.error || new Error('Command failed');
+					(error as any).code = 1;
+					callback(error, result.stdout || '', result.stderr || '');
+				}
 			}
-			return {} as any;
-		},
+			return {} as cp.ChildProcess;
+		}) as typeof cp.exec,
 	);
 }
 

@@ -1963,7 +1963,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 					parsedAgentType = {
 						...parsedAgentType,
 						backend: backendSelection.backend,
-						model: backendSelection.model ?? parsedAgentType.model,
+						modelOverride: backendSelection.model ?? parsedAgentType.modelOverride,
 					};
 				}
 			} catch (error) {

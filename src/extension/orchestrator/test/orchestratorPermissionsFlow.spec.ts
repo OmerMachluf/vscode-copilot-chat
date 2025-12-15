@@ -250,6 +250,31 @@ describe('Orchestrator Permission Flow', () => {
 		);
 		disposables.add(subTaskManager);
 
+		// Mock executor registry
+		const mockExecutorRegistry = {
+			_serviceBrand: undefined,
+			register: vi.fn(),
+			unregister: vi.fn(),
+			getExecutor: vi.fn(),
+			getExecutorByBackend: vi.fn(),
+			hasExecutor: vi.fn().mockReturnValue(true),
+			getRegisteredBackends: vi.fn().mockReturnValue(['copilot']),
+		} as any;
+
+		// Mock backend selection service
+		const mockBackendSelectionService = {
+			_serviceBrand: undefined,
+			selectBackend: vi.fn().mockReturnValue({ backend: 'copilot', source: 'extension-default' }),
+			getDefaultBackend: vi.fn().mockReturnValue('copilot'),
+		} as any;
+
+		// Mock instantiation service
+		const mockInstantiationService = {
+			_serviceBrand: undefined,
+			createInstance: vi.fn().mockReturnValue({}),
+			invokeFunction: vi.fn(),
+		} as any;
+
 		orchestratorService = new OrchestratorService(
 			mockAgentInstructionService,
 			mockAgentRunner,
@@ -259,6 +284,9 @@ describe('Orchestrator Permission Flow', () => {
 			permissionService,
 			mockParentCompletionService,
 			mockSubtaskProgressService as any,
+			mockExecutorRegistry,
+			mockBackendSelectionService,
+			mockInstantiationService,
 			createMockLogService() as any
 		);
 		disposables.add(orchestratorService);

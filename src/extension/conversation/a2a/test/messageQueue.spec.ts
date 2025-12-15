@@ -4,9 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Disposable } from '../../../../util/vs/base/common/lifecycle';
-import { A2AMessageQueue, IA2AMessageQueue, IMessageQueueConfig } from '../messageQueue';
-import { IAgentIdentifier, IStatusUpdateContent, MessagePriority } from '../messageTypes';
+import { A2AMessageQueue, IMessageQueueConfig } from '../messageQueue';
+import { IAgentIdentifier, IStatusUpdateContent } from '../messageTypes';
 
 // Mock logger
 class MockLogService {

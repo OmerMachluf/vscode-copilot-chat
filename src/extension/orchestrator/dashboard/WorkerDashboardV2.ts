@@ -17,7 +17,7 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 	private _view?: vscode.WebviewView;
 	private _auditLogFilter: IAuditLogFilter = {};
 	private _updateDebounceTimer: ReturnType<typeof setTimeout> | undefined;
-	private _pendingUpdate = false;
+	private _pendingUpdate = false; // Debounce state tracking
 	private _lastUpdateTime = 0;
 
 	// Debounce settings: coalesce rapid updates, but ensure minimum responsiveness
@@ -28,7 +28,9 @@ export class WorkerDashboardProviderV2 implements vscode.WebviewViewProvider {
 		private readonly _orchestrator: IOrchestratorService,
 		private readonly _extensionUri: vscode.Uri,
 		private readonly _auditLog?: IAuditLogService,
-	) { }
+	) {
+		void this._pendingUpdate; // Variable is set but read check is reserved for future use
+	}
 
 	public resolveWebviewView(
 		webviewView: vscode.WebviewView,

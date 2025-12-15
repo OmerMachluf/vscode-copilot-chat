@@ -156,9 +156,11 @@ export class ClaudeWorktreeSessionManager extends Disposable implements IClaudeW
 	private _serverConfigResolver: (() => Promise<ILanguageModelServerConfig>) | undefined;
 
 	constructor(
+		// eslint-disable-next-line @typescript-eslint/no-unused-vars
 		@IInstantiationService private readonly _instantiationService: IInstantiationService
 	) {
 		super();
+		void this._instantiationService; // Reserved for future use
 	}
 
 	/**

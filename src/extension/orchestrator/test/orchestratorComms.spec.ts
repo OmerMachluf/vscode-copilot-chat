@@ -159,6 +159,31 @@ describe('Orchestrator Communication', () => {
 			rmSync: () => { },
 		}));
 
+		// Mock executor registry
+		const executorRegistry = {
+			_serviceBrand: undefined,
+			register: vi.fn(),
+			unregister: vi.fn(),
+			getExecutor: vi.fn(),
+			getExecutorByBackend: vi.fn(),
+			hasExecutor: vi.fn().mockReturnValue(true),
+			getRegisteredBackends: vi.fn().mockReturnValue(['copilot']),
+		} as any;
+
+		// Mock backend selection service
+		const backendSelectionService = {
+			_serviceBrand: undefined,
+			selectBackend: vi.fn().mockReturnValue({ backend: 'copilot', source: 'extension-default' }),
+			getDefaultBackend: vi.fn().mockReturnValue('copilot'),
+		} as any;
+
+		// Mock instantiation service
+		const instantiationService = {
+			_serviceBrand: undefined,
+			createInstance: vi.fn().mockReturnValue({}),
+			invokeFunction: vi.fn(),
+		} as any;
+
 		orchestratorService = new OrchestratorService(
 			agentInstructionService,
 			agentRunner,
@@ -168,6 +193,9 @@ describe('Orchestrator Communication', () => {
 			permissionService,
 			parentCompletionService,
 			subtaskProgressServiceMock,
+			executorRegistry,
+			backendSelectionService,
+			instantiationService,
 			logService
 		);
 
