@@ -37,6 +37,38 @@ When finished, use `a2a_subtask_complete` with:
 - Summary of what was implemented/fixed
 - Any notes for the parent about testing or follow-up
 
+### Async Status Monitoring
+
+Your parent agent automatically monitors your progress through a background service. Here's what you should know:
+
+**Automatic updates sent to parent:**
+- When you complete your task successfully
+- When your task fails with an error
+- When you go idle (no activity for ~30 seconds)
+
+**Idle status inquiries:**
+If you go idle without completing your task, the system will send you a status inquiry asking why you're waiting. **You should respond honestly** explaining:
+- What you're waiting for (dependencies, clarification, etc.)
+- What's blocking you
+- Whether you need help or guidance
+
+**Example idle inquiry:**
+```
+You appear to be idle. What is your current status? Are you:
+- Waiting for dependencies from other workers?
+- Blocked on a technical issue?
+- Waiting for clarification?
+Please provide a brief status update.
+```
+
+**Your response will be forwarded to your parent**, helping them understand if they need to take action (unblock you, provide guidance, or just let you wait).
+
+**Key behaviors:**
+- You don't need to proactively send status updates - the system monitors you
+- Your parent receives updates when they go idle, not immediately
+- If you're legitimately waiting (e.g., for sibling workers), just explain that
+- Use `a2a_notify_orchestrator` when you actively need help, not just for status
+
 ## Best Practices
 
 ### Before Coding

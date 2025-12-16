@@ -10,6 +10,7 @@ import { CancellationToken, CancellationTokenSource } from '../../util/vs/base/c
 import { Emitter, Event } from '../../util/vs/base/common/event';
 import { Disposable } from '../../util/vs/base/common/lifecycle';
 import { generateUuid } from '../../util/vs/base/common/uuid';
+import { parseAgentType, ParsedAgentType } from './agentTypeParser';
 import { IAgentRunner, ISubTask, ISubTaskCreateOptions, ISubTaskManager, ISubTaskResult } from './orchestratorInterfaces';
 import {
 	hashPrompt,
@@ -247,6 +248,16 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 		// Record the spawn for rate limiting
 		this._safetyLimitsService.recordSpawn(workerId);
 
+		// Parse the agent type to extract backend routing information
+		let parsedAgentType: ParsedAgentType | undefined;
+		try {
+			parsedAgentType = parseAgentType(options.agentType, options.model);
+			this._logService.debug(`[SubTaskManager] Parsed agent type '${options.agentType}' → backend=${parsedAgentType.backend}, agentName=${parsedAgentType.agentName}, slashCommand=${parsedAgentType.slashCommand}`);
+		} catch (parseError) {
+			// Log warning but don't fail - fall back to treating as copilot agent
+			this._logService.warn(`[SubTaskManager] Failed to parse agent type '${options.agentType}': ${parseError instanceof Error ? parseError.message : String(parseError)}`);
+		}
+
 		const subTask: ISubTask = {
 			id,
 			parentWorkerId: options.parentWorkerId,
@@ -254,6 +265,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			planId: options.planId,
 			worktreePath: options.worktreePath,
 			agentType: options.agentType,
+			parsedAgentType,
 			prompt: options.prompt,
 			expectedOutput: options.expectedOutput,
 			model: options.model,
@@ -410,12 +422,16 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 				return result;
 			}
 
-			return {
+			// Queue the error for the parent by updating status
+			// This ensures ParentCompletionService receives the completion event
+			const unknownErrorResult: ISubTaskResult = {
 				taskId: id,
 				status: 'failed',
 				output: '',
-				error: `Unknown error.`,
+				error: `Task execution failed: ${errorMessage}`,
 			};
+			this.updateStatus(id, 'failed', unknownErrorResult);
+			return unknownErrorResult;
 		} finally {
 			this._logService.debug(`[SubTaskManager] Cleanup: removing cancellation source and running subtask entry for ${id}`);
 			this._cancellationSources.delete(id);
@@ -468,13 +484,16 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 		// Create an orchestrator task for this subtask with full context
 		const taskName = `[SubTask] ${subTask.agentType} (${subTask.id.slice(-6)})`;
 
-		this._logService.debug(`[SubTaskManager] Creating orchestrator task: name="${taskName}", parentWorkerId=${subTask.parentWorkerId}, spawnContext=${inheritedSpawnContext}, agentType=${subTask.agentType}`);
+		this._logService.debug(`[SubTaskManager] Creating orchestrator task: name="${taskName}", parentWorkerId=${subTask.parentWorkerId}, spawnContext=${inheritedSpawnContext}, agentType=${subTask.agentType}, parsedAgentType.backend=${subTask.parsedAgentType?.backend}`);
 		const orchestratorTask = orchestratorService.addTask(taskDescription, {
 			name: taskName,
 			planId: subTask.planId,
 			modelId: subTask.model,
 			// CRITICAL: Pass the agent type so the worker gets the correct role/instructions
 			agent: subTask.agentType,
+			// CRITICAL: Pass the pre-parsed agent type to preserve backend specification
+			// This ensures subtasks like 'claude:agent' stay on the claude backend
+			parsedAgentType: subTask.parsedAgentType,
 			// Don't create a new worktree - reuse parent's worktree
 			baseBranch: undefined,
 			targetFiles: subTask.targetFiles,

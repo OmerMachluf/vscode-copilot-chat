@@ -35,7 +35,8 @@ import { IOrchestratorQueueMessage, IOrchestratorQueueService } from './orchestr
 import { IParentCompletionService, WorkerSessionWakeUpAdapter } from './parentCompletionService';
 import { ISubTaskManager } from './subTaskManager';
 import { ISubtaskProgressService } from './subtaskProgressService';
-import { WorkerHealthMonitor } from './workerHealthMonitor';
+import { ITaskMonitorService } from './taskMonitorService';
+import { WorkerHealthMonitor, WorkerIdleReason } from './workerHealthMonitor';
 import { SerializedWorkerState, WorkerResponseStream, WorkerSession, WorkerSessionState } from './workerSession';
 import { IWorkerToolsService, WorkerToolSet } from './workerToolsService';
 
@@ -167,6 +168,8 @@ export interface CreateTaskOptions {
 	targetFiles?: string[];
 	/** Parent worker ID for subtasks - messages route to parent instead of orchestrator */
 	parentWorkerId?: string;
+	/** Pre-parsed agent type for subtasks - preserves backend specification from spawn request */
+	parsedAgentType?: ParsedAgentType;
 }
 
 /**
@@ -585,6 +588,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		@ISubtaskProgressService private readonly _subtaskProgressService: ISubtaskProgressService,
 		@IAgentExecutorRegistry private readonly _executorRegistry: IAgentExecutorRegistry,
 		@IBackendSelectionService private readonly _backendSelectionService: IBackendSelectionService,
+		@ITaskMonitorService private readonly _taskMonitorService: ITaskMonitorService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@ILogService private readonly _logService: ILogService,
 	) {
@@ -607,6 +611,13 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		this._register(this._healthMonitor.onWorkerUnhealthy(event => {
 			this._handleUnhealthyWorker(event.workerId, event.reason);
 		}));
+		// Listen for idle workers (shorter timeout than stuck) - send inquiry instead of marking complete
+		// When a worker goes idle, we also check if it has pending subtask updates to inject
+		this._register(this._healthMonitor.onWorkerIdle(event => {
+			this._handleIdleWorker(event.workerId, event.reason);
+		}));
+		// Note: We do NOT immediately forward on onUpdatesAvailable - updates stay queued
+		// until the parent worker goes idle, then they're automatically injected
 	}
 
 	/**
@@ -663,6 +674,237 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 			this._logService.info(`[Orchestrator] Notified parent ${ownerContext.ownerId} about unhealthy worker ${workerId}`);
 		}
+	}
+
+	/**
+	 * Handle an idle worker. The behavior depends on whether this worker is a parent or child:
+	 *
+	 * 1. If worker has pending subtask updates (it's a parent waiting for children):
+	 *    → Inject those updates, waking up the worker with info from its children
+	 *
+	 * 2. If worker is a CHILD (has a parent):
+	 *    → Send "why are you idle?" inquiry to the child
+	 *    → Queue notification for the parent that child went idle
+	 *    → Child's response will also be queued for the parent
+	 *
+	 * 3. If worker is a top-level parent with no pending updates:
+	 *    → It's just waiting for children, do nothing (normal state)
+	 */
+	private _handleIdleWorker(workerId: string, _reason: WorkerIdleReason): void {
+		this._logService.info(`[Orchestrator] Worker ${workerId} is idle`);
+
+		const worker = this._workers.get(workerId);
+		if (!worker) {
+			return;
+		}
+
+		// FIRST: Check if this worker has pending subtask updates (it's a parent)
+		// If so, inject those updates - this wakes up the worker with useful info
+		if (this._taskMonitorService.hasPendingUpdates(workerId)) {
+			this._injectPendingSubtaskUpdates(workerId, worker);
+			return; // Don't send idle inquiry - we just gave it work to do
+		}
+
+		// Get the worker's tool set to check if it has a parent
+		const toolSet = this._workerToolSets.get(workerId);
+		const ownerContext = toolSet?.workerContext?.owner;
+		const isChildWorker = ownerContext && ownerContext.ownerType === 'worker';
+
+		// If this is NOT a child worker (i.e., it's a top-level parent), and it has no
+		// pending updates, it's just waiting for its children - that's normal, do nothing
+		if (!isChildWorker) {
+			this._logService.debug(`[Orchestrator] Top-level worker ${workerId} is idle with no pending updates - waiting for children`);
+			return;
+		}
+
+		// This is a CHILD worker that went idle - send inquiry to gather context for parent
+
+		// Don't send inquiry if one is already pending
+		if (this._healthMonitor.hasIdleInquiryPending(workerId)) {
+			this._logService.debug(`[Orchestrator] Idle inquiry already pending for ${workerId}, skipping`);
+			return;
+		}
+
+		// Mark inquiry as sent to prevent duplicates
+		this._healthMonitor.markIdleInquirySent(workerId);
+
+		// Fire orchestrator event so UI can show notification
+		this._onOrchestratorEvent.fire({
+			type: 'worker.idle',
+			workerId,
+		});
+
+		// Find the task for this worker
+		const task = this._tasks.find(t => t.workerId === workerId);
+		if (!task) {
+			return;
+		}
+
+		// Build the idle inquiry message for the CHILD
+		const inquiryMessage = `
+## Status Check
+
+You appear to be idle (no recent activity). Please respond with your current status:
+
+1. **If you have completed your task:** Call the \`a2a_subtask_complete\` tool with your final results.
+
+2. **If you are blocked or need information:** Describe what information or clarification you need to continue.
+
+3. **If you encountered an error:** Describe what went wrong and any error messages.
+
+4. **If you are still working:** Describe what you are currently processing.
+
+Please respond - your parent task is waiting for your status update.
+`;
+
+		// Send the inquiry to the CHILD worker and capture response
+		// We use a wrapper to capture the child's response and queue it with the idle notification
+		this._sendIdleInquiryAndCaptureResponse(worker, workerId, task, ownerContext.ownerId, inquiryMessage);
+		this._logService.debug(`[Orchestrator] Sent idle inquiry to child worker ${workerId}`);
+	}
+
+	/**
+	 * Send idle inquiry to a child worker and capture its response.
+	 * Both the "child went idle" notification and the response are queued together
+	 * for the parent, so the parent gets complete context in one update.
+	 */
+	private _sendIdleInquiryAndCaptureResponse(
+		worker: WorkerSession,
+		childWorkerId: string,
+		task: WorkerTask,
+		parentWorkerId: string,
+		inquiryMessage: string
+	): void {
+		// Set up a listener to capture the child's response when streaming ends
+		const responseTimeout = 60000; // 60 second timeout for response
+		let responded = false;
+		let responseContent = '';
+
+		// Listen to stream parts to capture the response content
+		const streamPartDisposable = worker.onStreamPart((part) => {
+			if (!responded && part.type === 'markdown' && part.content) {
+				const content = typeof part.content === 'string' ? part.content : part.content.value;
+				if (content) {
+					responseContent += content;
+				}
+			}
+		});
+
+		// Listen for stream end to know when response is complete
+		const streamEndDisposable = worker.onStreamEnd(() => {
+			if (responded) {
+				return;
+			}
+
+			responded = true;
+			streamPartDisposable.dispose();
+			streamEndDisposable.dispose();
+
+			// Queue the combined idle + response update for parent
+			const truncatedResponse = responseContent.length > 500
+				? responseContent.slice(0, 500) + '...'
+				: responseContent;
+
+			this._taskMonitorService.queueUpdate({
+				type: 'idle_response',
+				subTaskId: task.id,
+				parentWorkerId,
+				idleReason: truncatedResponse
+					? `Child went idle and responded: ${truncatedResponse}`
+					: 'Child went idle. Response was empty or non-text.',
+				timestamp: Date.now(),
+			});
+
+			this._logService.info(`[Orchestrator] Captured idle response from child ${childWorkerId}, queued for parent ${parentWorkerId}`);
+		});
+
+		// Set up timeout in case child doesn't respond
+		setTimeout(() => {
+			if (!responded) {
+				responded = true;
+				streamPartDisposable.dispose();
+				streamEndDisposable.dispose();
+
+				// Queue idle update without response (timed out)
+				this._taskMonitorService.queueUpdate({
+					type: 'idle',
+					subTaskId: task.id,
+					parentWorkerId,
+					idleReason: `Child went idle. Inquiry sent but no response within ${responseTimeout / 1000}s.`,
+					timestamp: Date.now(),
+				});
+
+				this._logService.warn(`[Orchestrator] Child ${childWorkerId} did not respond to idle inquiry within timeout`);
+			}
+		}, responseTimeout);
+
+		// Send the inquiry to wake up the child
+		worker.sendClarification(inquiryMessage);
+	}
+
+	/**
+	 * Inject pending subtask updates into an idle worker.
+	 * Called when a parent worker goes idle and has updates from its children.
+	 */
+	private _injectPendingSubtaskUpdates(workerId: string, worker: WorkerSession): void {
+		const updates = this._taskMonitorService.consumeUpdates(workerId);
+		if (updates.length === 0) {
+			return;
+		}
+
+		this._logService.info(`[Orchestrator] Injecting ${updates.length} subtask update(s) into idle worker ${workerId}`);
+
+		// Build a summary message with all updates
+		const updateMessages: string[] = [];
+		for (const update of updates) {
+			switch (update.type) {
+				case 'completed':
+					updateMessages.push(
+						`✅ **Subtask Completed** (\`${update.subTaskId}\`)\n` +
+						(update.result?.output ? `Output: ${update.result.output.slice(0, 500)}${update.result.output.length > 500 ? '...' : ''}` : 'No output')
+					);
+					break;
+				case 'failed':
+					updateMessages.push(
+						`❌ **Subtask Failed** (\`${update.subTaskId}\`)\n` +
+						`Error: ${update.error || update.result?.error || 'Unknown error'}`
+					);
+					break;
+				case 'idle':
+				case 'idle_response':
+					updateMessages.push(
+						`⏸️ **Subtask Idle** (\`${update.subTaskId}\`)\n` +
+						`Reason: ${update.idleReason || 'No activity'}`
+					);
+					break;
+				case 'progress':
+					updateMessages.push(
+						`📊 **Subtask Progress** (\`${update.subTaskId}\`): ${update.progress || 0}%`
+					);
+					break;
+				case 'error':
+					updateMessages.push(
+						`⚠️ **Subtask Error** (\`${update.subTaskId}\`)\n` +
+						`Error: ${update.error || 'Unknown error'}`
+					);
+					break;
+			}
+		}
+
+		const summaryMessage = `
+## Subtask Updates Available
+
+${updates.length} update${updates.length > 1 ? 's' : ''} from your spawned subtasks:
+
+${updateMessages.join('\n\n')}
+
+---
+Process these updates and continue your work. If subtasks completed successfully, review their output and proceed with next steps. If subtasks failed, consider retrying or adjusting your approach.
+`;
+
+		// Inject via sendClarification - this wakes up the worker
+		worker.sendClarification(summaryMessage);
+		this._logService.info(`[Orchestrator] Injected subtask updates into worker ${workerId}`);
 	}
 
 	// --- Queue Handling ---
@@ -1675,6 +1917,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			agent = '@agent',
 			targetFiles,
 			parentWorkerId,
+			parsedAgentType,
 		} = options;
 
 		const task: WorkerTask = {
@@ -1691,6 +1934,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			agent,
 			targetFiles,
 			parentWorkerId,
+			parsedAgentType,
 			status: 'pending',
 		};
 		this._tasks.push(task);
@@ -1939,38 +2183,47 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			}
 
 			// Parse and validate agent type using the centralized parser
+			// IMPORTANT: Use pre-parsed agent type if available (from subtask creation)
+			// This ensures subtasks preserve their intended backend (e.g., claude:agent stays claude)
 			const rawAgentType = task.agent || '@agent';
-
-			// Use BackendSelectionService to determine backend with 3-level precedence:
-			// 1. User Request (highest) - explicit hints in prompt
-			// 2. Repo Config - .github/agents/config.yaml
-			// 3. Extension Defaults - VS Code settings
-			const backendSelection = await this._backendSelectionService.selectBackend(
-				task.description,
-				rawAgentType.replace(/^@/, '').toLowerCase()
-			);
-			this._logService.info(`[OrchestratorService] Backend selection for task ${task.id}: backend=${backendSelection.backend}, source=${backendSelection.source}${backendSelection.model ? `, model=${backendSelection.model}` : ''}`);
-
 			let parsedAgentType: ParsedAgentType;
-			try {
-				// Incorporate selected backend into the parsed agent type
-				// If the selection came from user request or repo config, override the default
-				const effectiveModelId = backendSelection.model ?? task.modelId;
-				parsedAgentType = parseAgentType(rawAgentType, effectiveModelId);
 
-				// Override backend if selection came from user prompt or repo config
-				if (backendSelection.source !== 'extension-default' || parsedAgentType.backend === 'copilot') {
-					parsedAgentType = {
-						...parsedAgentType,
-						backend: backendSelection.backend,
-						modelOverride: backendSelection.model ?? parsedAgentType.modelOverride,
-					};
+			if (task.parsedAgentType) {
+				// Subtask already has a parsed agent type - use it directly
+				// This preserves the backend specification from the parent's spawn request
+				parsedAgentType = task.parsedAgentType;
+				this._logService.info(`[OrchestratorService] Using pre-parsed agent type for task ${task.id}: backend=${parsedAgentType.backend}, agentName=${parsedAgentType.agentName}${parsedAgentType.slashCommand ? `, slashCommand=${parsedAgentType.slashCommand}` : ''}`);
+			} else {
+				// No pre-parsed type - use BackendSelectionService to determine backend with 3-level precedence:
+				// 1. User Request (highest) - explicit hints in prompt
+				// 2. Repo Config - .github/agents/config.yaml
+				// 3. Extension Defaults - VS Code settings
+				const backendSelection = await this._backendSelectionService.selectBackend(
+					task.description,
+					rawAgentType.replace(/^@/, '').toLowerCase()
+				);
+				this._logService.info(`[OrchestratorService] Backend selection for task ${task.id}: backend=${backendSelection.backend}, source=${backendSelection.source}${backendSelection.model ? `, model=${backendSelection.model}` : ''}`);
+
+				try {
+					// Incorporate selected backend into the parsed agent type
+					// If the selection came from user request or repo config, override the default
+					const effectiveModelId = backendSelection.model ?? task.modelId;
+					parsedAgentType = parseAgentType(rawAgentType, effectiveModelId);
+
+					// Override backend if selection came from user prompt or repo config
+					if (backendSelection.source !== 'extension-default' || parsedAgentType.backend === 'copilot') {
+						parsedAgentType = {
+							...parsedAgentType,
+							backend: backendSelection.backend,
+							modelOverride: backendSelection.model ?? parsedAgentType.modelOverride,
+						};
+					}
+				} catch (error) {
+					if (error instanceof AgentTypeParseError) {
+						throw new Error(`Invalid agent type '${rawAgentType}' for task ${task.id}: ${error.message}`);
+					}
+					throw error;
 				}
-			} catch (error) {
-				if (error instanceof AgentTypeParseError) {
-					throw new Error(`Invalid agent type '${rawAgentType}' for task ${task.id}: ${error.message}`);
-				}
-				throw error;
 			}
 
 			// Validate that we have an executor for this backend type

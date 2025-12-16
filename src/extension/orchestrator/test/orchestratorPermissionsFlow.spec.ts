@@ -268,6 +268,21 @@ describe('Orchestrator Permission Flow', () => {
 			getDefaultBackend: vi.fn().mockReturnValue('copilot'),
 		} as any;
 
+		// Mock task monitor service
+		const taskMonitorService = {
+			_serviceBrand: undefined,
+			registerParent: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+			startMonitoring: vi.fn(),
+			stopMonitoring: vi.fn(),
+			consumeUpdates: vi.fn().mockReturnValue([]),
+			peekUpdates: vi.fn().mockReturnValue([]),
+			hasPendingUpdates: vi.fn().mockReturnValue(false),
+			getPendingUpdateCount: vi.fn().mockReturnValue(0),
+			queueUpdate: vi.fn(),
+			onUpdatesAvailable: vi.fn(),
+			getStats: vi.fn().mockReturnValue({ monitoredTasks: 0, registeredParents: 0, totalQueuedUpdates: 0 }),
+		} as any;
+
 		// Mock instantiation service
 		const instantiationService = {
 			_serviceBrand: undefined,
@@ -286,6 +301,7 @@ describe('Orchestrator Permission Flow', () => {
 			mockSubtaskProgressService as any,
 			executorRegistry,
 			backendSelectionService,
+			taskMonitorService,
 			instantiationService,
 			createMockLogService() as any
 		);

@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import { CancellationToken } from '../../util/vs/base/common/cancellation';
 import { Event } from '../../util/vs/base/common/event';
 import { createDecorator } from '../../util/vs/platform/instantiation/common/instantiation';
+import { ParsedAgentType } from './agentTypeParser';
 import { IOrchestratorPermissions } from './orchestratorPermissions';
 import { IEmergencyStopOptions, IEmergencyStopResult, ISafetyLimitsConfig, ISubTaskCost, ITokenUsage } from './safetyLimits';
 import { WorkerToolSet } from './workerToolsService';
@@ -149,6 +150,8 @@ export interface ISubTask {
 	worktreePath: string;
 	/** Agent type to use (e.g., '@architect', '@reviewer') */
 	agentType: string;
+	/** Parsed agent type with backend routing information */
+	parsedAgentType?: ParsedAgentType;
 	/** The prompt/instruction for the sub-task */
 	prompt: string;
 	/** Description of what output is expected */

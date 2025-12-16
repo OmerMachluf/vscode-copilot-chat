@@ -20,6 +20,7 @@ import { IOrchestratorQueueMessage, IOrchestratorQueueService } from '../../orch
 import { IOrchestratorService } from '../../orchestrator/orchestratorServiceV2';
 import { ISubTask, ISubTaskCreateOptions, ISubTaskManager, ISubTaskResult } from '../../orchestrator/subTaskManager';
 import { ISubtaskProgressService, ParallelSubtaskProgressRenderer } from '../../orchestrator/subtaskProgressService';
+import { ITaskMonitorService } from '../../orchestrator/taskMonitorService';
 import { IWorkerContext } from '../../orchestrator/workerToolsService';
 import { ToolName } from '../common/toolNames';
 import { ICopilotTool, ToolRegistry } from '../common/toolsRegistry';
@@ -450,6 +451,7 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 		@IWorkerContext private readonly _workerContext: IWorkerContext,
 		@IOrchestratorQueueService private readonly _queueService: IOrchestratorQueueService,
 		@ISubtaskProgressService private readonly _progressService: ISubtaskProgressService,
+		@ITaskMonitorService private readonly _taskMonitorService: ITaskMonitorService,
 		@ILogService private readonly _logService: ILogService,
 	) { }
 
@@ -607,6 +609,10 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 		if (!waitForAll) {
 			this._logService.info(`[A2ASpawnParallelSubTasksTool] Non-blocking mode: starting ${createdTasks.length} tasks in background`);
 
+			// Register parent for monitoring updates
+			this._taskMonitorService.registerParent(workerId);
+			this._logService.info(`[A2ASpawnParallelSubTasksTool] Registered parent ${workerId} for task monitoring`);
+
 			// Get chat stream for progress (if available through progress service)
 			const parentStream = this._progressService.getStream(workerId);
 
@@ -617,10 +623,15 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 				this._logService
 			);
 
-			// Start all tasks in background with progress tracking
+			// Start all tasks in background with progress tracking and monitoring registration
 			for (let i = 0; i < createdTasks.length; i++) {
 				const task = createdTasks[i];
 				const config = subtasks[i];
+
+				// Register this subtask for async monitoring
+				// The TaskMonitorService will poll for status and queue updates for the parent
+				this._taskMonitorService.startMonitoring(task.id, workerId);
+				this._logService.debug(`[A2ASpawnParallelSubTasksTool] Started monitoring subtask ${task.id} for parent ${workerId}`);
 
 				const handle = progressRenderer.addSubtask(task.id, config.agentType);
 
@@ -628,11 +639,13 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 					.then(result => {
 						handle.complete(result);
 						progressRenderer.reportSummary();
+						// Monitoring will be automatically cleaned up by TaskMonitorService when it detects completion
 					})
 					.catch((error) => {
 						handle.fail(error instanceof Error ? error.message : String(error));
 						progressRenderer.reportSummary();
 						this._logService.error(`[A2ASpawnParallelSubTasksTool] Background task ${task.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+						// Monitoring will be automatically cleaned up by TaskMonitorService when it detects failure
 					});
 			}
 
@@ -643,8 +656,9 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 					`Started ${createdTasks.length} sub-tasks in background:\n` +
 					createdTasks.map((task, i) => `- **${subtasks[i].agentType}**: \`${task.id}\``).join('\n') +
 					`\n\n**Task IDs:** ${JSON.stringify(taskIds)}\n\n` +
-					`Use \`copilot_a2aAwaitSubTasks\` with these task IDs when you need to retrieve results.\n` +
-					`You can continue with other work in the meantime.`
+					`**Async Monitoring Active:** Updates will be queued automatically as tasks complete.\n` +
+					`When you pause your tool loop, check for pending updates.\n\n` +
+					`You can also use \`copilot_a2aAwaitSubTasks\` with these task IDs to explicitly wait for results.`
 				),
 			]);
 		}

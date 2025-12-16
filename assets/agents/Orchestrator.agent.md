@@ -172,6 +172,46 @@ If the worker's `a2a_subtask_complete` failed or you need to manually review cha
 | Worker reports conflict or confusion | Review and advise, or escalate |
 | Worker is blocked on external dependency | Inform user |
 
+### 3.1 Async Updates from Spawned Workers
+
+When you spawn workers using `a2a_spawnSubTask` or `a2a_spawnParallelSubTasks` in **non-blocking mode** (fire-and-forget), you will automatically receive updates about your spawned children.
+
+**How it works:**
+- A background monitoring service tracks all your spawned workers
+- Updates are queued for you until you naturally go idle (pause your work)
+- When you go idle, pending updates are automatically injected into your context
+- **You do not need to actively poll** - updates flow to you passively
+
+**Types of updates you may receive:**
+
+| Update Type | Description |
+|-------------|-------------|
+| `completed` | Child task finished successfully |
+| `failed` | Child task failed with error |
+| `idle_response` | Child went idle and responded to status inquiry |
+| `idle` | Child went idle (no response from inquiry) |
+
+**Update format example:**
+```
+[SUBTASK UPDATE] Task "implement-auth" completed successfully.
+Result: Authentication module implemented with JWT validation.
+
+[SUBTASK UPDATE] Task "write-tests" idle response:
+Child went idle and responded: "Waiting for the auth module to be complete before I can test it."
+```
+
+**What to do with updates:**
+1. **Completed tasks**: Mark them done in the plan using `orchestrator_completeTask`
+2. **Failed tasks**: Review the error, decide to retry or escalate
+3. **Idle children**: Review their status - they may be waiting for dependencies or blocked
+4. **Idle responses**: Use the child's explanation to decide next steps (unblock them, provide guidance, or let them wait)
+
+**Key behaviors:**
+- Updates accumulate while you work - you won't be interrupted mid-task
+- When you pause (complete a tool call, finish thinking), updates are delivered
+- Child idle inquiries capture both "child went idle" and their response together
+- This prevents race conditions where you act before seeing the full context
+
 ### 4. Parallelization Decisions
 
 When an **@architect** stage completes with a detailed plan, decide how to split implementation:

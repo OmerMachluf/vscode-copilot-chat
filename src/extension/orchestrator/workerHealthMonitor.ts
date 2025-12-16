@@ -18,6 +18,11 @@ export interface IWorkerHealthMetrics {
 	errorRate: number;
 	isStuck: boolean;
 	isLooping: boolean;
+	isIdle: boolean;
+	/** Whether an idle inquiry has been sent and is awaiting response */
+	idleInquiryPending: boolean;
+	/** Timestamp when idle inquiry was sent (for timeout tracking) */
+	idleInquirySentAt?: number;
 	recentToolCalls: string[];
 }
 
@@ -25,6 +30,11 @@ export interface IWorkerHealthMetrics {
  * Reasons why a worker might be unhealthy
  */
 export type WorkerUnhealthyReason = 'stuck' | 'looping' | 'high_error_rate';
+
+/**
+ * Reasons why a worker might be idle
+ */
+export type WorkerIdleReason = 'no_activity' | 'waiting' | 'unknown';
 
 /**
  * Interface for the worker health monitor service
@@ -36,7 +46,16 @@ export interface IWorkerHealthMonitor {
 	getHealth(workerId: string): IWorkerHealthMetrics | undefined;
 	isStuck(workerId: string): boolean;
 	isLooping(workerId: string): boolean;
+	isIdle(workerId: string): boolean;
+	/** Mark that an idle inquiry has been sent to this worker */
+	markIdleInquirySent(workerId: string): void;
+	/** Check if an idle inquiry has already been sent and is pending response */
+	hasIdleInquiryPending(workerId: string): boolean;
+	/** Clear idle inquiry state after response received */
+	clearIdleInquiry(workerId: string): void;
 	onWorkerUnhealthy: Event<{ workerId: string; reason: WorkerUnhealthyReason }>;
+	/** Event fired when a worker goes idle (before being marked stuck) */
+	onWorkerIdle: Event<{ workerId: string; reason: WorkerIdleReason }>;
 }
 
 /**
@@ -45,6 +64,8 @@ export interface IWorkerHealthMonitor {
 interface HealthMonitorConfig {
 	/** Timeout in ms before a worker is considered stuck (default: 5 minutes) */
 	stuckTimeoutMs: number;
+	/** Timeout in ms before a worker is considered idle (default: 30 seconds) */
+	idleTimeoutMs: number;
 	/** Number of consecutive same-tool calls before considering the worker looping */
 	loopThreshold: number;
 	/** Number of consecutive errors before firing high_error_rate event */
@@ -55,6 +76,7 @@ interface HealthMonitorConfig {
 
 const DEFAULT_CONFIG: HealthMonitorConfig = {
 	stuckTimeoutMs: 5 * 60 * 1000, // 5 minutes
+	idleTimeoutMs: 30 * 1000, // 30 seconds - shorter threshold to detect idle before stuck
 	loopThreshold: 5,
 	errorThreshold: 5,
 	checkIntervalMs: 30 * 1000, // 30 seconds
@@ -71,6 +93,9 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 
 	private readonly _onWorkerUnhealthy = this._register(new Emitter<{ workerId: string; reason: WorkerUnhealthyReason }>());
 	public readonly onWorkerUnhealthy: Event<{ workerId: string; reason: WorkerUnhealthyReason }> = this._onWorkerUnhealthy.event;
+
+	private readonly _onWorkerIdle = this._register(new Emitter<{ workerId: string; reason: WorkerIdleReason }>());
+	public readonly onWorkerIdle: Event<{ workerId: string; reason: WorkerIdleReason }> = this._onWorkerIdle.event;
 
 	constructor(config: Partial<HealthMonitorConfig> = {}) {
 		super();
@@ -94,6 +119,9 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 			errorRate: 0,
 			isStuck: false,
 			isLooping: false,
+			isIdle: false,
+			idleInquiryPending: false,
+			idleInquirySentAt: undefined,
 			recentToolCalls: [],
 		});
 
@@ -127,6 +155,12 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 
 		metrics.lastActivityTimestamp = Date.now();
 		metrics.isStuck = false; // Activity means not stuck
+		metrics.isIdle = false; // Activity means not idle
+		// Clear idle inquiry state on activity
+		if (metrics.idleInquiryPending) {
+			metrics.idleInquiryPending = false;
+			metrics.idleInquirySentAt = undefined;
+		}
 
 		switch (type) {
 			case 'tool_call':
@@ -203,13 +237,70 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 	}
 
 	/**
-	 * Periodic check for stuck workers
+	 * Check if a worker is idle (shorter timeout than stuck)
+	 */
+	public isIdle(workerId: string): boolean {
+		const metrics = this._metrics.get(workerId);
+		if (!metrics) {
+			return false;
+		}
+		return metrics.isIdle || (Date.now() - metrics.lastActivityTimestamp > this._config.idleTimeoutMs);
+	}
+
+	/**
+	 * Mark that an idle inquiry has been sent to this worker.
+	 * This prevents duplicate inquiries while waiting for a response.
+	 */
+	public markIdleInquirySent(workerId: string): void {
+		const metrics = this._metrics.get(workerId);
+		if (metrics) {
+			metrics.idleInquiryPending = true;
+			metrics.idleInquirySentAt = Date.now();
+		}
+	}
+
+	/**
+	 * Check if an idle inquiry has been sent and is pending response.
+	 */
+	public hasIdleInquiryPending(workerId: string): boolean {
+		const metrics = this._metrics.get(workerId);
+		return metrics?.idleInquiryPending ?? false;
+	}
+
+	/**
+	 * Clear idle inquiry state after response received.
+	 */
+	public clearIdleInquiry(workerId: string): void {
+		const metrics = this._metrics.get(workerId);
+		if (metrics) {
+			metrics.idleInquiryPending = false;
+			metrics.idleInquirySentAt = undefined;
+		}
+	}
+
+	/**
+	 * Periodic check for idle and stuck workers
 	 */
 	private _checkStuckWorkers(): void {
 		const now = Date.now();
 
 		for (const [workerId, metrics] of this._metrics) {
-			if (!metrics.isStuck && now - metrics.lastActivityTimestamp > this._config.stuckTimeoutMs) {
+			const timeSinceActivity = now - metrics.lastActivityTimestamp;
+
+			// Check for idle first (shorter timeout)
+			// Only fire idle event if:
+			// 1. Worker is not already marked idle
+			// 2. Worker is not already stuck
+			// 3. No idle inquiry is already pending
+			// 4. Idle timeout has been exceeded
+			if (!metrics.isIdle && !metrics.isStuck && !metrics.idleInquiryPending &&
+				timeSinceActivity > this._config.idleTimeoutMs) {
+				metrics.isIdle = true;
+				this._onWorkerIdle.fire({ workerId, reason: 'no_activity' });
+			}
+
+			// Check for stuck (longer timeout)
+			if (!metrics.isStuck && timeSinceActivity > this._config.stuckTimeoutMs) {
 				metrics.isStuck = true;
 				this._onWorkerUnhealthy.fire({ workerId, reason: 'stuck' });
 			}

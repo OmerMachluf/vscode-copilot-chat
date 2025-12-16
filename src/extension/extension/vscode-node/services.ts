@@ -106,6 +106,7 @@ import { IParentCompletionService, ParentCompletionService } from '../../orchest
 import { ISafetyLimitsService, SafetyLimitsService } from '../../orchestrator/safetyLimits';
 import { ISubTaskManager, SubTaskManager } from '../../orchestrator/subTaskManager';
 import { ISubtaskProgressService, SubtaskProgressService } from '../../orchestrator/subtaskProgressService';
+import { ITaskMonitorService, TaskMonitorService } from '../../orchestrator/taskMonitorService';
 import { GlobalWorkerContext, IWorkerContext, IWorkerToolsService, WorkerToolsService } from '../../orchestrator/workerToolsService';
 import { ChatMLFetcherImpl } from '../../prompt/node/chatMLFetcher';
 import { IFeedbackReporter } from '../../prompt/node/feedbackReporter';
@@ -194,6 +195,7 @@ export function registerServices(builder: IInstantiationServiceBuilder, extensio
 	builder.define(ISafetyLimitsService, new SyncDescriptor(SafetyLimitsService));
 	builder.define(ISubTaskManager, new SyncDescriptor(SubTaskManager));
 	builder.define(ISubtaskProgressService, new SyncDescriptor(SubtaskProgressService));
+	builder.define(ITaskMonitorService, new SyncDescriptor(TaskMonitorService));
 	builder.define(IOrchestratorQueueService, new SyncDescriptor(OrchestratorQueueService));
 	builder.define(IParentCompletionService, new SyncDescriptor(ParentCompletionService));
 	builder.define(IBackendSelectionService, new SyncDescriptor(BackendSelectionService));
