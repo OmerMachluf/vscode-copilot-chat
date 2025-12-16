@@ -32,6 +32,7 @@ interface ActiveClaudeWorkerState {
 	session: ClaudeWorktreeSession;
 	worktreePath: string;
 	startTime: number;
+	toolInvocationToken?: vscode.ChatParticipantToolToken;
 }
 
 /**
@@ -66,6 +67,7 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 			agentType,
 			token,
 			workerContext,
+			toolInvocationToken,
 		} = params;
 
 		const startTime = Date.now();
@@ -94,6 +96,7 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 				session,
 				worktreePath,
 				startTime,
+				toolInvocationToken,
 			});
 
 			// Build prompt with slash command if specified
@@ -113,13 +116,12 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 				};
 			}
 
-			// Create a mock request object for the Claude session
-			const mockRequest = this._createMockChatRequest(fullPrompt);
-
 			// Execute via Claude session
+			// CRITICAL: Pass the real toolInvocationToken from the orchestrator, not a mock.
+			// Without a valid token, tool confirmations fail and the session completes immediately.
 			await session.session.invoke(
 				fullPrompt,
-				mockRequest.toolInvocationToken,
+				toolInvocationToken!,
 				responseStream,
 				token
 			);
@@ -193,12 +195,12 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 
 		// Create a dummy stream for the follow-up message
 		const collectorStream = this._createCollectorStream();
-		const mockRequest = this._createMockChatRequest(message);
 
 		try {
+			// Use the stored toolInvocationToken from the original execute call
 			await workerState.session.session.invoke(
 				message,
-				mockRequest.toolInvocationToken,
+				workerState.toolInvocationToken!,
 				collectorStream,
 				CancellationToken.None
 			);
@@ -267,30 +269,6 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 		}
 
 		return prompt;
-	}
-
-	/**
-	 * Creates a mock chat request for Claude session invocation.
-	 */
-	private _createMockChatRequest(prompt: string): vscode.ChatRequest {
-		return {
-			prompt,
-			command: undefined,
-			references: [],
-			toolReferences: [],
-			toolInvocationToken: undefined as unknown as vscode.ChatParticipantToolToken,
-			attempt: 0,
-			enableCommandDetection: false,
-			isParticipantDetected: false,
-			location: vscode.ChatLocation.Panel,
-			location2: undefined,
-			acceptedConfirmationData: undefined,
-			rejectedConfirmationData: undefined,
-			model: undefined as unknown as vscode.LanguageModelChat,
-			tools: new Map(),
-			id: `claude-executor-${Date.now()}`,
-			sessionId: `claude-session-${Date.now()}`,
-		};
 	}
 
 	/**

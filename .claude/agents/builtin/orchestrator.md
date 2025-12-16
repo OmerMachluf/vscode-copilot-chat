@@ -31,11 +31,24 @@ When asked to deploy a plan, you deploy tasks using **A2A tools** which provide:
 **Deploying a Single Task:**
 ```json
 // Use a2a_spawnSubTask for individual tasks
+// agentType formats:
+//   Copilot: "@agent", "@architect", "@reviewer"
+//   Claude:  "claude:agent", "claude:architect"
 {
   "agentType": "@agent",
   "prompt": "Task description from plan...",
   "expectedOutput": "What the worker should deliver",
   "targetFiles": ["src/file1.ts", "src/file2.ts"]
+}
+```
+
+**Using Claude Code agents:**
+```json
+// Use Claude Code backend for complex tasks
+{
+  "agentType": "claude:agent",
+  "prompt": "Complex implementation task...",
+  "expectedOutput": "Working implementation with tests"
 }
 ```
 
@@ -447,6 +460,28 @@ Use `a2a_list_specialists` to discover available specialist agents. Here's when 
 | Review code quality | `@reviewer` | Identifies issues and improvements |
 | Write/design tests | `@tester` | Test strategy and coverage |
 | UX/product decisions | `@product` | User-facing decisions |
+
+### Agent Type Formats
+
+You can use different backends for subtasks:
+
+| Format | Backend | Example |
+|--------|---------|---------|
+| `@agent` | Copilot | `"agentType": "@agent"` |
+| `@architect` | Copilot | `"agentType": "@architect"` |
+| `claude:agent` | Claude Code | `"agentType": "claude:agent"` |
+| `claude:architect` | Claude Code | `"agentType": "claude:architect"` |
+
+**When to use Claude Code agents:**
+- Complex multi-file implementations
+- Tasks requiring deep codebase understanding
+- Long-running autonomous work
+- When you need Claude's extended thinking capabilities
+
+**When to use Copilot agents:**
+- Quick targeted edits
+- Simple file modifications
+- Tasks with clear, narrow scope
 
 ### Critical: Exploration → @researcher
 

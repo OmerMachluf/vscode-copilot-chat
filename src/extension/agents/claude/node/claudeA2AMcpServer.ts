@@ -158,7 +158,7 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 				'a2a_spawn_subtask',
 				'Spawn a subtask to delegate work to another agent. The subtask runs in an isolated worktree context. Use a2a_list_agents first to see available agents.',
 				{
-					agentType: z.string().describe('Agent to execute (e.g., "@architect", "@reviewer", or custom agent ID)'),
+					agentType: z.string().describe('Agent to execute. Formats: Copilot agents "@agent", "@architect", "@reviewer"; Claude agents "claude:agent", "claude:architect"; or custom agent ID'),
 					prompt: z.string().describe('Task instruction for the agent - be specific about what you need'),
 					expectedOutput: z.string().describe('Description of what output you expect from this subtask'),
 					targetFiles: z.array(z.string()).optional().describe('Files this task will modify (for conflict detection)'),
@@ -400,7 +400,7 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 				'Spawn multiple subtasks in parallel for concurrent execution. Use this when you have independent tasks that can run simultaneously.',
 				{
 					subtasks: z.array(z.object({
-						agentType: z.string().describe('Agent to execute (e.g., "@architect", "@reviewer")'),
+						agentType: z.string().describe('Agent to execute. Formats: "@agent", "@architect", "claude:agent", "claude:architect"'),
 						prompt: z.string().describe('Task instruction for the agent'),
 						expectedOutput: z.string().describe('Description of expected output'),
 						targetFiles: z.array(z.string()).optional().describe('Files this task will modify'),
@@ -582,7 +582,7 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 					description: z.string().describe('Task description/prompt'),
 					planId: z.string().optional().describe('Plan to add task to (uses active plan if not specified)'),
 					name: z.string().optional().describe('Human-readable task name (used for branch naming)'),
-					agent: z.string().optional().describe('Agent to assign (@agent, @architect, @reviewer, or custom)'),
+					agent: z.string().optional().describe('Agent to assign (@agent, @architect, claude:agent, claude:architect, or custom)'),
 					dependencies: z.array(z.string()).optional().describe('IDs of tasks that must complete before this one'),
 					targetFiles: z.array(z.string()).optional().describe('Files this task will modify'),
 					priority: z.enum(['critical', 'high', 'normal', 'low']).optional().describe('Task priority'),
