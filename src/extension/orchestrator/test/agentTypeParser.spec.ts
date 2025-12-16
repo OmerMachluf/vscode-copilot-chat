@@ -3,27 +3,27 @@
  *  Licensed under the MIT License. See LICENSE.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-	parseAgentType,
-	isCopilotAgentType,
+	AgentNameConflictError,
+	AgentTypeParseError,
+	BUILTIN_AGENT_NAMES,
+	clearCustomAgentSlashCommands,
+	createAgentTypeString,
+	getAllSlashCommands,
+	getBackendType,
+	getClaudeSlashCommand,
+	isBuiltInAgentName,
 	isClaudeAgentType,
 	isCliAgentType,
 	isCloudAgentType,
-	getBackendType,
+	isCopilotAgentType,
 	normalizeAgentName,
-	createAgentTypeString,
-	getClaudeSlashCommand,
+	parseAgentType,
+	registerCustomAgents,
 	registerCustomAgentSlashCommand,
 	unregisterCustomAgentSlashCommand,
-	clearCustomAgentSlashCommands,
-	getAllSlashCommands,
-	isBuiltInAgentName,
 	validateCustomAgentName,
-	registerCustomAgents,
-	BUILTIN_AGENT_NAMES,
-	AgentTypeParseError,
-	AgentNameConflictError,
 } from '../agentTypeParser';
 
 describe('agentTypeParser', () => {
