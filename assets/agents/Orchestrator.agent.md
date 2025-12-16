@@ -22,7 +22,7 @@ When asked to deploy a plan, you deploy tasks using **A2A tools** which provide:
 - Progress bubbles directly in your chat
 - Automatic blocking until completion
 - Proper context injection to workers
-- Automatic commit/merge via `a2a_subtask_complete`
+- Workers commit their changes before signaling completion
 
 **Deploying a Single Task:**
 ```json
@@ -117,16 +117,27 @@ tasks:
 
 ### 2. Completing Tasks
 
-When using A2A tools, task completion is streamlined:
+When using A2A tools, task completion follows this flow:
 
-1. **Worker signals completion** via `a2a_subtask_complete` with `commitMessage`
-2. **Changes are automatically** committed and merged to the parent branch
+1. **Worker commits their changes** to their worktree branch (they must do this before completing)
+2. **Worker signals completion** via `a2a_subtask_complete` with summary of work done
 3. **You receive the result** directly from the A2A tool response
-4. **Mark the plan task complete** using `orchestrator_completeTask`
+4. **Pull their changes** into your branch using `a2a_pull_subtask_changes`
+5. **Mark the plan task complete** using `orchestrator_completeTask`
 
 **After receiving a successful A2A response:**
+1. Pull the worker's changes:
 ```json
-// Mark the plan task as done
+// a2a_pull_subtask_changes
+{
+  "subtaskWorktree": "/path/to/worker/worktree"
+}
+```
+
+2. Resolve any merge conflicts if needed (see Section 6)
+3. Mark the plan task as done:
+```json
+// orchestrator_completeTask
 {
   "taskId": "fix-auth"
 }
@@ -134,20 +145,10 @@ When using A2A tools, task completion is streamlined:
 
 This updates the plan state and makes dependent tasks ready for deployment.
 
-**Manual Change Integration (when needed):**
-
-If the worker's `a2a_subtask_complete` failed or you need to manually review changes:
-
-1. Use `a2a_pull_subtask_changes` to pull the worker's changes:
-```json
-{
-  "subtaskWorktree": "/path/to/worker/worktree"
-}
-```
-
-2. Resolve any merge conflicts (see Section 6)
-3. Review and commit the merged changes
-4. Call `orchestrator_completeTask` to mark the task done
+**Why this workflow?**
+- Workers can follow repository-specific commit conventions
+- You as the parent control when and how changes are integrated
+- Merge conflicts are handled by you, not silently by the worker
 
 ### 3. Worker Communication
 
@@ -314,15 +315,15 @@ git add .
 git commit -m "Merge changes from task: {task_name}"
 ```
 
-**Scenario 2: Worker's a2a_subtask_complete fails to merge**
+**Scenario 2: Worker fails to complete because they didn't commit**
 
-Workers call `a2a_subtask_complete` with a commit message to merge their changes.
-If this fails due to conflicts, the worker will report the error.
+Workers must commit their changes before calling `a2a_subtask_complete`.
+If they forget, the tool will fail and remind them to commit first.
 
 **Your options:**
-1. Use `a2a_pull_subtask_changes` to manually pull and resolve conflicts
-2. Send guidance to the worker via `a2a_send_message_to_worker`
-3. Retry the task with `orchestrator_retryTask`
+1. Send guidance via `a2a_send_message_to_worker` reminding them to commit
+2. Wait for them to commit and retry completion
+3. If worker is stuck, review their worktree and help them commit
 
 **Conflict Resolution Guidelines:**
 

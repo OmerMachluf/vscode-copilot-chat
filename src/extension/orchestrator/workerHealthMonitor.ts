@@ -23,6 +23,8 @@ export interface IWorkerHealthMetrics {
 	idleInquiryPending: boolean;
 	/** Timestamp when idle inquiry was sent (for timeout tracking) */
 	idleInquirySentAt?: number;
+	/** Timestamp when last progress check was sent */
+	lastProgressCheckAt?: number;
 	recentToolCalls: string[];
 }
 
@@ -53,9 +55,13 @@ export interface IWorkerHealthMonitor {
 	hasIdleInquiryPending(workerId: string): boolean;
 	/** Clear idle inquiry state after response received */
 	clearIdleInquiry(workerId: string): void;
+	/** Mark that a progress check has been sent */
+	markProgressCheckSent(workerId: string): void;
 	onWorkerUnhealthy: Event<{ workerId: string; reason: WorkerUnhealthyReason }>;
 	/** Event fired when a worker goes idle (before being marked stuck) */
 	onWorkerIdle: Event<{ workerId: string; reason: WorkerIdleReason }>;
+	/** Event fired when periodic progress check is due for a worker */
+	onProgressCheckDue: Event<{ workerId: string }>;
 }
 
 /**
@@ -72,6 +78,8 @@ interface HealthMonitorConfig {
 	errorThreshold: number;
 	/** Interval for checking stuck workers (default: 30 seconds) */
 	checkIntervalMs: number;
+	/** Interval for progress checks (default: 5 minutes) */
+	progressCheckIntervalMs: number;
 }
 
 const DEFAULT_CONFIG: HealthMonitorConfig = {
@@ -80,6 +88,7 @@ const DEFAULT_CONFIG: HealthMonitorConfig = {
 	loopThreshold: 5,
 	errorThreshold: 5,
 	checkIntervalMs: 30 * 1000, // 30 seconds
+	progressCheckIntervalMs: 5 * 60 * 1000, // 5 minutes - periodic progress report interval
 };
 
 /**
@@ -96,6 +105,9 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 
 	private readonly _onWorkerIdle = this._register(new Emitter<{ workerId: string; reason: WorkerIdleReason }>());
 	public readonly onWorkerIdle: Event<{ workerId: string; reason: WorkerIdleReason }> = this._onWorkerIdle.event;
+
+	private readonly _onProgressCheckDue = this._register(new Emitter<{ workerId: string }>());
+	public readonly onProgressCheckDue: Event<{ workerId: string }> = this._onProgressCheckDue.event;
 
 	constructor(config: Partial<HealthMonitorConfig> = {}) {
 		super();
@@ -122,6 +134,7 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 			isIdle: false,
 			idleInquiryPending: false,
 			idleInquirySentAt: undefined,
+			lastProgressCheckAt: Date.now(), // Initialize to now so first check is after interval
 			recentToolCalls: [],
 		});
 
@@ -279,7 +292,18 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 	}
 
 	/**
-	 * Periodic check for idle and stuck workers
+	 * Mark that a progress check has been sent to this worker.
+	 * This updates the timestamp to prevent duplicate checks within the interval.
+	 */
+	public markProgressCheckSent(workerId: string): void {
+		const metrics = this._metrics.get(workerId);
+		if (metrics) {
+			metrics.lastProgressCheckAt = Date.now();
+		}
+	}
+
+	/**
+	 * Periodic check for idle, stuck workers, and progress checks
 	 */
 	private _checkStuckWorkers(): void {
 		const now = Date.now();
@@ -297,6 +321,16 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 				timeSinceActivity > this._config.idleTimeoutMs) {
 				metrics.isIdle = true;
 				this._onWorkerIdle.fire({ workerId, reason: 'no_activity' });
+			}
+
+			// Check for periodic progress check (every 5 minutes)
+			// Only fire if:
+			// 1. Worker is not stuck (still active)
+			// 2. Progress check interval has passed since last check
+			const timeSinceProgressCheck = now - (metrics.lastProgressCheckAt ?? 0);
+			if (!metrics.isStuck && timeSinceProgressCheck > this._config.progressCheckIntervalMs) {
+				// Fire the event - the handler is responsible for calling markProgressCheckSent
+				this._onProgressCheckDue.fire({ workerId });
 			}
 
 			// Check for stuck (longer timeout)

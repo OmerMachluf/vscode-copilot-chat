@@ -36,6 +36,8 @@ export interface ITaskUpdate {
 	idleReason?: string;
 	/** Progress percentage (for progress) */
 	progress?: number;
+	/** Progress report text from periodic check (for progress) */
+	progressReport?: string;
 	/** Timestamp when this update was created */
 	timestamp: number;
 }

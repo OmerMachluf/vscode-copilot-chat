@@ -32,10 +32,14 @@ Use `a2a_notify_orchestrator` to:
 - Request clarification on requirements
 
 ### Completing Your Task
-When finished, use `a2a_subtask_complete` with:
-- A clear commit message describing your changes
-- Summary of what was implemented/fixed
-- Any notes for the parent about testing or follow-up
+**Before calling `a2a_subtask_complete`, you MUST commit your changes:**
+1. Stage your changes: `git add -A`
+2. Commit with a descriptive message: `git commit -m "feat: implement feature X" ` (follow repo conventions)
+3. Then call `a2a_subtask_complete` with:
+   - Summary of what was implemented/fixed
+   - Any notes for the parent about testing or follow-up
+
+**Important:** The completion tool will FAIL if you have uncommitted changes. Your parent will pull your changes from your worktree branch after completion.
 
 ### Async Status Monitoring
 
@@ -112,4 +116,4 @@ If you encounter issues:
 | `replace_string_in_file` | Make code changes |
 | `run_terminal_command` | Build, test, or run scripts |
 | `a2a_notify_orchestrator` | Report status or ask questions |
-| `a2a_subtask_complete` | Signal completion with commit |
+| `a2a_subtask_complete` | Signal completion (commit first!) |

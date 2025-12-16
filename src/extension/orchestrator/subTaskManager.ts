@@ -593,18 +593,20 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 
 	/**
 	 * Wait for an orchestrator task to complete and return the result.
-	 * Listens for task.completed, task.failed, and worker.idle events.
-	 * Also has a timeout to prevent waiting forever if something goes wrong.
+	 * Listens for task.completed, task.failed events.
+	 *
+	 * NOTE: No hard timeout is enforced. Agents are expected to call a2a_subtask_complete
+	 * when done. Progress checks every 5 minutes keep parents informed, and idle inquiries
+	 * remind agents to complete or report blockers.
 	 *
 	 * @precondition this._orchestratorService is defined
 	 */
 	private async _waitForOrchestratorTaskCompletion(
 		taskId: string,
 		workerId: string,
-		token: CancellationToken,
-		timeoutMs: number = 20 * 60 * 1000 // 20 minutes default (increased from 5 minutes)
+		token: CancellationToken
 	): Promise<ISubTaskResult> {
-		this._logService.debug(`[SubTaskManager] Waiting for taskId=${taskId}, workerId=${workerId}, timeout=${timeoutMs}ms`);
+		this._logService.debug(`[SubTaskManager] Waiting for taskId=${taskId}, workerId=${workerId} (no hard timeout)`);
 		const orchestratorService = this._orchestratorService!;
 
 		return new Promise<ISubTaskResult>((resolve) => {
@@ -629,20 +631,8 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 				}
 			};
 
-			// Timeout - don't wait forever
-			this._logService.debug(`[SubTaskManager] Setting up ${timeoutMs}ms timeout`);
-			const timeoutId = setTimeout(() => {
-				this._logService.error(`[SubTaskManager] TIMEOUT TRIGGERED after ${timeoutMs}ms for worker ${workerId}`);
-				const workerState = orchestratorService.getWorkerState(workerId);
-				this._logService.error(`[SubTaskManager] Worker state at timeout: status=${workerState?.status}, errorMessage=${workerState?.errorMessage}`);
-				resolveOnce({
-					taskId,
-					status: 'failed',
-					output: workerState?.messages?.map(m => m.content).join('\n') || '',
-					error: `Timeout waiting for subtask completion (${timeoutMs}ms)`,
-				}, 'TIMEOUT');
-			}, timeoutMs);
-			disposables.push({ dispose: () => clearTimeout(timeoutId) });
+			// NOTE: No hard timeout - agents complete via a2a_subtask_complete.
+			// Progress checks and idle inquiries keep parents informed and remind agents to complete.
 
 			// Listen for task/worker events
 			this._logService.debug(`[SubTaskManager] Registering orchestrator event listener`);
@@ -670,29 +660,25 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 					}
 				}
 
-				// Handle worker.idle - worker finished its autonomous loop
-				// This is a fallback for when a2a_subtask_complete wasn't called
+				// Handle worker.idle - NOTE: idle no longer means completion
+				// With the new notification mechanism, workers can go idle while waiting for subtasks.
+				// Only explicit completion (via a2a_subtask_complete or task.completed event) should resolve.
+				// The idle inquiry mechanism will ask idle workers why they're idle and queue updates for parents.
 				if (event.type === 'worker.idle' && 'workerId' in event && event.workerId === workerId) {
-					this._logService.debug(`[SubTaskManager] EVENT: worker.idle for our worker ${workerId}`);
-					const workerState = orchestratorService.getWorkerState(workerId);
+					this._logService.debug(`[SubTaskManager] EVENT: worker.idle for our worker ${workerId} - NOT treating as completion (use a2a_subtask_complete)`);
 					// Check if task was already marked with an error
 					const task = orchestratorService.getTaskById(taskId);
-					this._logService.debug(`[SubTaskManager] Task error state: ${task?.error || 'none'}`);
 					if (task?.error) {
 						this._logService.error(`[SubTaskManager] Worker ${workerId} idle with task error: ${task.error}`);
+						const workerState = orchestratorService.getWorkerState(workerId);
 						resolveOnce({
 							taskId,
 							status: 'failed',
 							output: workerState?.messages?.map(m => m.content).join('\n') || '',
 							error: task.error,
 						}, 'worker.idle event (with task error)');
-					} else {
-						resolveOnce({
-							taskId,
-							status: 'success',
-							output: workerState?.messages?.map(m => m.content).join('\n') || 'Task completed (worker idle)',
-						}, 'worker.idle event');
 					}
+					// If no error, do NOT resolve - let the agent explicitly complete via a2a_subtask_complete
 				}
 			}));
 
@@ -725,7 +711,9 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 					}, 'workerSession.onDidStop');
 				}));
 
-				// Listen for any state change and check for terminal states (error, completed, idle)
+				// Listen for any state change and check for terminal states (error, completed)
+				// NOTE: idle is NO LONGER a terminal state - workers can be idle while waiting for subtasks
+				// Only explicit completion (via a2a_subtask_complete) or error should resolve
 				disposables.push(workerSession.onDidChange(() => {
 					const workerState = orchestratorService.getWorkerState(workerId);
 					if (!workerState) {
@@ -733,7 +721,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 					}
 					this._logService.debug(`[SubTaskManager] EVENT: workerSession.onDidChange - status=${workerState.status}`);
 
-					// Terminal states: completed, error, idle (idle means task finished)
+					// Terminal states: completed, error (NOT idle - idle means waiting, not finished)
 					if (workerState.status === 'completed') {
 						this._logService.debug(`[SubTaskManager] Worker status is 'completed' - resolving success`);
 						resolveOnce({
@@ -750,8 +738,10 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 							error: workerState.errorMessage || 'Worker error',
 						}, 'workerSession.onDidChange (status=error)');
 					} else if (workerState.status === 'idle') {
-						// Worker finished its task but didn't explicitly complete
-						this._logService.debug(`[SubTaskManager] Worker status is 'idle' - treating as completion`);
+						// Worker went idle - this is NOT automatic completion anymore
+						// The idle inquiry mechanism will handle asking workers why they're idle
+						// Only resolve if there's an explicit error on the task
+						this._logService.debug(`[SubTaskManager] Worker status is 'idle' - NOT treating as completion (use a2a_subtask_complete)`);
 						const task = orchestratorService.getTaskById(taskId);
 						if (task?.error) {
 							this._logService.error(`[SubTaskManager] Worker ${workerId} idle but task has error: ${task.error}`);
@@ -761,13 +751,8 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 								output: workerState.messages?.map(m => m.content).join('\n') || '',
 								error: task.error,
 							}, 'workerSession.onDidChange (status=idle, task has error)');
-						} else {
-							resolveOnce({
-								taskId,
-								status: 'success',
-								output: workerState.messages?.map(m => m.content).join('\n') || 'Task completed (worker idle)',
-							}, 'workerSession.onDidChange (status=idle)');
 						}
+						// If no error, do NOT resolve - let agent explicitly complete via a2a_subtask_complete
 					}
 				}));
 			} else {

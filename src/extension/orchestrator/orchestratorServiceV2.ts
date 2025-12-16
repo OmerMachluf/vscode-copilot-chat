@@ -616,6 +616,11 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		this._register(this._healthMonitor.onWorkerIdle(event => {
 			this._handleIdleWorker(event.workerId, event.reason);
 		}));
+		// Listen for periodic progress checks (every 5 minutes)
+		// This asks active workers for a progress report and queues it for their parent
+		this._register(this._healthMonitor.onProgressCheckDue(event => {
+			this._handleProgressCheck(event.workerId);
+		}));
 		// Note: We do NOT immediately forward on onUpdatesAvailable - updates stay queued
 		// until the parent worker goes idle, then they're automatically injected
 	}
@@ -744,23 +749,157 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		const inquiryMessage = `
 ## Status Check
 
-You appear to be idle (no recent activity). Please respond with your current status:
+You appear to be idle (no recent activity). Please respond with your current status.
 
-1. **If you have completed your task:** Call the \`a2a_subtask_complete\` tool with your final results.
+### If you have COMPLETED your task:
+**You MUST call the \`a2a_subtask_complete\` tool** with your final results. This is required to notify your parent that you're done. Without calling this tool, your parent won't know you've finished.
 
-2. **If you are blocked or need information:** Describe what information or clarification you need to continue.
+### If you are BLOCKED or cannot proceed:
+Tell us what's preventing you from moving forward:
+- **Permissions needed?** (e.g., need approval to run a command, access a file)
+- **Missing information?** (e.g., need clarification, waiting for input)
+- **Technical blocker?** (e.g., error you can't resolve, dependency issue)
+- **Other reason?**
 
-3. **If you encountered an error:** Describe what went wrong and any error messages.
+We will handle blockers on your behalf - just describe what you need.
 
-4. **If you are still working:** Describe what you are currently processing.
+### If you are still WORKING:
+Briefly describe what you're currently processing and we'll check back later.
 
-Please respond - your parent task is waiting for your status update.
+**Please respond now** - your parent task is waiting for your status update.
 `;
 
 		// Send the inquiry to the CHILD worker and capture response
 		// We use a wrapper to capture the child's response and queue it with the idle notification
 		this._sendIdleInquiryAndCaptureResponse(worker, workerId, task, ownerContext.ownerId, inquiryMessage);
 		this._logService.debug(`[Orchestrator] Sent idle inquiry to child worker ${workerId}`);
+	}
+
+	/**
+	 * Handle periodic progress check for a worker.
+	 * Every 5 minutes, asks the worker for a progress report and queues it for the parent.
+	 * This keeps parents informed about their children's progress even when they're actively working.
+	 */
+	private _handleProgressCheck(workerId: string): void {
+		const worker = this._workers.get(workerId);
+		if (!worker) {
+			return;
+		}
+
+		// Mark that we're sending a progress check
+		this._healthMonitor.markProgressCheckSent(workerId);
+
+		// Check if this worker has a parent (only children need progress reports)
+		const toolSet = this._workerToolSets.get(workerId);
+		const ownerContext = toolSet?.workerContext?.owner;
+		if (!ownerContext?.ownerId || ownerContext.ownerType !== 'worker') {
+			// Top-level orchestrator or no parent - no progress report needed
+			return;
+		}
+
+		// Get the task for context
+		const task = this._tasks.find(t => t.workerId === workerId);
+		if (!task) {
+			return;
+		}
+
+		// Build the progress check message
+		const progressMessage = `
+## Progress Check (Periodic)
+
+This is a scheduled progress check. Please provide a brief status update:
+
+1. **What have you completed so far?** (List the main accomplishments)
+
+2. **What are you currently working on?** (Current task or step)
+
+3. **What remains to be done?** (Remaining tasks or next steps)
+
+4. **Any blockers or issues?** (Anything preventing progress)
+
+**Reminder:** When you have fully completed your task, you MUST call \`a2a_subtask_complete\` to notify your parent.
+`;
+
+		// Send the progress inquiry and capture response
+		this._sendProgressInquiryAndCaptureResponse(worker, workerId, task, ownerContext.ownerId, progressMessage);
+		this._logService.debug(`[Orchestrator] Sent progress check to child worker ${workerId}`);
+	}
+
+	/**
+	 * Send progress inquiry to a child worker and capture its response.
+	 * The response is queued for the parent as a 'progress' update type.
+	 */
+	private _sendProgressInquiryAndCaptureResponse(
+		worker: WorkerSession,
+		childWorkerId: string,
+		task: WorkerTask,
+		parentWorkerId: string,
+		progressMessage: string
+	): void {
+		// Set up a listener to capture the child's response when streaming ends
+		const responseTimeout = 60000; // 60 second timeout for response
+		let responded = false;
+		let responseContent = '';
+
+		// Listen for streaming parts to capture the response
+		const streamPartDisposable = worker.onStreamPart((part) => {
+			if (!responded && part.type === 'markdown' && part.content) {
+				const content = typeof part.content === 'string' ? part.content : part.content.value;
+				if (content) {
+					responseContent += content;
+				}
+			}
+		});
+
+		// Listen for stream end to queue the progress update
+		const streamEndDisposable = worker.onStreamEnd(() => {
+			if (responded) {
+				return;
+			}
+			responded = true;
+			streamPartDisposable.dispose();
+			streamEndDisposable.dispose();
+
+			// Truncate response if too long
+			const maxResponseLength = 2000;
+			const truncatedResponse = responseContent.length > maxResponseLength
+				? responseContent.substring(0, maxResponseLength) + '... [truncated]'
+				: responseContent;
+
+			// Queue the progress update for the parent
+			this._taskMonitorService.queueUpdate({
+				type: 'progress',
+				subTaskId: task.id,
+				parentWorkerId,
+				progressReport: truncatedResponse || 'Worker provided no progress details.',
+				timestamp: Date.now(),
+			});
+
+			this._logService.debug(`[Orchestrator] Queued progress report from ${childWorkerId} for parent ${parentWorkerId}`);
+		});
+
+		// Set up timeout
+		setTimeout(() => {
+			if (!responded) {
+				responded = true;
+				streamPartDisposable.dispose();
+				streamEndDisposable.dispose();
+
+				// Queue timeout notification
+				this._taskMonitorService.queueUpdate({
+					type: 'progress',
+					subTaskId: task.id,
+					parentWorkerId,
+					progressReport: `Child worker did not respond to progress check within ${responseTimeout / 1000}s.`,
+					timestamp: Date.now(),
+				});
+
+				this._logService.warn(`[Orchestrator] Child ${childWorkerId} did not respond to progress check within timeout`);
+			}
+		}, responseTimeout);
+
+		// Send the clarification message to trigger the response
+		worker.sendClarification(progressMessage);
 	}
 
 	/**
@@ -878,9 +1017,18 @@ Please respond - your parent task is waiting for your status update.
 					);
 					break;
 				case 'progress':
-					updateMessages.push(
-						`📊 **Subtask Progress** (\`${update.subTaskId}\`): ${update.progress || 0}%`
-					);
+					if (update.progressReport) {
+						// Progress report from periodic check
+						updateMessages.push(
+							`📊 **Subtask Progress Report** (\`${update.subTaskId}\`)\n\n` +
+							update.progressReport
+						);
+					} else if (update.progress !== undefined) {
+						// Progress percentage
+						updateMessages.push(
+							`📊 **Subtask Progress** (\`${update.subTaskId}\`): ${update.progress}%`
+						);
+					}
 					break;
 				case 'error':
 					updateMessages.push(
@@ -989,8 +1137,10 @@ Process these updates and continue your work. If subtasks completed successfully
 			case 'status_update':
 				if (message.content === 'idle') {
 					this._onOrchestratorEvent.fire({ type: 'worker.idle', workerId: message.workerId });
-					// Notify orchestrator that worker has completed (similar to A2A subtask completion)
-					this._notifyOrchestratorOfWorkerCompletion(message);
+					// NOTE: Removed old coupling that called _notifyOrchestratorOfWorkerCompletion here.
+					// Idle workers are now handled by WorkerHealthMonitor.onWorkerIdle -> _handleIdleWorker
+					// which either injects pending updates or sends an idle inquiry to child workers.
+					// Completion is ONLY triggered via explicit a2a_subtask_complete tool call.
 				}
 				break;
 
@@ -1365,57 +1515,12 @@ Process these updates and continue your work. If subtasks completed successfully
 		this._saveState();
 	}
 
-	/**
-	 * Notify the orchestrator that a worker has completed (gone idle).
-	 * This adds a notification to the inbox similar to A2A subtask completion.
-	 */
-	private _notifyOrchestratorOfWorkerCompletion(message: IOrchestratorQueueMessage): void {
-		const worker = this._workers.get(message.workerId);
-		const task = this._tasks.find(t => t.workerId === message.workerId);
-
-		if (!worker || !task) {
-			return;
-		}
-
-		// Build notification content with guidance for the orchestrator
-		const workerState = worker.state;
-		const worktreePath = workerState.worktreePath;
-		// Branch name is derived from the worker/task name
-		const branchName = workerState.name || task.name;
-
-		const notificationContent = {
-			type: 'worker_completion',
-			workerId: message.workerId,
-			taskId: task.id,
-			taskName: task.name,
-			planId: task.planId,
-			branchName,
-			worktreePath,
-			status: workerState.errorMessage ? 'failed' : 'success',
-			error: workerState.errorMessage,
-			// Include last few messages as summary
-			summary: workerState.messages?.slice(-3).map((m: { content: string }) => m.content).join('\n') || 'Worker completed.',
-			guidance: this._buildOrchestratorGuidance(task, branchName, workerState)
-		};
-
-		// Add to inbox for orchestrator to process
-		this._inbox.addItem({
-			id: generateUuid(),
-			message: {
-				...message,
-				type: 'completion',
-				content: notificationContent
-			},
-			status: 'pending',
-			requiresUserAction: false, // Orchestrator agent can handle this
-			createdAt: Date.now()
-		});
-
-		// Also show a VS Code notification
-		vscode.window.showInformationMessage(
-			`Worker ${message.workerId} completed task "${task.name}". Review in Orchestrator Dashboard.`
-		);
-	}
+	// NOTE: _notifyOrchestratorOfWorkerCompletion has been removed.
+	// It was previously called when workers went idle, conflating "idle" with "completed".
+	// With the new notification mechanism:
+	// - Idle workers are handled by _handleIdleWorker (inject updates or send inquiry)
+	// - Completion is ONLY triggered via explicit a2a_subtask_complete tool call
+	// - The task.completed event (fired by completeTask()) already notifies listeners
 
 	/**
 	 * IMMEDIATELY notify the orchestrator agent that a worker has FAILED.
@@ -1511,32 +1616,8 @@ Process these updates and continue your work. If subtasks completed successfully
 		return lines.join('\n');
 	}
 
-	/**
-	 * Build guidance text for the orchestrator on what to do with the completed worker.
-	 */
-	private _buildOrchestratorGuidance(task: WorkerTask, branchName: string, workerState: WorkerSessionState): string {
-		const lines: string[] = [];
-		lines.push('**YOUR NEXT STEP:** As the Orchestrator, you must decide what to do:');
-		lines.push('');
-
-		if (workerState.errorMessage) {
-			lines.push(`⚠️ Worker encountered an error: ${workerState.errorMessage}`);
-			lines.push('');
-			lines.push('Options:');
-			lines.push(`- **Retry**: Use \`orchestrator_retryTask\` with taskId "${task.id}" to restart`);
-			lines.push(`- **Send guidance**: Use \`orchestrator_sendMessage\` to give the worker more instructions`);
-			lines.push(`- **Cancel**: Use \`orchestrator_cancelTask\` to abort this task`);
-		} else {
-			lines.push('✅ Worker completed successfully.');
-			lines.push('');
-			lines.push('Options:');
-			lines.push(`1. **Review the work**: Check the worker's changes in branch "${branchName}"`);
-			lines.push(`2. **Merge and complete**: Run \`git merge\` to merge the branch, then call \`orchestrator_completeTask\` with taskId "${task.id}"`);
-			lines.push(`3. **Request changes**: Use \`orchestrator_sendMessage\` to give the worker additional instructions`);
-		}
-
-		return lines.join('\n');
-	}
+	// NOTE: _buildOrchestratorGuidance was removed along with _notifyOrchestratorOfWorkerCompletion.
+	// These functions were part of the old idle→completed coupling that has been removed.
 
 	private async _handlePermissionRequest(message: IOrchestratorQueueMessage): Promise<void> {
 		const request = message.content as IPermissionRequest;

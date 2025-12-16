@@ -1698,7 +1698,7 @@
 				"name": "copilot_a2aSubTaskComplete",
 				"toolReferenceName": "a2a_subtask_complete",
 				"displayName": "Complete Sub-Task",
-				"modelDescription": "Mark a sub-task as completed and report results. If commitMessage is provided and running in a worktree, commits changes, merges to parent branch, cleans up worktree, and reports status with files changed count or merge conflict errors.",
+				"modelDescription": "Mark a sub-task as completed and report results. IMPORTANT: You must commit all your changes BEFORE calling this tool. If uncommitted changes are detected, this tool will fail and ask you to commit first. After completion, your parent will pull your changes from your worktree branch.",
 				"userDescription": "Complete sub-task",
 				"icon": "$(check)",
 				"tags": ["vscode_codesearch"],
@@ -1710,10 +1710,7 @@
 						"output": { "type": "string", "description": "Summary of the work completed" },
 						"outputFile": { "type": "string", "description": "Optional file containing detailed output" },
 						"metadata": { "type": "object", "description": "Additional metadata about the completion" },
-						"error": { "type": "string", "description": "Error message if status is failed" },
-						"commitMessage": { "type": "string", "description": "If provided, commits and merges changes before completing. Only works in worktree." },
-						"mergeStrategy": { "type": "string", "enum": ["merge", "squash", "rebase"], "description": "Merge strategy when commitMessage provided (default: squash)" },
-						"deleteBranchAfterMerge": { "type": "boolean", "description": "Delete source branch after merge (default: true)" }
+						"error": { "type": "string", "description": "Error message if status is failed" }
 					},
 					"required": ["subTaskId", "status", "output"]
 				}
