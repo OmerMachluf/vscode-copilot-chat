@@ -6,7 +6,7 @@
 import * as vscode from 'vscode';
 import { ILogService } from '../../../platform/log/common/logService';
 import { CancellationToken } from '../../../util/vs/base/common/cancellation';
-import { IClaudeAgentManager } from '../../agents/claude/node/claudeCodeAgent';
+import { IClaudeAgentManager } from '../../agents/claude/node/claudeAgentManagerTypes';
 import { ClaudeWorktreeSession } from '../../agents/claude/node/claudeWorktreeSession';
 import {
 	AgentBackendType,
@@ -65,6 +65,7 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 			worktreePath,
 			agentType,
 			token,
+			workerContext,
 		} = params;
 
 		const startTime = Date.now();
@@ -80,6 +81,12 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 
 			// Get or create session for this worktree
 			const session = await this._claudeAgentManager.getOrCreateWorktreeSession(worktreePath);
+
+			// Set worker context for A2A orchestration if provided
+			if (workerContext) {
+				this._logService.info(`[ClaudeCodeAgentExecutor] Setting worker context: depth=${workerContext.depth}, spawnContext=${workerContext.spawnContext}`);
+				session.session.setWorkerContext(workerContext);
+			}
 
 			// Track worker state
 			this._activeWorkers.set(taskId, {

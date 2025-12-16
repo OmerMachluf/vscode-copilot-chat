@@ -8,6 +8,7 @@ import { createServiceIdentifier } from '../../../../util/common/services';
 import { Disposable, DisposableMap, IDisposable } from '../../../../util/vs/base/common/lifecycle';
 import { URI } from '../../../../util/vs/base/common/uri';
 import { IInstantiationService } from '../../../../util/vs/platform/instantiation/common/instantiation';
+import { IWorkerContext } from '../../../orchestrator/workerToolsService';
 import { ILanguageModelServerConfig } from '../../node/langModelServer';
 
 /**
@@ -22,6 +23,11 @@ export interface IClaudeCodeSession extends IDisposable {
 		stream: vscode.ChatResponseStream,
 		token: vscode.CancellationToken
 	): Promise<void>;
+	/**
+	 * Sets the worker context for A2A orchestration.
+	 * Should be called before invoke() when running as a subtask.
+	 */
+	setWorkerContext(context: IWorkerContext): void;
 }
 
 /**

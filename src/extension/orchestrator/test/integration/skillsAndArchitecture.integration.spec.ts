@@ -3,9 +3,9 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { SkillsService, formatSkillsForPrompt } from '../../skillsService';
-import { AgentInstructionService, AgentDefinition } from '../../agentInstructionService';
+import { AgentInstructionService } from '../../agentInstructionService';
 import { registerCustomAgents, clearCustomAgentSlashCommands, parseAgentType, getAllSlashCommands } from '../../agentTypeParser';
 
 /**
@@ -120,7 +120,7 @@ tools: ['search', 'read_file']
 ---
 You are an architect.`;
 
-				const service = new AgentInstructionService({} as any, {} as any);
+				const service = new AgentInstructionService({} as any, {} as any, {} as any);
 				const def = service.parseAgentDefinition(content, 'builtin');
 
 				expect(def).toBeDefined();
@@ -136,7 +136,7 @@ tools: ['edit', 'create']
 ---
 You implement code.`;
 
-				const service = new AgentInstructionService({} as any, {} as any);
+				const service = new AgentInstructionService({} as any, {} as any, {} as any);
 				const def = service.parseAgentDefinition(content, 'builtin');
 
 				expect(def).toBeDefined();
@@ -151,7 +151,7 @@ tools: ['search']
 ---
 You review code.`;
 
-				const service = new AgentInstructionService({} as any, {} as any);
+				const service = new AgentInstructionService({} as any, {} as any, {} as any);
 				const def = service.parseAgentDefinition(content, 'repo');
 
 				expect(def).toBeDefined();
@@ -169,7 +169,7 @@ tools: ['search']
 ---
 You design UIs.`;
 
-				const service = new AgentInstructionService({} as any, {} as any);
+				const service = new AgentInstructionService({} as any, {} as any, {} as any);
 				const def = service.parseAgentDefinition(content, 'repo');
 
 				expect(def).toBeDefined();
@@ -185,7 +185,7 @@ tools: ['search']
 ---
 You use Claude.`;
 
-				const service = new AgentInstructionService({} as any, {} as any);
+				const service = new AgentInstructionService({} as any, {} as any, {} as any);
 				const def = service.parseAgentDefinition(content, 'repo');
 
 				expect(def).toBeDefined();
@@ -201,7 +201,7 @@ tools: ['search']
 ---
 You are custom.`;
 
-				const service = new AgentInstructionService({} as any, {} as any);
+				const service = new AgentInstructionService({} as any, {} as any, {} as any);
 				const def = service.parseAgentDefinition(content, 'repo');
 
 				expect(def).toBeDefined();
@@ -285,7 +285,7 @@ You are custom.`;
 		});
 
 		it('should support architecture-aware agent workflow', () => {
-			const instructionService = new AgentInstructionService({} as any, {} as any);
+			const instructionService = new AgentInstructionService({} as any, {} as any, {} as any);
 
 			// Agent definition with architecture access
 			const architectContent = `---

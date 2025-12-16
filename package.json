@@ -1748,6 +1748,20 @@
 					},
 					"required": ["workerId", "message"]
 				}
+			},
+			{
+				"name": "copilot_a2aListSpecialists",
+				"toolReferenceName": "a2a_list_specialists",
+				"displayName": "List Available Specialists",
+				"modelDescription": "List all available specialist agents that can be spawned as subtasks. Returns agent names, descriptions, and capabilities.",
+				"userDescription": "List available specialist agents",
+				"icon": "$(list-unordered)",
+				"tags": ["vscode_codesearch"],
+				"inputSchema": {
+					"type": "object",
+					"properties": {},
+					"required": []
+				}
 			}
 		],
 		"languageModelToolSets": [
@@ -5747,6 +5761,38 @@
 					{
 						"name": "security-review",
 						"description": "Complete a security review of the pending changes on the current branch"
+					},
+					{
+						"name": "agent",
+						"description": "Use the default Claude Code agent for general-purpose coding tasks"
+					},
+					{
+						"name": "architect",
+						"description": "Use the software architect agent with architecture access for system design and planning"
+					},
+					{
+						"name": "reviewer",
+						"description": "Use the code reviewer agent for thorough code reviews with focus on quality and best practices"
+					},
+					{
+						"name": "repository-researcher",
+						"description": "Use the repository researcher agent to analyze codebase patterns, dependencies, and architecture"
+					},
+					{
+						"name": "orchestrator",
+						"description": "Use the orchestrator agent to break down complex tasks and delegate to specialized agents"
+					},
+					{
+						"name": "product",
+						"description": "Use the product agent for UX perspective and user-facing decisions"
+					},
+					{
+						"name": "researcher",
+						"description": "Use the researcher agent to investigate codebases using symbolic navigation"
+					},
+					{
+						"name": "tester",
+						"description": "Use the tester agent to design test strategies and generate comprehensive test cases"
 					}
 				]
 			},
@@ -5952,6 +5998,7 @@
 		"@fluentui/react-icons": "^2.0.305",
 		"@hediet/node-reload": "^0.8.0",
 		"@keyv/sqlite": "^4.0.5",
+		"@modelcontextprotocol/sdk": "^1.0.0",
 		"@octokit/types": "^14.1.0",
 		"@parcel/watcher": "^2.5.1",
 		"@stylistic/eslint-plugin": "^3.0.1",

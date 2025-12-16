@@ -98,6 +98,8 @@ import { AgentDiscoveryService, IAgentDiscoveryService } from '../../orchestrato
 import { IAgentExecutorRegistry } from '../../orchestrator/agentExecutor';
 import { AgentExecutorRegistry } from '../../orchestrator/agentExecutorRegistry';
 import { AgentInstructionService, IAgentInstructionService } from '../../orchestrator/agentInstructionService';
+import { ClaudeCommandService, IClaudeCommandService } from '../../orchestrator/claudeCommandService';
+import { ClaudeMigrationService, IClaudeMigrationService } from '../../orchestrator/claudeMigrationService';
 import { AgentRunnerService, IAgentRunner } from '../../orchestrator/agentRunner';
 import { BackendSelectionService, IBackendSelectionService } from '../../orchestrator/backendSelectionService';
 import { IOrchestratorQueueService, OrchestratorQueueService } from '../../orchestrator/orchestratorQueue';
@@ -187,6 +189,8 @@ export function registerServices(builder: IInstantiationServiceBuilder, extensio
 	builder.define(ITestGenInfoStorage, new SyncDescriptor(TestGenInfoStorage)); // Used for test generation (/tests intent)
 	builder.define(IAgentInstructionService, new SyncDescriptor(AgentInstructionService));
 	builder.define(IAgentDiscoveryService, new SyncDescriptor(AgentDiscoveryService));
+	builder.define(IClaudeMigrationService, new SyncDescriptor(ClaudeMigrationService));
+	builder.define(IClaudeCommandService, new SyncDescriptor(ClaudeCommandService));
 	builder.define(ISkillsService, new SyncDescriptor(SkillsService));
 	builder.define(IAgentRunner, new SyncDescriptor(AgentRunnerService));
 	builder.define(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistry));

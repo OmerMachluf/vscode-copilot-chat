@@ -209,37 +209,94 @@ export class AgentDiscoveryService implements IAgentDiscoveryService {
 		}
 
 		for (const folder of workspaceFolders) {
-			const agentsDir = URI.joinPath(folder.uri, '.github', 'agents');
+			// Scan .github/agents/ (legacy format: {name}/{name}.agent.md)
+			const githubAgentsDir = URI.joinPath(folder.uri, '.github', 'agents');
+			await this._scanGitHubAgentsDir(githubAgentsDir, agents);
 
-			try {
-				// Check if the directory exists before trying to read it
-				const stat = await this.fileSystemService.stat(agentsDir);
-				if (stat.type !== FileType.Directory) {
-					continue;
+			// Scan .claude/agents/ (new format: {category}/{name}.md)
+			const claudeAgentsDir = URI.joinPath(folder.uri, '.claude', 'agents');
+			await this._scanClaudeAgentsDir(claudeAgentsDir, agents);
+		}
+
+		return agents;
+	}
+
+	/**
+	 * Scan .github/agents/ directory for agents in legacy format
+	 * Structure: .github/agents/{name}/{name}.agent.md
+	 */
+	private async _scanGitHubAgentsDir(agentsDir: URI, agents: AgentInfo[]): Promise<void> {
+		try {
+			const stat = await this.fileSystemService.stat(agentsDir);
+			if (stat.type !== FileType.Directory) {
+				return;
+			}
+
+			const entries = await this.fileSystemService.readDirectory(agentsDir);
+
+			for (const [name, type] of entries) {
+				if (type === FileType.Directory) {
+					// Look for {name}.agent.md inside the folder
+					const agentFile = URI.joinPath(agentsDir, name, `${name}.agent.md`);
+					const content = await this._readFileAsString(agentFile);
+
+					if (content) {
+						const parsed = this.agentInstructionService.parseAgentDefinition(content, 'repo');
+						if (parsed) {
+							agents.push(this._createAgentInfo(parsed, agentFile.toString()));
+						}
+					}
 				}
+			}
+		} catch {
+			// .github/agents folder might not exist
+		}
+	}
 
-				const entries = await this.fileSystemService.readDirectory(agentsDir);
+	/**
+	 * Scan .claude/agents/ directory for agents in Claude Code format
+	 * Structure: .claude/agents/{category}/{name}.md (e.g., .claude/agents/builtin/architect.md)
+	 */
+	private async _scanClaudeAgentsDir(agentsDir: URI, agents: AgentInfo[]): Promise<void> {
+		try {
+			const stat = await this.fileSystemService.stat(agentsDir);
+			if (stat.type !== FileType.Directory) {
+				return;
+			}
 
-				for (const [name, type] of entries) {
-					if (type === FileType.Directory) {
-						// Look for {name}.agent.md inside the folder
-						const agentFile = URI.joinPath(agentsDir, name, `${name}.agent.md`);
-						const content = await this._readFileAsString(agentFile);
+			const entries = await this.fileSystemService.readDirectory(agentsDir);
 
-						if (content) {
-							const parsed = this.agentInstructionService.parseAgentDefinition(content, 'repo');
-							if (parsed) {
-								agents.push(this._createAgentInfo(parsed, agentFile.toString()));
+			for (const [name, type] of entries) {
+				if (type === FileType.Directory) {
+					// This is a category folder (e.g., 'builtin', 'custom')
+					const categoryDir = URI.joinPath(agentsDir, name);
+					const categoryEntries = await this.fileSystemService.readDirectory(categoryDir);
+
+					for (const [agentFile, agentType] of categoryEntries) {
+						if (agentType === FileType.File && agentFile.endsWith('.md')) {
+							const agentId = agentFile.replace('.md', '');
+							const fileUri = URI.joinPath(categoryDir, agentFile);
+							const content = await this._readFileAsString(fileUri);
+
+							if (content) {
+								// Determine source based on category
+								const source = name === 'builtin' ? 'builtin' : 'repo';
+								const parsed = this.agentInstructionService.parseAgentDefinition(content, source);
+								if (parsed) {
+									// Override the id with the filename if not set
+									if (!parsed.id || parsed.id === 'unknown') {
+										parsed.id = agentId;
+									}
+									agents.push(this._createAgentInfo(parsed, fileUri.toString()));
+								}
 							}
 						}
 					}
 				}
-			} catch {
-				// .github/agents folder might not exist
 			}
+		} catch {
+			// .claude/agents folder might not exist
 		}
-
-		return agents;
 	}
 
 	/**

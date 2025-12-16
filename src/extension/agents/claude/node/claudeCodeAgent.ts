@@ -10,7 +10,6 @@ import { ConfigKey, IConfigurationService } from '../../../../platform/configura
 import { IEnvService } from '../../../../platform/env/common/envService';
 import { ILogService } from '../../../../platform/log/common/logService';
 import { IWorkspaceService } from '../../../../platform/workspace/common/workspaceService';
-import { createServiceIdentifier } from '../../../../util/common/services';
 import { isLocation } from '../../../../util/common/types';
 import { DeferredPromise } from '../../../../util/vs/base/common/async';
 import { CancellationToken } from '../../../../util/vs/base/common/cancellation';
@@ -19,6 +18,14 @@ import { isWindows } from '../../../../util/vs/base/common/platform';
 import { URI } from '../../../../util/vs/base/common/uri';
 import { IInstantiationService } from '../../../../util/vs/platform/instantiation/common/instantiation';
 import { LanguageModelTextPart } from '../../../../vscodeTypes';
+import { ILanguageFeaturesService } from '../../../../platform/languages/common/languageFeaturesService';
+import { IAgentDiscoveryService } from '../../../orchestrator/agentDiscoveryService';
+import { IClaudeCommandService } from '../../../orchestrator/claudeCommandService';
+import { ISubTaskManager } from '../../../orchestrator/orchestratorInterfaces';
+import { IOrchestratorService } from '../../../orchestrator/orchestratorServiceV2';
+import { ISafetyLimitsService } from '../../../orchestrator/safetyLimits';
+import { ITaskMonitorService } from '../../../orchestrator/taskMonitorService';
+import { IWorkerContext } from '../../../orchestrator/workerToolsService';
 import { ToolName } from '../../../tools/common/toolNames';
 import { IToolsService } from '../../../tools/common/toolsService';
 import { isFileOkForTool } from '../../../tools/node/toolUtils';
@@ -26,48 +33,13 @@ import { ExternalEditTracker } from '../../common/externalEditTracker';
 import { ILanguageModelServerConfig, LanguageModelServer } from '../../node/langModelServer';
 import { claudeEditTools, ClaudeToolNames, getAffectedUrisForEditTool, IExitPlanModeInput, ITodoWriteInput } from '../common/claudeTools';
 import { createFormattedToolInvocation } from '../common/toolInvocationFormatter';
+import { IClaudeAgentManager } from './claudeAgentManagerTypes';
+import { createA2AMcpServer } from './claudeA2AMcpServer';
 import { IClaudeCodeSdkService } from './claudeCodeSdkService';
 import { ClaudeWorktreeSession, IWorktreeSessionConfig, IWorktreeSessionFactory } from './claudeWorktreeSession';
 
-/**
- * Service identifier for the Claude Agent Manager
- */
-export const IClaudeAgentManager = createServiceIdentifier<IClaudeAgentManager>('IClaudeAgentManager');
-
-/**
- * Interface for the Claude Agent Manager
- */
-export interface IClaudeAgentManager {
-	readonly _serviceBrand: undefined;
-
-	/**
-	 * Handles a chat request, optionally within a specific worktree context
-	 */
-	handleRequest(
-		claudeSessionId: string | undefined,
-		request: vscode.ChatRequest,
-		context: vscode.ChatContext,
-		stream: vscode.ChatResponseStream,
-		token: vscode.CancellationToken,
-		worktreePath?: string
-	): Promise<vscode.ChatResult & { claudeSessionId?: string }>;
-
-	/**
-	 * Gets or creates a session for the specified worktree path
-	 * If no worktree path is provided, returns the main workspace session
-	 */
-	getOrCreateWorktreeSession(worktreePath: string): Promise<ClaudeWorktreeSession>;
-
-	/**
-	 * Removes and cleans up a worktree session
-	 */
-	removeWorktreeSession(worktreePath: string): boolean;
-
-	/**
-	 * Gets all active worktree paths with sessions
-	 */
-	getActiveWorktreePaths(): readonly string[];
-}
+// Re-export the interface and service identifier for consumers
+export { IClaudeAgentManager } from './claudeAgentManagerTypes';
 
 /**
  * Factory for creating ClaudeWorktreeSession instances.
@@ -125,8 +97,11 @@ export class ClaudeAgentManager extends Disposable implements IClaudeAgentManage
 	constructor(
 		@ILogService private readonly logService: ILogService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@IClaudeCommandService private readonly claudeCommandService: IClaudeCommandService,
 	) {
 		super();
+		// Initialize the command service for watching .claude/commands/
+		this.claudeCommandService.initialize();
 	}
 
 	/**
@@ -221,7 +196,7 @@ export class ClaudeAgentManager extends Disposable implements IClaudeAgentManage
 			}
 
 			await session.invoke(
-				this.resolvePrompt(request),
+				await this.resolvePrompt(request),
 				request.toolInvocationToken,
 				stream,
 				token
@@ -261,7 +236,7 @@ export class ClaudeAgentManager extends Disposable implements IClaudeAgentManage
 		const worktreeSession = await this.getOrCreateWorktreeSession(worktreePath);
 
 		await worktreeSession.session.invoke(
-			this.resolvePrompt(request),
+			await this.resolvePrompt(request),
 			request.toolInvocationToken,
 			stream,
 			token
@@ -279,13 +254,30 @@ export class ClaudeAgentManager extends Disposable implements IClaudeAgentManage
 		return path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 	}
 
-	private resolvePrompt(request: vscode.ChatRequest): string {
-		if (request.prompt.startsWith('/')) {
-			return request.prompt; // likely a slash command, don't modify
+	private async resolvePrompt(request: vscode.ChatRequest): Promise<string> {
+		let prompt = request.prompt;
+
+		// Handle slash commands with potential custom command resolution
+		if (prompt.startsWith('/')) {
+			// Extract command name (e.g., "/architect" -> "architect")
+			const spaceIndex = prompt.indexOf(' ');
+			const commandName = spaceIndex > 0
+				? prompt.slice(1, spaceIndex)
+				: prompt.slice(1);
+			const args = spaceIndex > 0 ? prompt.slice(spaceIndex + 1).trim() : '';
+
+			// Try to find a custom command in .claude/commands/
+			const commandContent = await this.claudeCommandService.getCommandContent(commandName);
+			if (commandContent) {
+				// Prepend the command instructions to the prompt
+				this.logService.trace(`[ClaudeAgentManager] Resolved custom command: /${commandName}`);
+				prompt = `<command-instructions name="${commandName}">\n${commandContent}\n</command-instructions>\n\n${args || ''}`;
+			}
+			// If not found as custom command, pass through as-is (Claude CLI handles built-in commands)
+			return prompt;
 		}
 
 		const extraRefsTexts: string[] = [];
-		let prompt = request.prompt;
 		request.references.forEach(ref => {
 			const valueText = URI.isUri(ref.value) ?
 				ref.value.fsPath :
@@ -340,6 +332,12 @@ export class ClaudeCodeSession extends Disposable {
 	private _abortController = new AbortController();
 	private _editTracker = new ExternalEditTracker();
 
+	/**
+	 * Worker context for A2A orchestration.
+	 * Set by executor when running as a subtask in a worktree.
+	 */
+	private _workerContext: IWorkerContext | undefined;
+
 	constructor(
 		private readonly serverConfig: ILanguageModelServerConfig,
 		public sessionId: string | undefined,
@@ -351,8 +349,28 @@ export class ClaudeCodeSession extends Disposable {
 		@IToolsService private readonly toolsService: IToolsService,
 		@IClaudeCodeSdkService private readonly claudeCodeService: IClaudeCodeSdkService,
 		@ILogService private readonly _log: ILogService,
+		@ISubTaskManager private readonly subTaskManager: ISubTaskManager,
+		@IAgentDiscoveryService private readonly agentDiscoveryService: IAgentDiscoveryService,
+		@ISafetyLimitsService private readonly safetyLimitsService: ISafetyLimitsService,
+		@ITaskMonitorService private readonly taskMonitorService: ITaskMonitorService,
 	) {
 		super();
+	}
+
+	/**
+	 * Sets the worker context for A2A orchestration.
+	 * Should be called by the executor before the first invoke() when running as a subtask.
+	 * @param context The worker context containing task hierarchy information
+	 */
+	public setWorkerContext(context: IWorkerContext): void {
+		this._workerContext = context;
+	}
+
+	/**
+	 * Gets the current worker context, if set.
+	 */
+	public get workerContext(): IWorkerContext | undefined {
+		return this._workerContext;
 	}
 
 	public override dispose(): void {
@@ -424,8 +442,33 @@ export class ClaudeCodeSession extends Disposable {
 		const isDebugEnabled = this.configService.getConfig(ConfigKey.Advanced.ClaudeCodeDebugEnabled);
 		this.logService.trace(`appRoot: ${this.envService.appRoot}`);
 		const pathSep = isWindows ? ';' : ':';
+
+		// Determine working directory: use worktree path for workers, main workspace otherwise
+		const mainWorkspace = this.workspaceService.getWorkspaceFolders().at(0)?.fsPath;
+		const workingDirectory = this._workerContext?.worktreePath ?? mainWorkspace;
+
+		this.logService.info(`[ClaudeCodeSession] Starting session with cwd: ${workingDirectory} (worktree: ${!!this._workerContext?.worktreePath})`);
+
+		// Create in-process MCP server for A2A orchestration tools
+		// Get optional services via instantiation service to avoid circular dependency issues
+		const a2aMcpServer = this.instantiationService.invokeFunction(accessor => {
+			const orchestratorService = accessor.getIfExists(IOrchestratorService);
+			const languageFeaturesService = accessor.getIfExists(ILanguageFeaturesService);
+
+			return createA2AMcpServer({
+				subTaskManager: this.subTaskManager,
+				agentDiscoveryService: this.agentDiscoveryService,
+				safetyLimitsService: this.safetyLimitsService,
+				taskMonitorService: this.taskMonitorService,
+				workerContext: this._workerContext,
+				orchestratorService,
+				languageFeaturesService,
+				workspaceRoot: workingDirectory,
+			});
+		});
+
 		const options: Options = {
-			cwd: this.workspaceService.getWorkspaceFolders().at(0)?.fsPath,
+			cwd: workingDirectory,
 			abortController: this._abortController,
 			executable: process.execPath as 'node', // get it to fork the EH node process
 			env: {
@@ -437,6 +480,10 @@ export class ClaudeCodeSession extends Disposable {
 				PATH: `${this.envService.appRoot}/node_modules/@vscode/ripgrep/bin${pathSep}${process.env.PATH}`
 			},
 			resume: this.sessionId,
+			// Register the A2A MCP server as an in-process SDK server
+			mcpServers: {
+				'a2a-orchestration': a2aMcpServer
+			},
 			hooks: {
 				PreToolUse: [
 					{
