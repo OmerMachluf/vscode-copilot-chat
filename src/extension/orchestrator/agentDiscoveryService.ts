@@ -9,7 +9,8 @@ import { IFileSystemService } from '../../platform/filesystem/common/fileSystemS
 import { FileType } from '../../platform/filesystem/common/fileTypes';
 import { URI } from '../../util/vs/base/common/uri';
 import { createDecorator } from '../../util/vs/platform/instantiation/common/instantiation';
-import { IAgentInstructionService } from './agentInstructionService';
+import { AgentDefinition, IAgentInstructionService } from './agentInstructionService';
+import { registerCustomAgents } from './agentTypeParser';
 
 export const IAgentDiscoveryService = createDecorator<IAgentDiscoveryService>('agentDiscoveryService');
 
@@ -31,6 +32,14 @@ export interface AgentInfo {
 	capabilities?: string[];
 	/** The folder path for repo agents, or asset path for builtins */
 	path?: string;
+	/** Whether this agent has access to architecture documents */
+	hasArchitectureAccess?: boolean;
+	/** Skills to always load for this agent */
+	useSkills?: string[];
+	/** Preferred backend for this agent */
+	backend?: 'copilot' | 'claude';
+	/** Claude slash command override */
+	claudeSlashCommand?: string;
 }
 
 export interface IAgentDiscoveryService {
@@ -136,6 +145,19 @@ export class AgentDiscoveryService implements IAgentDiscoveryService {
 		this._cachedAgents = Array.from(deduped.values());
 		this._cacheTimestamp = now;
 
+		// Register custom agents with agentTypeParser for Claude slash command support
+		// Only register repo agents (custom agents defined in .github/agents/)
+		const customAgentsToRegister = this._cachedAgents
+			.filter(agent => agent.source === 'repo')
+			.map(agent => ({
+				name: agent.id,
+				slashCommand: agent.claudeSlashCommand,
+			}));
+
+		if (customAgentsToRegister.length > 0) {
+			registerCustomAgents(customAgentsToRegister, true);
+		}
+
 		return this._cachedAgents;
 	}
 
@@ -166,14 +188,7 @@ export class AgentDiscoveryService implements IAgentDiscoveryService {
 					if (content) {
 						const parsed = this.agentInstructionService.parseAgentDefinition(content, 'builtin');
 						if (parsed) {
-							agents.push({
-								id: parsed.id,
-								name: parsed.name,
-								description: parsed.description,
-								tools: parsed.tools,
-								source: 'builtin',
-								path: fileUri.toString(),
-							});
+							agents.push(this._createAgentInfo(parsed, fileUri.toString()));
 						}
 					}
 				}
@@ -214,14 +229,7 @@ export class AgentDiscoveryService implements IAgentDiscoveryService {
 						if (content) {
 							const parsed = this.agentInstructionService.parseAgentDefinition(content, 'repo');
 							if (parsed) {
-								agents.push({
-									id: parsed.id,
-									name: parsed.name,
-									description: parsed.description,
-									tools: parsed.tools,
-									source: 'repo',
-									path: agentFile.toString(),
-								});
+								agents.push(this._createAgentInfo(parsed, agentFile.toString()));
 							}
 						}
 					}
@@ -232,6 +240,24 @@ export class AgentDiscoveryService implements IAgentDiscoveryService {
 		}
 
 		return agents;
+	}
+
+	/**
+	 * Create an AgentInfo from a parsed AgentDefinition
+	 */
+	private _createAgentInfo(parsed: AgentDefinition, path: string): AgentInfo {
+		return {
+			id: parsed.id,
+			name: parsed.name,
+			description: parsed.description,
+			tools: parsed.tools,
+			source: parsed.source,
+			path,
+			hasArchitectureAccess: parsed.hasArchitectureAccess,
+			useSkills: parsed.useSkills,
+			backend: parsed.backend,
+			claudeSlashCommand: parsed.claudeSlashCommand,
+		};
 	}
 
 	clearCache(): void {

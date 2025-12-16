@@ -20,6 +20,7 @@ import {
 	getAllSlashCommands,
 	isBuiltInAgentName,
 	validateCustomAgentName,
+	registerCustomAgents,
 	BUILTIN_AGENT_NAMES,
 	AgentTypeParseError,
 	AgentNameConflictError,
@@ -408,6 +409,71 @@ describe('agentTypeParser', () => {
 			expect(result.backend).toBe('copilot');
 			expect(result.agentName).toBe('my-custom-agent');
 			expect(result.slashCommand).toBeUndefined();
+		});
+	});
+
+	describe('registerCustomAgents (batch registration)', () => {
+		beforeEach(() => {
+			clearCustomAgentSlashCommands();
+		});
+
+		afterEach(() => {
+			clearCustomAgentSlashCommands();
+		});
+
+		it('should register multiple custom agents at once', () => {
+			const registered = registerCustomAgents([
+				{ name: 'agent-one' },
+				{ name: 'agent-two' },
+				{ name: 'agent-three' },
+			]);
+
+			expect(registered).toHaveLength(3);
+			expect(getClaudeSlashCommand('agent-one')).toBe('/agent-one');
+			expect(getClaudeSlashCommand('agent-two')).toBe('/agent-two');
+			expect(getClaudeSlashCommand('agent-three')).toBe('/agent-three');
+		});
+
+		it('should skip built-in agent names without throwing', () => {
+			const registered = registerCustomAgents([
+				{ name: 'my-agent' },
+				{ name: 'agent' }, // built-in, should be skipped
+				{ name: 'architect' }, // built-in, should be skipped
+			]);
+
+			expect(registered).toHaveLength(1);
+			expect(registered).toContain('my-agent');
+			expect(getClaudeSlashCommand('my-agent')).toBe('/my-agent');
+		});
+
+		it('should support custom slash commands in batch', () => {
+			const registered = registerCustomAgents([
+				{ name: 'my-agent', slashCommand: '/custom-slash' },
+				{ name: 'other-agent' },
+			]);
+
+			expect(registered).toHaveLength(2);
+			expect(getClaudeSlashCommand('my-agent')).toBe('/custom-slash');
+			expect(getClaudeSlashCommand('other-agent')).toBe('/other-agent');
+		});
+
+		it('should clear existing registrations when clearExisting is true', () => {
+			registerCustomAgentSlashCommand('existing-agent');
+			expect(getClaudeSlashCommand('existing-agent')).toBe('/existing-agent');
+
+			registerCustomAgents([{ name: 'new-agent' }], true);
+
+			expect(getClaudeSlashCommand('existing-agent')).toBeUndefined();
+			expect(getClaudeSlashCommand('new-agent')).toBe('/new-agent');
+		});
+
+		it('should preserve existing registrations when clearExisting is false', () => {
+			registerCustomAgentSlashCommand('existing-agent');
+
+			registerCustomAgents([{ name: 'new-agent' }], false);
+
+			expect(getClaudeSlashCommand('existing-agent')).toBe('/existing-agent');
+			expect(getClaudeSlashCommand('new-agent')).toBe('/new-agent');
 		});
 	});
 });

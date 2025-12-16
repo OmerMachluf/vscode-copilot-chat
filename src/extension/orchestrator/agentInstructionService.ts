@@ -9,6 +9,7 @@ import { IFileSystemService } from '../../platform/filesystem/common/fileSystemS
 import { FileType } from '../../platform/filesystem/common/fileTypes';
 import { URI } from '../../util/vs/base/common/uri';
 import { createDecorator } from '../../util/vs/platform/instantiation/common/instantiation';
+import { ISkillsService, formatSkillsForPrompt } from './skillsService';
 
 export const IAgentInstructionService = createDecorator<IAgentInstructionService>('agentInstructionService');
 
@@ -28,6 +29,14 @@ export interface AgentDefinition {
 	source: 'builtin' | 'repo';
 	/** Full instruction content (including frontmatter) */
 	content: string;
+	/** Whether this agent has access to architecture documents */
+	hasArchitectureAccess?: boolean;
+	/** Skills to always load for this agent */
+	useSkills?: string[];
+	/** Preferred backend for this agent */
+	backend?: 'copilot' | 'claude';
+	/** Claude slash command override */
+	claudeSlashCommand?: string;
 }
 
 /**
@@ -40,6 +49,10 @@ export interface ComposedInstructions {
 	instructions: string[];
 	/** Files that were loaded */
 	files: string[];
+	/** Architecture documents (only for agents with hasArchitectureAccess) */
+	architectureDocs?: string[];
+	/** Architecture document files that were loaded */
+	architectureFiles?: string[];
 }
 
 export interface IAgentInstructionService {
@@ -81,16 +94,27 @@ export interface IAgentInstructionService {
 	 * Parse an agent definition file (.agent.md) to extract metadata.
 	 */
 	parseAgentDefinition(content: string, source: 'builtin' | 'repo'): AgentDefinition | undefined;
+
+	/**
+	 * Get architecture documents for an agent.
+	 * Only returns documents if the agent has hasArchitectureAccess: true.
+	 * @param agentId The agent ID
+	 * @param hasArchitectureAccess Whether the agent has access to architecture docs
+	 * @returns Architecture document contents and file paths
+	 */
+	getArchitectureDocs(agentId: string, hasArchitectureAccess: boolean): Promise<{ docs: string[]; files: string[] }>;
 }
 
 export class AgentInstructionService implements IAgentInstructionService {
 	declare readonly _serviceBrand: undefined;
 
 	private readonly _instructionCache = new Map<string, ComposedInstructions>();
+	private readonly _agentDefinitionCache = new Map<string, AgentDefinition>();
 
 	constructor(
 		@IFileSystemService private readonly fileSystemService: IFileSystemService,
-		@IVSCodeExtensionContext private readonly extensionContext: IVSCodeExtensionContext
+		@IVSCodeExtensionContext private readonly extensionContext: IVSCodeExtensionContext,
+		@ISkillsService private readonly skillsService: ISkillsService
 	) { }
 
 	async loadInstructions(agentId: string): Promise<ComposedInstructions> {
@@ -124,14 +148,81 @@ export class AgentInstructionService implements IAgentInstructionService {
 			files.push(`.github/agents/${agentId}/${i}.md`);
 		}
 
+		// 4. Get agent definition for skill and architecture access settings
+		const agentDef = await this._getAgentDefinition(agentId);
+
+		// 5. Load skills from agent's useSkills array
+		const skillsContent: string[] = [];
+		const skillFiles: string[] = [];
+		if (agentDef?.useSkills && agentDef.useSkills.length > 0) {
+			const skills = await this.skillsService.getSkillsByReference(agentId, agentDef.useSkills);
+			if (skills.length > 0) {
+				const formattedSkills = formatSkillsForPrompt(skills);
+				skillsContent.push(formattedSkills);
+				for (const skill of skills) {
+					skillFiles.push(skill.path || `[skill] ${skill.id}`);
+				}
+			}
+		}
+
+		// 6. Load architecture documents if agent has access
+		const architectureDocs: string[] = [];
+		const architectureFiles: string[] = [];
+		if (agentDef?.hasArchitectureAccess) {
+			const archResult = await this.getArchitectureDocs(agentId, true);
+			architectureDocs.push(...archResult.docs);
+			architectureFiles.push(...archResult.files);
+		}
+
 		const result: ComposedInstructions = {
 			agentId,
-			instructions,
-			files
+			instructions: [...instructions, ...skillsContent],
+			files: [...files, ...skillFiles],
+			architectureDocs: architectureDocs.length > 0 ? architectureDocs : undefined,
+			architectureFiles: architectureFiles.length > 0 ? architectureFiles : undefined,
 		};
 
 		this._instructionCache.set(agentId, result);
 		return result;
+	}
+
+	/**
+	 * Get agent definition, checking both builtin and repo sources
+	 */
+	private async _getAgentDefinition(agentId: string): Promise<AgentDefinition | undefined> {
+		// Check cache
+		const cached = this._agentDefinitionCache.get(agentId);
+		if (cached) {
+			return cached;
+		}
+
+		// Try builtin first
+		const builtinContent = await this.getBuiltinAgentInstructions(agentId);
+		if (builtinContent) {
+			const parsed = this.parseAgentDefinition(builtinContent, 'builtin');
+			if (parsed) {
+				this._agentDefinitionCache.set(agentId, parsed);
+				return parsed;
+			}
+		}
+
+		// Try repo agents
+		const workspaceFolders = vscode.workspace.workspaceFolders;
+		if (workspaceFolders?.length) {
+			for (const folder of workspaceFolders) {
+				const agentFile = URI.joinPath(folder.uri, '.github', 'agents', agentId, `${agentId}.agent.md`);
+				const content = await this._readFileAsString(agentFile);
+				if (content) {
+					const parsed = this.parseAgentDefinition(content, 'repo');
+					if (parsed) {
+						this._agentDefinitionCache.set(agentId, parsed);
+						return parsed;
+					}
+				}
+			}
+		}
+
+		return undefined;
 	}
 
 	async getGlobalInstructions(): Promise<string[]> {
@@ -225,11 +316,82 @@ export class AgentInstructionService implements IAgentInstructionService {
 			def.tools = [];
 		}
 
+		// Parse hasArchitectureAccess (boolean)
+		const archAccessMatch = frontmatter.match(/^hasArchitectureAccess:\s*(true|false)$/m);
+		if (archAccessMatch) {
+			def.hasArchitectureAccess = archAccessMatch[1] === 'true';
+		}
+
+		// Parse useSkills array
+		const useSkillsMatch = frontmatter.match(/^useSkills:\s*\[([^\]]*)\]/m);
+		if (useSkillsMatch) {
+			def.useSkills = useSkillsMatch[1]
+				.split(',')
+				.map(s => s.trim().replace(/['"]/g, ''))
+				.filter(s => s.length > 0);
+		}
+
+		// Parse backend preference
+		const backendMatch = frontmatter.match(/^backend:\s*(copilot|claude)$/m);
+		if (backendMatch) {
+			def.backend = backendMatch[1] as 'copilot' | 'claude';
+		}
+
+		// Parse Claude slash command override
+		const slashCmdMatch = frontmatter.match(/^claudeSlashCommand:\s*(.+)$/m);
+		if (slashCmdMatch) {
+			def.claudeSlashCommand = slashCmdMatch[1].trim();
+		}
+
 		if (!def.id || !def.name) {
 			return undefined;
 		}
 
 		return def as AgentDefinition;
+	}
+
+	async getArchitectureDocs(agentId: string, hasArchitectureAccess: boolean): Promise<{ docs: string[]; files: string[] }> {
+		// Only return architecture docs for agents with access
+		if (!hasArchitectureAccess) {
+			return { docs: [], files: [] };
+		}
+
+		const docs: string[] = [];
+		const files: string[] = [];
+
+		const workspaceFolders = vscode.workspace.workspaceFolders;
+		if (!workspaceFolders?.length) {
+			return { docs, files };
+		}
+
+		for (const folder of workspaceFolders) {
+			// Look for architecture docs in multiple locations:
+			// 1. Agent-specific: .github/agents/{agentId}/architecture/
+			// 2. Global architecture: .github/agents/architecture/ (shared)
+
+			const agentArchDir = URI.joinPath(folder.uri, '.github', 'agents', agentId, 'architecture');
+			const agentArchDocs = await this._readArchitectureFilesInDir(agentArchDir);
+			for (const { content, path } of agentArchDocs) {
+				docs.push(content);
+				files.push(path);
+			}
+
+			// Also check other agents' architecture dirs that might be shared
+			// (e.g., architect's architecture docs should be accessible to repository-researcher)
+			if (agentId !== 'architect') {
+				const architectArchDir = URI.joinPath(folder.uri, '.github', 'agents', 'architect', 'architecture');
+				const sharedArchDocs = await this._readArchitectureFilesInDir(architectArchDir);
+				for (const { content, path } of sharedArchDocs) {
+					// Avoid duplicates
+					if (!files.includes(path)) {
+						docs.push(content);
+						files.push(path);
+					}
+				}
+			}
+		}
+
+		return { docs, files };
 	}
 
 	/**
@@ -260,6 +422,29 @@ export class AgentInstructionService implements IAgentInstructionService {
 			// Directory doesn't exist
 			return [];
 		}
+	}
+
+	private async _readArchitectureFilesInDir(dirUri: URI): Promise<Array<{ content: string; path: string }>> {
+		const results: Array<{ content: string; path: string }> = [];
+
+		try {
+			const entries = await this.fileSystemService.readDirectory(dirUri);
+			const archFiles = entries
+				.filter(([name, type]) => type === FileType.File && name.endsWith('.architecture.md'))
+				.sort(([a], [b]) => a.localeCompare(b));
+
+			for (const [name] of archFiles) {
+				const fileUri = URI.joinPath(dirUri, name);
+				const content = await this._readFileAsString(fileUri);
+				if (content) {
+					results.push({ content, path: fileUri.toString() });
+				}
+			}
+		} catch {
+			// Directory doesn't exist
+		}
+
+		return results;
 	}
 
 	private async _readFileAsString(uri: URI): Promise<string | undefined> {

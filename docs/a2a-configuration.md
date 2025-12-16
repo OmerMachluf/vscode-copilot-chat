@@ -71,6 +71,34 @@ Specify which AI models to use for different tasks or agents.
 
 You can commit these files to your repository to share configuration with your team.
 
+### Global Agent Configuration
+**Path:** `.github/agents/config.yaml`
+
+Central configuration for all agents in your workspace:
+
+```yaml
+# .github/agents/config.yaml
+version: 1
+
+defaults:
+  backend: copilot          # Default backend for all agents
+  model: gpt-4o             # Default model
+
+agents:
+  architect:
+    backend: claude         # Override: use Claude for architect
+    model: claude-3-5-sonnet
+    claudeSlashCommand: /architect
+
+  reviewer:
+    backend: copilot
+    model: gpt-4o
+
+  repository-researcher:
+    backend: copilot
+    model: gpt-4o
+```
+
 ### Agent Definitions
 **Path:** `.github/agents/{agentId}/{agentId}.agent.md`
 
@@ -80,14 +108,30 @@ Define custom agents or override existing ones using Markdown frontmatter and co
 ---
 name: "Security Auditor"
 description: "Reviews code for security vulnerabilities"
-capabilities:
-  - code-analysis
-  - vulnerability-scanning
+hasArchitectureAccess: false
+useSkills: [security-patterns, owasp-guidelines]
+backend: copilot
+tools:
+  - search_workspace
+  - read_file
+  - grep_search
 ---
 
 # System Prompt
 You are a security expert...
 ```
+
+### Extended Agent Definition Schema
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Required: Agent name |
+| `description` | string | Required: What this agent does |
+| `backend` | `copilot` \| `claude` | Preferred backend |
+| `hasArchitectureAccess` | boolean | Can load architecture docs |
+| `useSkills` | string[] | Skills to always load |
+| `tools` | string[] | Allowed tools |
+| `claudeSlashCommand` | string | Claude slash command override |
 
 ### Registry Overrides
 **Path:** `.github/agents/registry-overrides.md`
@@ -121,7 +165,95 @@ Define project-specific permissions.
 - **Execute**: ask_user
 ```
 
-## 4. Worktree Semantics
+## 3. Skills Configuration
+
+Skills are domain-specific knowledge modules that agents can reference on-demand.
+
+### Skill File Location
+
+```
+.github/
+├── skills/                          # Global skills (all agents)
+│   └── coding-standards.skill.md
+├── agents/
+│   └── architect/
+│       └── skills/                  # Agent-specific skills
+│           ├── microservices.skill.md
+│           └── design-patterns.skill.md
+```
+
+### Skill File Schema
+
+```yaml
+# .github/agents/architect/skills/microservices.skill.md
+---
+name: Microservices Patterns
+description: Knowledge of microservices architecture patterns
+keywords:
+  - microservice
+  - service mesh
+  - API gateway
+---
+# Microservices Architecture Patterns
+...
+```
+
+### Referencing Skills
+
+**In Prompts:**
+```
+Help me design a service using #skill:microservices patterns.
+```
+
+**In Agent Definitions:**
+```yaml
+useSkills: [microservices, design-patterns]
+```
+
+See [Skills Guide](./skills-guide.md) for complete documentation.
+
+## 4. Architecture Access Control
+
+Architecture documents (`.architecture.md` files) contain sensitive system design information that should only be accessible to specialized agents.
+
+### Architecture-Aware Agents
+
+Only agents with `hasArchitectureAccess: true` can load architecture documents:
+
+| Agent | Has Access | Purpose |
+|-------|------------|---------|
+| `architect` | Yes | System design, needs full context |
+| `repository-researcher` | Yes | Investigates codebase, answers architecture questions |
+| `agent` | No | Implementation agent |
+| `reviewer` | No | Code review |
+
+### Architecture Document Location
+
+```
+.github/agents/
+├── architect/
+│   └── architecture/
+│       ├── system-overview.architecture.md
+│       └── database-schema.architecture.md
+```
+
+### A2A Pattern for Architecture Queries
+
+Agents without architecture access should delegate to specialized agents:
+
+```
+@agent (implementing feature)
+    │
+    ├── Needs DB schema understanding?
+    │   └── a2a_spawn_subtask → repository-researcher:
+    │       "What's the current DB schema for users table?"
+    │
+    └── Needs design guidance?
+        └── a2a_spawn_subtask → architect:
+            "What pattern should I use for this service?"
+```
+
+## 5. Worktree Semantics
 
 ### Dirty Workspace Policy
 

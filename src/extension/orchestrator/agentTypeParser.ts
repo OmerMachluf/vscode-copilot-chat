@@ -374,6 +374,36 @@ export function getAllSlashCommands(): Map<string, string> {
 }
 
 /**
+ * Register multiple custom agents at once.
+ * Useful for batch registration when agents are discovered from filesystem.
+ *
+ * @param agents - Array of { name, slashCommand? } objects
+ * @param clearExisting - If true, clears existing custom registrations first
+ * @returns Array of successfully registered agent names
+ */
+export function registerCustomAgents(
+	agents: Array<{ name: string; slashCommand?: string }>,
+	clearExisting = false
+): string[] {
+	if (clearExisting) {
+		clearCustomAgentSlashCommands();
+	}
+
+	const registered: string[] = [];
+
+	for (const agent of agents) {
+		try {
+			registerCustomAgentSlashCommand(agent.name, agent.slashCommand);
+			registered.push(agent.name);
+		} catch {
+			// Skip agents that conflict with built-in names
+		}
+	}
+
+	return registered;
+}
+
+/**
  * Checks if an agent name is a built-in agent name.
  */
 export function isBuiltInAgentName(agentName: string): boolean {

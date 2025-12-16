@@ -246,17 +246,17 @@ Check if .github/claude/CLAUDE.md exists
 - [ ] 3-level precedence correctly applied
 
 ### Phase 3: Skills Formalization
-- [ ] `.skill.md` files discovered in `skills/` subdirectories
-- [ ] Skills have YAML frontmatter (name, description, keywords)
-- [ ] `#skill:name` syntax loads skill into prompt
-- [ ] Agent definitions can specify `useSkills` array
+- [x] `.skill.md` files discovered in `skills/` subdirectories
+- [x] Skills have YAML frontmatter (name, description, keywords)
+- [x] `#skill:name` syntax loads skill into prompt
+- [x] Agent definitions can specify `useSkills` array
 
 ### Phase 4: Architecture Access Control
-- [ ] `hasArchitectureAccess` flag in agent schema
-- [ ] `architect` agent has access by default
-- [ ] `repository-researcher` agent created with access
-- [ ] Architecture docs NOT loaded for other agents
-- [ ] A2A pattern documented for architecture queries
+- [x] `hasArchitectureAccess` flag in agent schema
+- [x] `architect` agent has access by default
+- [x] `repository-researcher` agent created with access
+- [x] Architecture docs NOT loaded for other agents
+- [x] A2A pattern documented for architecture queries
 
 ### Phase 5: Claude Code Preparation
 - [ ] Migration triggered on first Claude task
@@ -265,9 +265,9 @@ Check if .github/claude/CLAUDE.md exists
 - [ ] Migration is idempotent
 
 ### Phase 6: Custom Agent Claude Support
-- [ ] Custom agent names parsed by `agentTypeParser.ts`
-- [ ] Claude slash commands generated for custom agents
-- [ ] Custom agents listed in `CLAUDE.md`
+- [x] Custom agent names parsed by `agentTypeParser.ts`
+- [x] Claude slash commands generated for custom agents
+- [x] Custom agents listed in `CLAUDE.md`
 
 ---
 

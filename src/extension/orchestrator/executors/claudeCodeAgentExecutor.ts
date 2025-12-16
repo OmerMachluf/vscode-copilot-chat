@@ -16,6 +16,7 @@ import {
 	IAgentExecutor,
 	ParsedAgentType,
 } from '../agentExecutor';
+import { IClaudeMigrationService } from '../claudeMigrationService';
 
 /**
  * Maps Claude agent names to their corresponding slash commands
@@ -46,10 +47,12 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 
 	private readonly _activeWorkers = new Map<string, ActiveClaudeWorkerState>();
 	private readonly _pendingMessages = new Map<string, string[]>();
+	private _migrationAttempted = false;
 
 	constructor(
 		@IClaudeAgentManager private readonly _claudeAgentManager: IClaudeAgentManager,
 		@ILogService private readonly _logService: ILogService,
+		@IClaudeMigrationService private readonly _claudeMigrationService: IClaudeMigrationService,
 	) { }
 
 	/**
@@ -69,6 +72,12 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 		this._logService.info(`[ClaudeCodeAgentExecutor] Starting execution for task ${taskId} in ${worktreePath}`);
 
 		try {
+			// Auto-migrate Claude configuration on first task (once per session)
+			if (!this._migrationAttempted) {
+				this._migrationAttempted = true;
+				await this._ensureClaudeConfiguration();
+			}
+
 			// Get or create session for this worktree
 			const session = await this._claudeAgentManager.getOrCreateWorktreeSession(worktreePath);
 
@@ -313,6 +322,28 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 				this._activeWorkers.delete(workerId);
 				this._pendingMessages.delete(workerId);
 			}
+		}
+	}
+
+	/**
+	 * Ensures Claude configuration files are generated if needed.
+	 * This triggers auto-migration on first Claude task.
+	 */
+	private async _ensureClaudeConfiguration(): Promise<void> {
+		try {
+			const shouldMigrate = await this._claudeMigrationService.shouldMigrate();
+			if (shouldMigrate) {
+				this._logService.info('[ClaudeCodeAgentExecutor] Auto-migrating Claude configuration...');
+				const result = await this._claudeMigrationService.migrate();
+				if (result.status === 'completed') {
+					this._logService.info(`[ClaudeCodeAgentExecutor] Claude configuration generated: ${result.generatedFiles.join(', ')}`);
+				} else if (result.status === 'failed') {
+					this._logService.warn(`[ClaudeCodeAgentExecutor] Claude configuration migration failed: ${result.error}`);
+				}
+			}
+		} catch (error) {
+			// Don't fail the task if migration fails - it's optional
+			this._logService.warn(`[ClaudeCodeAgentExecutor] Auto-migration check failed: ${error}`);
 		}
 	}
 }
