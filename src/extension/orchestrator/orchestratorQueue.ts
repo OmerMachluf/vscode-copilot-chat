@@ -149,7 +149,12 @@ export class OrchestratorQueueService extends Disposable implements IOrchestrato
 	) {
 		super();
 		this._restoreState();
-		this._logService.debug('[OrchestratorQueue] Service initialized');
+		this._qLog('Service initialized');
+	}
+
+	private _qLog(message: string, data?: Record<string, unknown>): void {
+		const dataStr = data ? ` | ${JSON.stringify(data)}` : '';
+		this._logService.info(`[ORCH-DEBUG][Queue] ${message}${dataStr}`);
 	}
 
 	private _getStateFilePath(): string | undefined {
@@ -205,30 +210,31 @@ export class OrchestratorQueueService extends Disposable implements IOrchestrato
 	}
 
 	registerHandler(handler: (message: IOrchestratorQueueMessage) => Promise<void>): IDisposable {
-		this._logService.debug('[OrchestratorQueue] Registered default handler');
+		this._qLog('Registered default handler', { queueSize: this._queue.size() });
 		this._handler = handler;
 		// Trigger processing if queue is not empty
 		if (!this._queue.isEmpty()) {
+			this._qLog('Queue not empty, triggering processing');
 			setTimeout(() => this.processNext(), 0);
 		}
 		return toDisposable(() => {
 			this._handler = undefined;
-			this._logService.debug('[OrchestratorQueue] Disposed default handler');
+			this._qLog('Disposed default handler');
 		});
 	}
 
 	registerOwnerHandler(ownerId: string, handler: (message: IOrchestratorQueueMessage) => Promise<void>): IDisposable {
-		this._logService.debug(`[OrchestratorQueue] Registered handler for owner ${ownerId}`);
+		this._qLog('Registered owner handler', { ownerId });
 		this._ownerHandlers.set(ownerId, handler);
 		// Check for any pending messages for this owner
 		const pending = this.getPendingMessagesForOwner(ownerId);
 		if (pending.length > 0) {
-			this._logService.debug(`[OrchestratorQueue] Found ${pending.length} pending messages for owner ${ownerId}`);
+			this._qLog('Found pending messages for owner', { ownerId, pendingCount: pending.length });
 			setTimeout(() => this.processNext(), 0);
 		}
 		return toDisposable(() => {
 			this._ownerHandlers.delete(ownerId);
-			this._logService.debug(`[OrchestratorQueue] Disposed handler for owner ${ownerId}`);
+			this._qLog('Disposed owner handler', { ownerId });
 		});
 	}
 
@@ -258,10 +264,10 @@ export class OrchestratorQueueService extends Disposable implements IOrchestrato
 		if (message.owner?.ownerId) {
 			const ownerHandler = this._ownerHandlers.get(message.owner.ownerId);
 			if (ownerHandler) {
-				this._logService.debug(`[OrchestratorQueue] Routing message ${message.id} to owner handler ${message.owner.ownerId}`);
+				this._qLog('Routing message to owner handler', { messageId: message.id, ownerId: message.owner.ownerId, type: message.type });
 				return ownerHandler;
 			}
-			this._logService.debug(`[OrchestratorQueue] No handler found for owner ${message.owner.ownerId}, message ${message.id} will use default handler`);
+			this._qLog('No handler found for owner, will use default', { messageId: message.id, ownerId: message.owner.ownerId, type: message.type });
 		}
 		// Fall back to default handler (orchestrator)
 		return this._handler;
@@ -269,21 +275,31 @@ export class OrchestratorQueueService extends Disposable implements IOrchestrato
 
 	enqueueMessage(message: IOrchestratorQueueMessage): void {
 		if (this._processedMessageIds.has(message.id)) {
-			this._logService.debug(`[OrchestratorQueue] Skipping duplicate message ${message.id}`);
+			this._qLog('Skipping duplicate message (already processed)', { messageId: message.id, type: message.type });
 			return; // Deduplication
 		}
 
 		// Check if already in queue
 		const currentQueue = this._queue.getAll();
 		if (currentQueue.some(m => m.id === message.id)) {
-			this._logService.debug(`[OrchestratorQueue] Message ${message.id} already in queue`);
+			this._qLog('Skipping duplicate message (already in queue)', { messageId: message.id, type: message.type });
 			return;
 		}
 
-		this._logService.debug(`[OrchestratorQueue] Enqueuing message ${message.id} (type: ${message.type}, owner: ${message.owner?.ownerId ?? 'none'})`);
+		this._qLog('Enqueuing message', {
+			messageId: message.id,
+			type: message.type,
+			ownerId: message.owner?.ownerId ?? 'none',
+			ownerType: message.owner?.ownerType ?? 'none',
+			priority: message.priority,
+			workerId: message.workerId,
+			taskId: message.taskId,
+		});
 		this._queue.enqueue(message);
 		this._onMessageEnqueued.fire(message);
 		this._saveState();
+
+		this._qLog('FIRED onMessageEnqueued event', { messageId: message.id, queueSize: this._queue.size() });
 
 		// Trigger async processing
 		setTimeout(() => this.processNext(), 0);
@@ -304,7 +320,11 @@ export class OrchestratorQueueService extends Disposable implements IOrchestrato
 				const handler = this._getHandlerForMessage(message);
 				if (!handler) {
 					// No handler available, leave message in queue
-					this._logService.warn(`[OrchestratorQueue] No handler for message ${message.id} (owner: ${message.owner?.ownerId ?? 'none'}), leaving in queue`);
+					this._qLog('No handler for message, leaving in queue', {
+						messageId: message.id,
+						ownerId: message.owner?.ownerId ?? 'none',
+						type: message.type,
+					});
 					this._isProcessing = false;
 					return;
 				}
@@ -313,7 +333,14 @@ export class OrchestratorQueueService extends Disposable implements IOrchestrato
 
 				this._metrics.waitTime = startTime - message.timestamp;
 
-				this._logService.debug(`[OrchestratorQueue] Processing message ${message.id} (type: ${message.type}, waited: ${this._metrics.waitTime}ms)`);
+				this._qLog('Processing message', {
+					messageId: message.id,
+					type: message.type,
+					waitedMs: this._metrics.waitTime,
+					ownerId: message.owner?.ownerId ?? 'none',
+					workerId: message.workerId,
+					taskId: message.taskId,
+				});
 
 				await handler(message);
 
@@ -323,12 +350,18 @@ export class OrchestratorQueueService extends Disposable implements IOrchestrato
 				this._metrics.processingTime = Date.now() - startTime;
 				this._metrics.depth = this._queue.size();
 
-				this._logService.debug(`[OrchestratorQueue] Processed message ${message.id} in ${this._metrics.processingTime}ms`);
+				this._qLog('Processed message', {
+					messageId: message.id,
+					type: message.type,
+					processingTimeMs: this._metrics.processingTime,
+					remainingQueueDepth: this._metrics.depth,
+				});
 
 				this._saveState();
 			}
 		} catch (err) {
 			this._logService.error('[OrchestratorQueue] Error processing message:', err);
+			this._qLog('Error processing message', { error: String(err) });
 		} finally {
 			this._isProcessing = false;
 

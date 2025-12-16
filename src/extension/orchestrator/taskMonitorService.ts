@@ -195,14 +195,19 @@ export class TaskMonitorService extends Disposable implements ITaskMonitorServic
 			this._handleSubTaskCompletion(subTask);
 		}));
 
-		this._logService.debug(`[TaskMonitorService] Initialized with pollInterval=${this._config.pollIntervalMs}ms, maxQueueSize=${this._config.maxQueueSize}`);
+		this._log('Initialized', { pollIntervalMs: this._config.pollIntervalMs, maxQueueSize: this._config.maxQueueSize });
+	}
+
+	private _log(message: string, data?: Record<string, unknown>): void {
+		const dataStr = data ? ` | ${JSON.stringify(data)}` : '';
+		this._logService.info(`[ORCH-DEBUG][TaskMonitor] ${message}${dataStr}`);
 	}
 
 	// --- Public API ---
 
 	public registerParent(parentWorkerId: string): IDisposable {
 		if (this._parentQueues.has(parentWorkerId)) {
-			this._logService.debug(`[TaskMonitorService] Parent ${parentWorkerId} already registered`);
+			this._log('Parent already registered', { parentWorkerId });
 			return toDisposable(() => this._unregisterParent(parentWorkerId));
 		}
 
@@ -212,7 +217,7 @@ export class TaskMonitorService extends Disposable implements ITaskMonitorServic
 			maxSize: this._config.maxQueueSize,
 		});
 
-		this._logService.debug(`[TaskMonitorService] Registered parent ${parentWorkerId}`);
+		this._log('Registered parent', { parentWorkerId, totalParents: this._parentQueues.size });
 
 		return toDisposable(() => this._unregisterParent(parentWorkerId));
 	}
@@ -224,17 +229,19 @@ export class TaskMonitorService extends Disposable implements ITaskMonitorServic
 		}
 
 		this._monitoredTasks.set(subTaskId, parentWorkerId);
-		this._logService.debug(`[TaskMonitorService] Started monitoring subtask ${subTaskId} for parent ${parentWorkerId}`);
+		this._log('Started monitoring subtask', { subTaskId, parentWorkerId, totalMonitored: this._monitoredTasks.size });
 	}
 
 	public stopMonitoring(subTaskId: string): void {
+		const parentWorkerId = this._monitoredTasks.get(subTaskId);
 		this._monitoredTasks.delete(subTaskId);
-		this._logService.debug(`[TaskMonitorService] Stopped monitoring subtask ${subTaskId}`);
+		this._log('Stopped monitoring subtask', { subTaskId, parentWorkerId: parentWorkerId ?? null, remainingMonitored: this._monitoredTasks.size });
 	}
 
 	public consumeUpdates(parentWorkerId: string): ITaskUpdate[] {
 		const queue = this._parentQueues.get(parentWorkerId);
 		if (!queue || queue.updates.length === 0) {
+			this._log('No updates to consume', { parentWorkerId });
 			return [];
 		}
 
@@ -242,7 +249,12 @@ export class TaskMonitorService extends Disposable implements ITaskMonitorServic
 		const updates = [...queue.updates];
 		queue.updates = [];
 
-		this._logService.debug(`[TaskMonitorService] Parent ${parentWorkerId} consumed ${updates.length} updates`);
+		this._log('Parent consumed updates', {
+			parentWorkerId,
+			count: updates.length,
+			updateTypes: updates.map(u => u.type),
+			subTaskIds: updates.map(u => u.subTaskId),
+		});
 		return updates;
 	}
 
@@ -262,6 +274,15 @@ export class TaskMonitorService extends Disposable implements ITaskMonitorServic
 	}
 
 	public queueUpdate(update: ITaskUpdate): void {
+		this._log('queueUpdate called', {
+			type: update.type,
+			subTaskId: update.subTaskId,
+			parentWorkerId: update.parentWorkerId,
+			hasIdleReason: !!update.idleReason,
+			hasProgressReport: !!update.progressReport,
+			hasResult: !!update.result,
+			hasError: !!update.error,
+		});
 		this._pushUpdate(update.parentWorkerId, update);
 	}
 
@@ -281,16 +302,25 @@ export class TaskMonitorService extends Disposable implements ITaskMonitorServic
 	// --- Private Methods ---
 
 	private _unregisterParent(parentWorkerId: string): void {
+		const queue = this._parentQueues.get(parentWorkerId);
+		const droppedUpdates = queue?.updates.length ?? 0;
 		this._parentQueues.delete(parentWorkerId);
 
 		// Remove all monitored tasks for this parent
+		const removedTasks: string[] = [];
 		for (const [subTaskId, ownerId] of this._monitoredTasks) {
 			if (ownerId === parentWorkerId) {
 				this._monitoredTasks.delete(subTaskId);
+				removedTasks.push(subTaskId);
 			}
 		}
 
-		this._logService.debug(`[TaskMonitorService] Unregistered parent ${parentWorkerId}`);
+		this._log('Unregistered parent', {
+			parentWorkerId,
+			droppedUpdates,
+			removedTasks,
+			remainingParents: this._parentQueues.size,
+		});
 	}
 
 	private _startPolling(): void {
@@ -305,7 +335,7 @@ export class TaskMonitorService extends Disposable implements ITaskMonitorServic
 			}
 		}));
 
-		this._logService.debug(`[TaskMonitorService] Started polling loop`);
+		this._log('Started polling loop', { intervalMs: this._config.pollIntervalMs });
 	}
 
 	/**
@@ -317,21 +347,24 @@ export class TaskMonitorService extends Disposable implements ITaskMonitorServic
 			return;
 		}
 
-		this._logService.trace(`[TaskMonitorService] Polling ${this._monitoredTasks.size} monitored tasks`);
+		this._log('Polling monitored tasks', { count: this._monitoredTasks.size });
 
 		for (const [subTaskId, parentWorkerId] of this._monitoredTasks) {
 			const subTask = this._subTaskManager.getSubTask(subTaskId);
 
 			if (!subTask) {
 				// Task no longer exists - clean up
-				this._logService.warn(`[TaskMonitorService] Monitored task ${subTaskId} no longer exists, removing`);
+				this._log('Monitored task no longer exists, removing', { subTaskId, parentWorkerId });
 				this._monitoredTasks.delete(subTaskId);
 				continue;
 			}
 
+			this._log('Polled task status', { subTaskId, parentWorkerId, status: subTask.status });
+
 			// Check if task is in a terminal state and we haven't already processed it
 			if (['completed', 'failed', 'cancelled'].includes(subTask.status)) {
 				if (!this._processedTasks.has(subTaskId)) {
+					this._log('Task reached terminal state (from polling)', { subTaskId, parentWorkerId, status: subTask.status });
 					this._processedTasks.add(subTaskId);
 					this._queueCompletionUpdate(subTask, parentWorkerId);
 					this._monitoredTasks.delete(subTaskId);
@@ -348,14 +381,17 @@ export class TaskMonitorService extends Disposable implements ITaskMonitorServic
 		const parentWorkerId = this._monitoredTasks.get(subTask.id);
 		if (!parentWorkerId) {
 			// Not a task we're monitoring
+			this._log('Received completion for unmonitored task', { subTaskId: subTask.id, status: subTask.status });
 			return;
 		}
 
 		// Check if we already processed this (from polling)
 		if (this._processedTasks.has(subTask.id)) {
+			this._log('Completion already processed (skipping duplicate)', { subTaskId: subTask.id, parentWorkerId });
 			return;
 		}
 
+		this._log('Task reached terminal state (from event)', { subTaskId: subTask.id, parentWorkerId, status: subTask.status });
 		this._processedTasks.add(subTask.id);
 		this._queueCompletionUpdate(subTask, parentWorkerId);
 		this._monitoredTasks.delete(subTask.id);
@@ -376,8 +412,14 @@ export class TaskMonitorService extends Disposable implements ITaskMonitorServic
 			timestamp: Date.now(),
 		};
 
+		this._log('Queuing completion update', {
+			type: updateType,
+			subTaskId: subTask.id,
+			parentWorkerId,
+			hasResult: !!subTask.result,
+			hasError: !!subTask.result?.error,
+		});
 		this._pushUpdate(parentWorkerId, update);
-		this._logService.info(`[TaskMonitorService] Queued ${updateType} update for subtask ${subTask.id} to parent ${parentWorkerId}`);
 	}
 
 	/**
@@ -388,17 +430,31 @@ export class TaskMonitorService extends Disposable implements ITaskMonitorServic
 
 		// Auto-register parent if not already registered
 		if (!queue) {
+			this._log('Auto-registering parent for update', { parentWorkerId, updateType: update.type });
 			this.registerParent(parentWorkerId);
 			queue = this._parentQueues.get(parentWorkerId)!;
 		}
 
 		// Check queue size limit
 		if (queue.updates.length >= queue.maxSize) {
-			this._logService.warn(`[TaskMonitorService] Queue full for parent ${parentWorkerId}, dropping oldest update`);
+			const droppedUpdate = queue.updates[0];
+			this._log('Queue full, dropping oldest update', {
+				parentWorkerId,
+				droppedType: droppedUpdate?.type,
+				droppedSubTaskId: droppedUpdate?.subTaskId,
+				maxSize: queue.maxSize,
+			});
 			queue.updates.shift();
 		}
 
 		queue.updates.push(update);
+
+		this._log('Pushed update to parent queue', {
+			parentWorkerId,
+			type: update.type,
+			subTaskId: update.subTaskId,
+			queueLength: queue.updates.length,
+		});
 
 		// Fire event so listeners know updates are available
 		this._onUpdatesAvailable.fire({
@@ -406,7 +462,7 @@ export class TaskMonitorService extends Disposable implements ITaskMonitorServic
 			count: queue.updates.length,
 		});
 
-		this._logService.debug(`[TaskMonitorService] Pushed ${update.type} update to parent ${parentWorkerId} queue (now ${queue.updates.length} updates)`);
+		this._log('FIRED onUpdatesAvailable event', { parentWorkerId, count: queue.updates.length });
 	}
 
 	public override dispose(): void {

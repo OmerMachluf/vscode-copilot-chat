@@ -53,6 +53,11 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 		@ILogService private readonly _logService: ILogService,
 	) { }
 
+	private _log(message: string, data?: Record<string, unknown>): void {
+		const dataStr = data ? ` | ${JSON.stringify(data)}` : '';
+		this._logService.info(`[ORCH-DEBUG][A2ASubTaskComplete] ${message}${dataStr}`);
+	}
+
 	get enabled(): boolean {
 		return this._workerContext !== undefined;
 	}
@@ -74,6 +79,19 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 			error,
 		} = options.input;
 
+		this._log('Tool invoked', {
+			subTaskId,
+			status,
+			hasOutput: !!output,
+			hasOutputFile: !!outputFile,
+			hasMetadata: !!metadata,
+			hasError: !!error,
+			workerId: this._workerContext.workerId,
+			planId: this._workerContext.planId,
+			ownerId: this._workerContext.owner?.ownerId ?? null,
+			ownerType: this._workerContext.owner?.ownerType ?? null,
+		});
+
 		return this._standardComplete(subTaskId, status, output, outputFile, metadata, error);
 	}
 
@@ -85,9 +103,18 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 		metadata?: Record<string, unknown>,
 		error?: string,
 	): Promise<LanguageModelToolResult> {
+		this._log('Starting completion process', { subTaskId, status });
+
 		try {
 			const worktreePath = this._workerContext.worktreePath;
 			const changeSummary = worktreePath ? await this._getWorktreeChangeSummary(worktreePath) : undefined;
+
+			this._log('Checked worktree for uncommitted changes', {
+				subTaskId,
+				worktreePath: worktreePath ?? null,
+				hasChanges: changeSummary?.hasChanges ?? false,
+				changedFilesCount: changeSummary?.changedFiles?.length ?? 0,
+			});
 
 			// IMPORTANT: If there are uncommitted changes, fail the completion.
 			// The agent is responsible for committing their work before calling this tool.
@@ -98,7 +125,11 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 					? ` (and ${changeSummary.changedFiles.length - 10} more)`
 					: '';
 
-				this._logService.warn(`[A2ASubTaskCompleteTool] Uncommitted changes detected: ${changeSummary.changedFiles.length} files`);
+				this._log('FAILED: Uncommitted changes detected - agent must commit first', {
+					subTaskId,
+					changedFilesCount: changeSummary.changedFiles.length,
+					files: changeSummary.changedFiles.slice(0, 10),
+				});
 
 				return new LanguageModelToolResult([
 					new LanguageModelTextPart(
@@ -127,16 +158,30 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 				},
 				error,
 			};
+
+			this._log('Updating subtask status in SubTaskManager', {
+				subTaskId,
+				newStatus: status === 'success' ? 'completed' : 'failed',
+			});
 			this._subTaskManager.updateStatus(subTaskId, status === 'success' ? 'completed' : 'failed', result);
 
 			const targetDescription = this._workerContext.owner
 				? `${this._workerContext.owner.ownerType} (${this._workerContext.owner.ownerId})`
 				: 'orchestrator';
 
-			this._logService.info(`[A2ASubTaskCompleteTool] Sending completion to ${targetDescription}`);
+			const messageId = generateUuid();
+			this._log('Enqueuing completion message', {
+				subTaskId,
+				messageId,
+				targetDescription,
+				targetOwnerId: this._workerContext.owner?.ownerId ?? 'orchestrator',
+				targetOwnerType: this._workerContext.owner?.ownerType ?? 'orchestrator',
+				workerId: this._workerContext.workerId,
+				planId: this._workerContext.planId ?? 'standalone',
+			});
 
 			this._queueService.enqueueMessage({
-				id: generateUuid(),
+				id: messageId,
 				timestamp: Date.now(),
 				planId: this._workerContext.planId ?? 'standalone',
 				taskId: subTaskId,
@@ -149,10 +194,16 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 				content: result
 			});
 
+			this._log('Completion message enqueued successfully', { subTaskId, messageId, targetDescription });
+
 			return new LanguageModelToolResult([
 				new LanguageModelTextPart(`Sub-task completion recorded and ${targetDescription} notified.`),
 			]);
 		} catch (e) {
+			this._log('ERROR: Failed to complete sub-task', {
+				subTaskId,
+				error: e instanceof Error ? e.message : String(e),
+			});
 			this._logService.error(e instanceof Error ? e : String(e), `[A2ASubTaskCompleteTool] Failed to complete sub-task`);
 			return new LanguageModelToolResult([
 				new LanguageModelTextPart(`ERROR: Failed to complete sub-task: ${e instanceof Error ? e.message : String(e)}`),

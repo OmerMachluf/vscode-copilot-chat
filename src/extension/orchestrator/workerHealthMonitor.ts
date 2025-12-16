@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { ILogService } from '../../platform/log/common/logService';
 import { Emitter, Event } from '../../util/vs/base/common/event';
 import { Disposable } from '../../util/vs/base/common/lifecycle';
 
@@ -99,6 +100,7 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 	private readonly _metrics = new Map<string, IWorkerHealthMetrics>();
 	private readonly _config: HealthMonitorConfig;
 	private _checkInterval: ReturnType<typeof setInterval> | undefined;
+	private readonly _logService: ILogService | undefined;
 
 	private readonly _onWorkerUnhealthy = this._register(new Emitter<{ workerId: string; reason: WorkerUnhealthyReason }>());
 	public readonly onWorkerUnhealthy: Event<{ workerId: string; reason: WorkerUnhealthyReason }> = this._onWorkerUnhealthy.event;
@@ -109,9 +111,16 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 	private readonly _onProgressCheckDue = this._register(new Emitter<{ workerId: string }>());
 	public readonly onProgressCheckDue: Event<{ workerId: string }> = this._onProgressCheckDue.event;
 
-	constructor(config: Partial<HealthMonitorConfig> = {}) {
+	constructor(config: Partial<HealthMonitorConfig> = {}, logService?: ILogService) {
 		super();
 		this._config = { ...DEFAULT_CONFIG, ...config };
+		this._logService = logService;
+		this._log('Initialized WorkerHealthMonitor', { idleTimeoutMs: this._config.idleTimeoutMs, stuckTimeoutMs: this._config.stuckTimeoutMs, progressCheckIntervalMs: this._config.progressCheckIntervalMs });
+	}
+
+	private _log(message: string, data?: Record<string, unknown>): void {
+		const dataStr = data ? ` | ${JSON.stringify(data)}` : '';
+		this._logService?.info(`[ORCH-DEBUG][HealthMonitor] ${message}${dataStr}`);
 	}
 
 	/**
@@ -119,6 +128,7 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 	 */
 	public startMonitoring(workerId: string): void {
 		if (this._metrics.has(workerId)) {
+			this._log('Worker already being monitored', { workerId });
 			return;
 		}
 
@@ -138,9 +148,12 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 			recentToolCalls: [],
 		});
 
+		this._log('Started monitoring worker', { workerId, totalMonitored: this._metrics.size });
+
 		// Start the check interval if not already running
 		if (!this._checkInterval) {
 			this._checkInterval = setInterval(() => this._checkStuckWorkers(), this._config.checkIntervalMs);
+			this._log('Started health check interval', { intervalMs: this._config.checkIntervalMs });
 		}
 	}
 
@@ -148,12 +161,16 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 	 * Stop monitoring a worker
 	 */
 	public stopMonitoring(workerId: string): void {
+		const hadWorker = this._metrics.has(workerId);
 		this._metrics.delete(workerId);
+
+		this._log('Stopped monitoring worker', { workerId, wasMonitored: hadWorker, remainingMonitored: this._metrics.size });
 
 		// Stop check interval if no more workers
 		if (this._metrics.size === 0 && this._checkInterval) {
 			clearInterval(this._checkInterval);
 			this._checkInterval = undefined;
+			this._log('Stopped health check interval (no workers left)');
 		}
 	}
 
@@ -163,8 +180,13 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 	public recordActivity(workerId: string, type: 'tool_call' | 'message' | 'error' | 'success', toolName?: string): void {
 		const metrics = this._metrics.get(workerId);
 		if (!metrics) {
+			this._log('recordActivity called for unknown worker', { workerId, type, toolName });
 			return;
 		}
+
+		const wasIdle = metrics.isIdle;
+		const wasStuck = metrics.isStuck;
+		const hadPendingInquiry = metrics.idleInquiryPending;
 
 		metrics.lastActivityTimestamp = Date.now();
 		metrics.isStuck = false; // Activity means not stuck
@@ -174,6 +196,15 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 			metrics.idleInquiryPending = false;
 			metrics.idleInquirySentAt = undefined;
 		}
+
+		this._log('Activity recorded', {
+			workerId,
+			type,
+			toolName: toolName ?? null,
+			wasIdle,
+			wasStuck,
+			clearedPendingInquiry: hadPendingInquiry,
+		});
 
 		switch (type) {
 			case 'tool_call':
@@ -185,7 +216,9 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 
 			case 'error':
 				metrics.consecutiveFailures++;
+				this._log('Error recorded', { workerId, consecutiveFailures: metrics.consecutiveFailures, threshold: this._config.errorThreshold });
 				if (metrics.consecutiveFailures >= this._config.errorThreshold) {
+					this._log('FIRING onWorkerUnhealthy event (high_error_rate)', { workerId });
 					this._onWorkerUnhealthy.fire({ workerId, reason: 'high_error_rate' });
 				}
 				break;
@@ -269,6 +302,7 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 		if (metrics) {
 			metrics.idleInquiryPending = true;
 			metrics.idleInquirySentAt = Date.now();
+			this._log('Marked idle inquiry sent', { workerId, sentAt: metrics.idleInquirySentAt });
 		}
 	}
 
@@ -277,7 +311,9 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 	 */
 	public hasIdleInquiryPending(workerId: string): boolean {
 		const metrics = this._metrics.get(workerId);
-		return metrics?.idleInquiryPending ?? false;
+		const pending = metrics?.idleInquiryPending ?? false;
+		this._log('Checking idle inquiry pending', { workerId, pending, sentAt: metrics?.idleInquirySentAt ?? null });
+		return pending;
 	}
 
 	/**
@@ -286,8 +322,11 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 	public clearIdleInquiry(workerId: string): void {
 		const metrics = this._metrics.get(workerId);
 		if (metrics) {
+			const wasWaiting = metrics.idleInquiryPending;
+			const waitedMs = metrics.idleInquirySentAt ? Date.now() - metrics.idleInquirySentAt : 0;
 			metrics.idleInquiryPending = false;
 			metrics.idleInquirySentAt = undefined;
+			this._log('Cleared idle inquiry state', { workerId, wasWaiting, waitedMs });
 		}
 	}
 
@@ -298,7 +337,9 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 	public markProgressCheckSent(workerId: string): void {
 		const metrics = this._metrics.get(workerId);
 		if (metrics) {
+			const timeSinceLastCheck = metrics.lastProgressCheckAt ? Date.now() - metrics.lastProgressCheckAt : 0;
 			metrics.lastProgressCheckAt = Date.now();
+			this._log('Marked progress check sent', { workerId, timeSinceLastCheckMs: timeSinceLastCheck });
 		}
 	}
 
@@ -307,9 +348,21 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 	 */
 	private _checkStuckWorkers(): void {
 		const now = Date.now();
+		this._log('Running health check', { monitoredWorkers: this._metrics.size });
 
 		for (const [workerId, metrics] of this._metrics) {
 			const timeSinceActivity = now - metrics.lastActivityTimestamp;
+			const timeSinceProgressCheck = now - (metrics.lastProgressCheckAt ?? 0);
+
+			this._log('Checking worker health', {
+				workerId,
+				timeSinceActivityMs: timeSinceActivity,
+				idleTimeoutMs: this._config.idleTimeoutMs,
+				isIdle: metrics.isIdle,
+				isStuck: metrics.isStuck,
+				idleInquiryPending: metrics.idleInquiryPending,
+				timeSinceProgressCheckMs: timeSinceProgressCheck,
+			});
 
 			// Check for idle first (shorter timeout)
 			// Only fire idle event if:
@@ -320,6 +373,7 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 			if (!metrics.isIdle && !metrics.isStuck && !metrics.idleInquiryPending &&
 				timeSinceActivity > this._config.idleTimeoutMs) {
 				metrics.isIdle = true;
+				this._log('FIRING onWorkerIdle event', { workerId, reason: 'no_activity', timeSinceActivityMs: timeSinceActivity });
 				this._onWorkerIdle.fire({ workerId, reason: 'no_activity' });
 			}
 
@@ -327,15 +381,16 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 			// Only fire if:
 			// 1. Worker is not stuck (still active)
 			// 2. Progress check interval has passed since last check
-			const timeSinceProgressCheck = now - (metrics.lastProgressCheckAt ?? 0);
 			if (!metrics.isStuck && timeSinceProgressCheck > this._config.progressCheckIntervalMs) {
 				// Fire the event - the handler is responsible for calling markProgressCheckSent
+				this._log('FIRING onProgressCheckDue event', { workerId, timeSinceProgressCheckMs: timeSinceProgressCheck, intervalMs: this._config.progressCheckIntervalMs });
 				this._onProgressCheckDue.fire({ workerId });
 			}
 
 			// Check for stuck (longer timeout)
 			if (!metrics.isStuck && timeSinceActivity > this._config.stuckTimeoutMs) {
 				metrics.isStuck = true;
+				this._log('FIRING onWorkerUnhealthy event (stuck)', { workerId, timeSinceActivityMs: timeSinceActivity, stuckTimeoutMs: this._config.stuckTimeoutMs });
 				this._onWorkerUnhealthy.fire({ workerId, reason: 'stuck' });
 			}
 		}
