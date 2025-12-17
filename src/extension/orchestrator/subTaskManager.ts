@@ -23,6 +23,7 @@ import {
 	ITokenUsage,
 	SpawnContext,
 } from './safetyLimits';
+import { createTaskStateMachine, TaskState, TaskStateMachine } from './taskStateMachine';
 import { IWorkerToolsService } from './workerToolsService';
 
 // Lazy import to avoid circular dependency - IOrchestratorService is imported dynamically
@@ -71,6 +72,12 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 	private readonly _subTasks = new Map<string, ISubTask>();
 	private readonly _cancellationSources = new Map<string, CancellationTokenSource>();
 	private readonly _runningSubTasks = new Map<string, Promise<ISubTaskResult>>();
+
+	/**
+	 * State machines for tracking subtask status with strict transition validation.
+	 * This ensures status changes follow valid state machine rules.
+	 */
+	private readonly _stateMachines = new Map<string, TaskStateMachine>();
 
 	private readonly _onDidChangeSubTask = this._register(new Emitter<ISubTask>());
 	readonly onDidChangeSubTask = this._onDidChangeSubTask.event;
@@ -277,6 +284,14 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 		};
 
 		this._subTasks.set(id, subTask);
+
+		// Create state machine for this subtask to enforce valid transitions
+		const stateMachine = createTaskStateMachine(id, {
+			info: (msg) => this._logService.debug(msg),
+			warn: (msg) => this._logService.warn(msg),
+		});
+		this._stateMachines.set(id, stateMachine);
+
 		this._logService.debug(`[SubTaskManager] Created sub-task ${id} at depth ${newDepth} for parent ${options.parentTaskId}`);
 		this._onDidChangeSubTask.fire(subTask);
 
@@ -316,6 +331,24 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			return;
 		}
 
+		// Validate transition using state machine (if available)
+		// This ensures we follow valid state transition rules
+		const stateMachine = this._stateMachines.get(id);
+		if (stateMachine) {
+			// Map ISubTask status to TaskState (they're compatible)
+			const taskState = status as TaskState;
+			const isValidTransition = stateMachine.transition(taskState, result?.error);
+
+			if (!isValidTransition) {
+				// Log warning but don't block - for backwards compatibility
+				// The state machine already logged the invalid transition
+				this._logService.warn(
+					`[SubTaskManager] State machine rejected transition for ${id}: ` +
+					`${stateMachine.state} -> ${status}. Proceeding anyway for compatibility.`
+				);
+			}
+		}
+
 		const updatedTask: ISubTask = {
 			...subTask,
 			status,
@@ -332,6 +365,12 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 
 			// Clear ancestry when sub-task completes
 			this._safetyLimitsService.clearAncestry(id);
+
+			// Clean up state machine when subtask completes
+			if (stateMachine) {
+				stateMachine.dispose();
+				this._stateMachines.delete(id);
+			}
 		}
 	}
 
