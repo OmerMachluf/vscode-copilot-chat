@@ -16,7 +16,6 @@ import { ClaudeCodeAgentExecutor } from './executors/claudeCodeAgentExecutor';
 import { CopilotAgentExecutor } from './executors/copilotAgentExecutor';
 
 // Re-export executor classes for external usage
-export { ClaudeCodeAgentExecutor } from './executors/claudeCodeAgentExecutor';
 export { CopilotAgentExecutor } from './executors/copilotAgentExecutor';
 
 export class AgentExecutorRegistry extends Disposable implements IAgentExecutorRegistry {

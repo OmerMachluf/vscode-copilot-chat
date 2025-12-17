@@ -394,6 +394,9 @@ export class ClaudeCodeSession extends Disposable {
 		this._abortController.abort();
 		// Create new controller for future operations
 		this._abortController = new AbortController();
+		// Invalidate the session so it will be re-started on next invoke
+		// The Claude process was killed by the abort, so _queryGenerator is now dead
+		this._queryGenerator = undefined;
 		// Reject current request if any
 		if (this._promptQueue.length > 0) {
 			const currentRequest = this._promptQueue.shift();

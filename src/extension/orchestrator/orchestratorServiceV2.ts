@@ -2671,12 +2671,17 @@ Focus on your assigned task and provide a clear, actionable result.`;
 				sessionUri: task.sessionUri,
 			});
 
+			// Track previous status to detect transitions (not just current state)
+			// This prevents duplicate status_update messages when onDidChange fires
+			// multiple times while already in idle state (e.g., from _addMessage calls)
+			let previousStatus = worker.status;
 			this._register(worker.onDidChange(() => {
 				this._onDidChangeWorkers.fire();
 				this._saveState();
 
-				// Check for idle state
-				if (worker.status === 'idle') {
+				// Check for transition TO idle state (not already idle)
+				const currentStatus = worker.status;
+				if (currentStatus === 'idle' && previousStatus !== 'idle') {
 					this._queueService.enqueueMessage({
 						id: generateUuid(),
 						timestamp: Date.now(),
@@ -2689,6 +2694,7 @@ Focus on your assigned task and provide a clear, actionable result.`;
 						content: 'idle'
 					});
 				}
+				previousStatus = currentStatus;
 			}));
 
 			this._register(worker.onDidComplete(() => {
