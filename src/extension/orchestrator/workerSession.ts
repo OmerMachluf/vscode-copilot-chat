@@ -495,15 +495,33 @@ export class WorkerSession extends Disposable {
 	 * Interrupt the current agent operation. This cancels the current LLM/tool iteration
 	 * and puts the worker in idle state so the user can provide feedback or redirect.
 	 * Unlike kill/stop, this keeps the worker alive and ready for new messages.
+	 *
+	 * Returns a Promise that resolves when the interrupt is complete (stream has ended).
+	 * Callers should await this before setting up listeners for new responses.
 	 */
-	public interrupt(): void {
+	public async interrupt(): Promise<void> {
 		if (this._status !== 'running' && this._status !== 'waiting-approval') {
 			console.log(`[WorkerSession:${this._id}] interrupt() called but status=${this._status}, nothing to interrupt`);
-			return; // Nothing to interrupt
+			return; // Nothing to interrupt, resolve immediately
 		}
 
 		const prevStatus = this._status;
 		console.log(`[WorkerSession:${this._id}] STATUS CHANGE: ${prevStatus} -> idle (via interrupt, worktreePath=${this._worktreePath})`);
+
+		// Set up a promise that resolves when the stream ends.
+		// This ensures callers can wait for the current operation to fully complete
+		// before setting up listeners for new responses.
+		const streamEndPromise = new Promise<void>((resolve) => {
+			const disposable = this.onStreamEnd(() => {
+				disposable.dispose();
+				resolve();
+			});
+			// Also resolve on timeout to prevent hanging if stream never ends
+			setTimeout(() => {
+				disposable.dispose();
+				resolve();
+			}, 5000);
+		});
 
 		this._addMessage({
 			role: 'system',
@@ -520,13 +538,17 @@ export class WorkerSession extends Disposable {
 		this._status = 'idle';
 		this._onDidStop.fire();
 		this._onDidChange.fire();
+
+		// Wait for the stream to actually end before returning
+		await streamEndPromise;
+		console.log(`[WorkerSession:${this._id}] interrupt() complete - stream has ended`);
 	}
 
 	/**
 	 * @deprecated Use interrupt() instead
 	 */
-	public stop(): void {
-		this.interrupt();
+	public async stop(): Promise<void> {
+		await this.interrupt();
 	}
 
 	/**

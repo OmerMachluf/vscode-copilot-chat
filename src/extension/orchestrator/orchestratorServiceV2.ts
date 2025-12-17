@@ -642,13 +642,17 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		// When a worker goes idle, we also check if it has pending subtask updates to inject
 		this._register(this._healthMonitor.onWorkerIdle(event => {
 			this._orchLog('Received onWorkerIdle event', { workerId: event.workerId, reason: event.reason });
-			this._handleIdleWorker(event.workerId, event.reason);
+			this._handleIdleWorker(event.workerId, event.reason).catch(err => {
+				this._logService.error(`[Orchestrator] Error handling idle worker ${event.workerId}: ${err}`);
+			});
 		}));
 		// Listen for periodic progress checks (every 5 minutes)
 		// This asks active workers for a progress report and queues it for their parent
 		this._register(this._healthMonitor.onProgressCheckDue(event => {
 			this._orchLog('Received onProgressCheckDue event', { workerId: event.workerId });
-			this._handleProgressCheck(event.workerId);
+			this._handleProgressCheck(event.workerId).catch(err => {
+				this._logService.error(`[Orchestrator] Error handling progress check for ${event.workerId}: ${err}`);
+			});
 		}));
 		// Note: We do NOT immediately forward on onUpdatesAvailable - updates stay queued
 		// until the parent worker goes idle, then they're automatically injected
@@ -734,7 +738,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 	 * 3. If worker is a top-level parent with no pending updates:
 	 *    → It's just waiting for children, do nothing (normal state)
 	 */
-	private _handleIdleWorker(workerId: string, _reason: WorkerIdleReason): void {
+	private async _handleIdleWorker(workerId: string, _reason: WorkerIdleReason): Promise<void> {
 		this._orchLog('Handling idle worker', { workerId, reason: _reason });
 
 		const worker = this._workers.get(workerId);
@@ -845,15 +849,13 @@ Briefly describe what you're currently processing and we'll check back later.
 `;
 
 		// Send the inquiry to the worker
-		// For child workers: capture response and queue it for parent
-		// For top-level workers: just send the inquiry (no parent to notify)
 		this._orchLog('Sending idle inquiry to worker', { workerId, parentWorkerId: parentWorkerId ?? '(top-level)', taskId: task.id });
 
 		if (isChildWorker && parentWorkerId) {
-			// Child worker: capture response for parent
-			this._sendIdleInquiryAndCaptureResponse(worker, workerId, task, parentWorkerId, inquiryMessage);
+			// Child worker: use shared inquiry method (handles interrupt + capture + queue to parent)
+			await this._sendInquiryAndCaptureResponse(worker, workerId, task, parentWorkerId, inquiryMessage, 'idle');
 		} else {
-			// Top-level worker: just send the inquiry directly
+			// Top-level worker: just send the inquiry directly (no parent to notify)
 			worker.sendClarification(inquiryMessage);
 		}
 	}
@@ -864,7 +866,7 @@ Briefly describe what you're currently processing and we'll check back later.
 	 * - For child workers (spawned by another worker): queues response for parent
 	 * - For orchestrator-deployed workers: sends inquiry directly (no parent to notify)
 	 */
-	private _handleProgressCheck(workerId: string): void {
+	private async _handleProgressCheck(workerId: string): Promise<void> {
 		this._orchLog('Handling progress check', { workerId });
 
 		const worker = this._workers.get(workerId);
@@ -934,56 +936,49 @@ This is a scheduled progress check. Please provide a brief status update:
 `;
 
 		// Send the progress inquiry
-		// IMPORTANT: Must interrupt first to stop current execution, then send message
 		this._orchLog('Sending progress inquiry to worker', { workerId, parentWorkerId: parentWorkerId ?? '(orchestrator-deployed)', taskId: task.id });
 
-		// Interrupt the worker to stop current execution and allow message delivery
-		worker.interrupt();
-
 		if (isChildWorker && parentWorkerId) {
-			// Child worker (or orchestrator-deployed with parent): capture response for parent
-			this._orchLog('PROGRESS CHECK PATH: Using _sendProgressInquiryAndCaptureResponse (has parent)', {
-				workerId,
-				parentWorkerId,
-				taskId: task.id,
-				willRouteToParent: true,
-			});
-			this._sendProgressInquiryAndCaptureResponse(worker, workerId, task, parentWorkerId, progressMessage);
+			// Child worker: use shared inquiry method (handles interrupt + capture + queue to parent)
+			await this._sendInquiryAndCaptureResponse(worker, workerId, task, parentWorkerId, progressMessage, 'progress');
 		} else {
-			// Dashboard-deployed worker (no parent): capture response and show in UI
-			this._orchLog('PROGRESS CHECK PATH: Using _sendProgressInquiryAndShowInUI (no parent)', {
-				workerId,
-				taskId: task.id,
-				willRouteToParent: false,
-				reason: 'ownerType is orchestrator, not worker',
-			});
+			// Dashboard-deployed worker (no parent): interrupt and show in UI
+			await worker.interrupt();
 			this._sendProgressInquiryAndShowInUI(worker, workerId, task, progressMessage);
 		}
 	}
 
 	/**
-	 * Send progress inquiry to a child worker and capture its response.
-	 * The response is queued for the parent as a 'progress' update type.
+	 * Unified method to send an inquiry to a child worker and capture its response.
+	 * Handles both progress checks and idle inquiries with the same flow:
+	 * 1. Interrupt worker and wait for old stream to end (prevents capturing dying stream)
+	 * 2. Set up listeners for new response
+	 * 3. Send clarification message
+	 * 4. Capture response and queue update for parent
 	 */
-	private _sendProgressInquiryAndCaptureResponse(
+	private async _sendInquiryAndCaptureResponse(
 		worker: WorkerSession,
 		childWorkerId: string,
 		task: WorkerTask,
 		parentWorkerId: string,
-		progressMessage: string
-	): void {
-		this._orchLog('Setting up progress inquiry response capture', { childWorkerId, parentWorkerId, taskId: task.id });
+		message: string,
+		inquiryType: 'progress' | 'idle'
+	): Promise<void> {
+		this._orchLog(`Setting up ${inquiryType} inquiry response capture`, { childWorkerId, parentWorkerId, taskId: task.id });
 
-		// Clean up any existing inquiry listeners for this worker to prevent old listeners
-		// from capturing responses meant for new inquiries (race condition fix)
+		// CRITICAL: Interrupt and wait for old stream to end BEFORE setting up listeners.
+		// Without this, listeners capture the dying stream from interrupt, not the real response.
+		await worker.interrupt();
+		this._orchLog(`Interrupt complete for ${inquiryType} inquiry`, { childWorkerId });
+
+		// Clean up any existing inquiry listeners for this worker
 		this._cleanupInquiryListeners(childWorkerId);
 
-		// Set up a listener to capture the child's response when streaming ends
-		const responseTimeout = 60000; // 60 second timeout for response
+		const responseTimeout = 60000;
+		const maxResponseLength = inquiryType === 'progress' ? 2000 : 500;
 		let responded = false;
 		let responseContent = '';
 
-		// Helper to clean up and remove from tracking
 		const cleanup = () => {
 			streamPartDisposable.dispose();
 			streamEndDisposable.dispose();
@@ -1000,7 +995,7 @@ This is a scheduled progress check. Please provide a brief status update:
 			}
 		});
 
-		// Listen for stream end to queue the progress update
+		// Listen for stream end to queue the update
 		const streamEndDisposable = worker.onStreamEnd(() => {
 			if (responded) {
 				return;
@@ -1008,13 +1003,9 @@ This is a scheduled progress check. Please provide a brief status update:
 			responded = true;
 			cleanup();
 
-			// Truncate response if too long
-			const maxResponseLength = 2000;
-			const truncatedResponse = responseContent.length > maxResponseLength
-				? responseContent.substring(0, maxResponseLength) + '... [truncated]'
-				: responseContent;
+			const truncatedResponse = responseContent;
 
-			this._orchLog('Child responded to progress inquiry', {
+			this._orchLog(`Child responded to ${inquiryType} inquiry`, {
 				childWorkerId,
 				parentWorkerId,
 				taskId: task.id,
@@ -1022,17 +1013,28 @@ This is a scheduled progress check. Please provide a brief status update:
 				wasTruncated: responseContent.length > maxResponseLength,
 			});
 
-			// Queue the progress update for the parent
-			this._taskMonitorService.queueUpdate({
-				type: 'progress',
-				subTaskId: task.id,
-				parentWorkerId,
-				progressReport: truncatedResponse || 'Worker provided no progress details.',
-				timestamp: Date.now(),
-			});
+			// Queue the appropriate update type for parent
+			if (inquiryType === 'progress') {
+				this._taskMonitorService.queueUpdate({
+					type: 'progress',
+					subTaskId: task.id,
+					parentWorkerId,
+					progressReport: truncatedResponse || 'Worker provided no progress details.',
+					timestamp: Date.now(),
+				});
+			} else {
+				this._taskMonitorService.queueUpdate({
+					type: 'idle_response',
+					subTaskId: task.id,
+					parentWorkerId,
+					idleReason: truncatedResponse
+						? `Child went idle and responded: ${truncatedResponse}`
+						: 'Child went idle. Response was empty or non-text.',
+					timestamp: Date.now(),
+				});
+			}
 
-			// LOG: Confirm update was queued for parent (orchestrator)
-			this._orchLog('*** PROGRESS UPDATE QUEUED FOR PARENT ***', {
+			this._orchLog(`*** ${inquiryType.toUpperCase()} UPDATE QUEUED FOR PARENT ***`, {
 				childWorkerId,
 				parentWorkerId,
 				taskId: task.id,
@@ -1040,10 +1042,8 @@ This is a scheduled progress check. Please provide a brief status update:
 			});
 		});
 
-		// Track these listeners so they can be cleaned up if a new inquiry is sent
-		this._activeInquiryListeners.set(childWorkerId, {
-			dispose: cleanup
-		});
+		// Track listeners for cleanup
+		this._activeInquiryListeners.set(childWorkerId, { dispose: cleanup });
 
 		// Set up timeout
 		setTimeout(() => {
@@ -1051,7 +1051,7 @@ This is a scheduled progress check. Please provide a brief status update:
 				responded = true;
 				cleanup();
 
-				this._orchLog('Child did not respond to progress inquiry (timeout)', {
+				this._orchLog(`Child did not respond to ${inquiryType} inquiry (timeout)`, {
 					childWorkerId,
 					parentWorkerId,
 					taskId: task.id,
@@ -1059,21 +1059,29 @@ This is a scheduled progress check. Please provide a brief status update:
 				});
 
 				// Queue timeout notification
-				this._taskMonitorService.queueUpdate({
-					type: 'progress',
-					subTaskId: task.id,
-					parentWorkerId,
-					progressReport: `Child worker did not respond to progress check within ${responseTimeout / 1000}s.`,
-					timestamp: Date.now(),
-				});
-
-				this._orchLog('Queued timeout notification for parent', { childWorkerId, parentWorkerId, taskId: task.id });
+				if (inquiryType === 'progress') {
+					this._taskMonitorService.queueUpdate({
+						type: 'progress',
+						subTaskId: task.id,
+						parentWorkerId,
+						progressReport: `Child worker did not respond to progress check within ${responseTimeout / 1000}s.`,
+						timestamp: Date.now(),
+					});
+				} else {
+					this._taskMonitorService.queueUpdate({
+						type: 'idle',
+						subTaskId: task.id,
+						parentWorkerId,
+						idleReason: `Child went idle. Inquiry sent but no response within ${responseTimeout / 1000}s.`,
+						timestamp: Date.now(),
+					});
+				}
 			}
 		}, responseTimeout);
 
 		// Send the clarification message to trigger the response
-		this._orchLog('Sending clarification message to child', { childWorkerId });
-		worker.sendClarification(progressMessage);
+		this._orchLog(`Sending ${inquiryType} clarification to child`, { childWorkerId });
+		worker.sendClarification(message);
 	}
 
 	/**
@@ -1115,9 +1123,7 @@ This is a scheduled progress check. Please provide a brief status update:
 
 			// Truncate response if too long
 			const maxResponseLength = 2000;
-			const truncatedResponse = responseContent.length > maxResponseLength
-				? responseContent.substring(0, maxResponseLength) + '... [truncated]'
-				: responseContent;
+			const truncatedResponse = responseContent;
 
 			this._orchLog('Orchestrator-deployed worker responded to progress inquiry', {
 				workerId,
@@ -1185,117 +1191,6 @@ This is a scheduled progress check. Please provide a brief status update:
 		// Send the clarification message to trigger the response
 		this._orchLog('Sending progress inquiry to orchestrator-deployed worker', { workerId });
 		worker.sendClarification(progressMessage);
-	}
-
-	/**
-	 * Send idle inquiry to a child worker and capture its response.
-	 * Both the "child went idle" notification and the response are queued together
-	 * for the parent, so the parent gets complete context in one update.
-	 */
-	private _sendIdleInquiryAndCaptureResponse(
-		worker: WorkerSession,
-		childWorkerId: string,
-		task: WorkerTask,
-		parentWorkerId: string,
-		inquiryMessage: string
-	): void {
-		this._orchLog('Setting up idle inquiry response capture', { childWorkerId, parentWorkerId, taskId: task.id });
-
-		// Clean up any existing inquiry listeners for this worker to prevent old listeners
-		// from capturing responses meant for new inquiries (race condition fix)
-		this._cleanupInquiryListeners(childWorkerId);
-
-		// Set up a listener to capture the child's response when streaming ends
-		const responseTimeout = 60000; // 60 second timeout for response
-		let responded = false;
-		let responseContent = '';
-
-		// Helper to clean up and remove from tracking
-		const cleanup = () => {
-			streamPartDisposable.dispose();
-			streamEndDisposable.dispose();
-			this._activeInquiryListeners.delete(childWorkerId);
-		};
-
-		// Listen to stream parts to capture the response content
-		const streamPartDisposable = worker.onStreamPart((part) => {
-			if (!responded && part.type === 'markdown' && part.content) {
-				const content = typeof part.content === 'string' ? part.content : part.content.value;
-				if (content) {
-					responseContent += content;
-				}
-			}
-		});
-
-		// Listen for stream end to know when response is complete
-		const streamEndDisposable = worker.onStreamEnd(() => {
-			if (responded) {
-				return;
-			}
-
-			responded = true;
-			cleanup();
-
-			// Queue the combined idle + response update for parent
-			const truncatedResponse = responseContent.length > 500
-				? responseContent.slice(0, 500) + '...'
-				: responseContent;
-
-			this._orchLog('Child responded to idle inquiry', {
-				childWorkerId,
-				parentWorkerId,
-				taskId: task.id,
-				responseLength: responseContent.length,
-				wasTruncated: responseContent.length > 500,
-			});
-
-			this._taskMonitorService.queueUpdate({
-				type: 'idle_response',
-				subTaskId: task.id,
-				parentWorkerId,
-				idleReason: truncatedResponse
-					? `Child went idle and responded: ${truncatedResponse}`
-					: 'Child went idle. Response was empty or non-text.',
-				timestamp: Date.now(),
-			});
-
-			this._orchLog('Queued idle_response update for parent', { childWorkerId, parentWorkerId, taskId: task.id });
-		});
-
-		// Track these listeners so they can be cleaned up if a new inquiry is sent
-		this._activeInquiryListeners.set(childWorkerId, {
-			dispose: cleanup
-		});
-
-		// Set up timeout in case child doesn't respond
-		setTimeout(() => {
-			if (!responded) {
-				responded = true;
-				cleanup();
-
-				this._orchLog('Child did not respond to idle inquiry (timeout)', {
-					childWorkerId,
-					parentWorkerId,
-					taskId: task.id,
-					timeoutMs: responseTimeout,
-				});
-
-				// Queue idle update without response (timed out)
-				this._taskMonitorService.queueUpdate({
-					type: 'idle',
-					subTaskId: task.id,
-					parentWorkerId,
-					idleReason: `Child went idle. Inquiry sent but no response within ${responseTimeout / 1000}s.`,
-					timestamp: Date.now(),
-				});
-
-				this._orchLog('Queued idle timeout notification for parent', { childWorkerId, parentWorkerId, taskId: task.id });
-			}
-		}, responseTimeout);
-
-		// Send the inquiry to wake up the child
-		this._orchLog('Sending idle inquiry clarification to child', { childWorkerId });
-		worker.sendClarification(inquiryMessage);
 	}
 
 	/**
