@@ -12,6 +12,7 @@ import { Emitter, Event } from '../../util/vs/base/common/event';
 import { Disposable } from '../../util/vs/base/common/lifecycle';
 import { generateUuid } from '../../util/vs/base/common/uuid';
 import { createDecorator, IInstantiationService } from '../../util/vs/platform/instantiation/common/instantiation';
+import { IClaudeWorktreeSessionManager } from '../agents/claude/node/claudeWorktreeSession';
 import { IAgentExecutorRegistry, ParsedAgentType } from './agentExecutor';
 import { registerBuiltInExecutors } from './agentExecutorRegistry';
 import { IAgentInstructionService } from './agentInstructionService';
@@ -483,6 +484,12 @@ export interface DeployOptions {
 	 * the correct path even when it's created dynamically during deploy.
 	 */
 	instructionsBuilder?: (actualWorktreePath: string) => string;
+	/**
+	 * Parent worker ID for the deployed task.
+	 * If provided, progress updates and status changes will be sent to this parent.
+	 * This allows the orchestrator agent to receive updates from its deployed workers.
+	 */
+	parentWorkerId?: string;
 }
 
 /**
@@ -604,6 +611,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		@ITaskMonitorService private readonly _taskMonitorService: ITaskMonitorService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@ILogService private readonly _logService: ILogService,
+		@IClaudeWorktreeSessionManager private readonly _claudeSessionManager: IClaudeWorktreeSessionManager,
 	) {
 		super();
 		// Initialize health monitor with logService for debugging
@@ -930,11 +938,23 @@ This is a scheduled progress check. Please provide a brief status update:
 		worker.interrupt();
 
 		if (isChildWorker && parentWorkerId) {
-			// Child worker: capture response for parent
+			// Child worker (or orchestrator-deployed with parent): capture response for parent
+			this._orchLog('PROGRESS CHECK PATH: Using _sendProgressInquiryAndCaptureResponse (has parent)', {
+				workerId,
+				parentWorkerId,
+				taskId: task.id,
+				willRouteToParent: true,
+			});
 			this._sendProgressInquiryAndCaptureResponse(worker, workerId, task, parentWorkerId, progressMessage);
 		} else {
-			// Orchestrator-deployed worker: just send the inquiry directly
-			worker.sendClarification(progressMessage);
+			// Dashboard-deployed worker (no parent): capture response and show in UI
+			this._orchLog('PROGRESS CHECK PATH: Using _sendProgressInquiryAndShowInUI (no parent)', {
+				workerId,
+				taskId: task.id,
+				willRouteToParent: false,
+				reason: 'ownerType is orchestrator, not worker',
+			});
+			this._sendProgressInquiryAndShowInUI(worker, workerId, task, progressMessage);
 		}
 	}
 
@@ -998,7 +1018,13 @@ This is a scheduled progress check. Please provide a brief status update:
 				timestamp: Date.now(),
 			});
 
-			this._orchLog('Queued progress report for parent', { childWorkerId, parentWorkerId, taskId: task.id });
+			// LOG: Confirm update was queued for parent (orchestrator)
+			this._orchLog('*** PROGRESS UPDATE QUEUED FOR PARENT ***', {
+				childWorkerId,
+				parentWorkerId,
+				taskId: task.id,
+				responsePreview: truncatedResponse?.substring(0, 100) ?? '(empty)',
+			});
 		});
 
 		// Set up timeout
@@ -1030,6 +1056,117 @@ This is a scheduled progress check. Please provide a brief status update:
 
 		// Send the clarification message to trigger the response
 		this._orchLog('Sending clarification message to child', { childWorkerId });
+		worker.sendClarification(progressMessage);
+	}
+
+	/**
+	 * Send progress inquiry to an orchestrator-deployed worker and display the response in the UI.
+	 * For orchestrator-deployed workers, there's no parent worker - we show the progress
+	 * directly in the worker's chat stream (if the session is open) and add to the inbox.
+	 */
+	private _sendProgressInquiryAndShowInUI(
+		worker: WorkerSession,
+		workerId: string,
+		task: WorkerTask,
+		progressMessage: string
+	): void {
+		this._orchLog('Setting up progress inquiry for orchestrator-deployed worker', { workerId, taskId: task.id });
+
+		// Set up a listener to capture the worker's response
+		const responseTimeout = 60000; // 60 second timeout for response
+		let responded = false;
+		let responseContent = '';
+
+		// Listen for streaming parts to capture the response
+		const streamPartDisposable = worker.onStreamPart((part) => {
+			if (!responded && part.type === 'markdown' && part.content) {
+				const content = typeof part.content === 'string' ? part.content : part.content.value;
+				if (content) {
+					responseContent += content;
+				}
+			}
+		});
+
+		// Listen for stream end to display the progress update
+		const streamEndDisposable = worker.onStreamEnd(() => {
+			if (responded) {
+				return;
+			}
+			responded = true;
+			streamPartDisposable.dispose();
+			streamEndDisposable.dispose();
+
+			// Truncate response if too long
+			const maxResponseLength = 2000;
+			const truncatedResponse = responseContent.length > maxResponseLength
+				? responseContent.substring(0, maxResponseLength) + '... [truncated]'
+				: responseContent;
+
+			this._orchLog('Orchestrator-deployed worker responded to progress inquiry', {
+				workerId,
+				taskId: task.id,
+				responseLength: responseContent.length,
+				wasTruncated: responseContent.length > maxResponseLength,
+			});
+
+			// Try to show in the worker's chat stream (if the session is open)
+			const stream = this._subtaskProgressService.getStream(workerId);
+			if (stream) {
+				const progressUpdate = `📊 **Progress Update** (${task.id}):\n${truncatedResponse || 'Worker provided no progress details.'}`;
+				stream.progress(progressUpdate);
+				this._orchLog('Displayed progress in chat stream', { workerId, taskId: task.id });
+			} else {
+				this._orchLog('No chat stream available for worker - progress not displayed', { workerId, taskId: task.id });
+			}
+
+			// Also add to inbox as an informational item (non-action required)
+			// This ensures the progress is visible even if the chat session isn't open
+			this._inbox.addItem({
+				id: generateUuid(),
+				message: {
+					id: generateUuid(),
+					timestamp: Date.now(),
+					priority: 'low',
+					planId: task.planId || '',
+					taskId: task.id,
+					workerId: workerId,
+					worktreePath: worker.worktreePath,
+					type: 'status_update',
+					content: {
+						type: 'progress_response',
+						response: truncatedResponse || 'Worker provided no progress details.',
+					}
+				},
+				status: 'processed', // Mark as processed since it's informational
+				requiresUserAction: false,
+				createdAt: Date.now()
+			});
+			this._onDidChangeWorkers.fire(); // Trigger UI refresh for inbox
+		});
+
+		// Set up timeout
+		setTimeout(() => {
+			if (!responded) {
+				responded = true;
+				streamPartDisposable.dispose();
+				streamEndDisposable.dispose();
+
+				this._orchLog('Orchestrator-deployed worker did not respond to progress inquiry (timeout)', {
+					workerId,
+					taskId: task.id,
+					timeoutMs: responseTimeout,
+				});
+
+				// Show timeout in stream if available
+				const stream = this._subtaskProgressService.getStream(workerId);
+				if (stream) {
+					stream.progress(`⏱️ **Progress Check Timeout** (${task.id}): Worker did not respond within ${responseTimeout / 1000}s.`);
+				}
+			}
+		}, responseTimeout);
+
+		// Send the clarification message to trigger the response
+		this._orchLog('Sending progress inquiry to orchestrator-deployed worker', { workerId });
 		worker.sendClarification(progressMessage);
 	}
 
@@ -1143,11 +1280,13 @@ This is a scheduled progress check. Please provide a brief status update:
 			return;
 		}
 
-		this._orchLog('Injecting subtask updates into parent', {
+		// LOG: Parent is receiving updates from children!
+		this._orchLog('*** PARENT RECEIVING UPDATES FROM CHILDREN ***', {
 			parentWorkerId: workerId,
 			updateCount: updates.length,
 			updateTypes: updates.map(u => u.type),
 			subTaskIds: updates.map(u => u.subTaskId),
+			progressReports: updates.filter(u => u.type === 'progress').map(u => u.progressReport?.substring(0, 50)),
 		});
 
 		// Build a summary message with all updates
@@ -2599,15 +2738,22 @@ Focus on your assigned task and provide a clear, actionable result.`;
 			// This ensures tools operate within the worker's worktree
 			// For subtasks (parentWorkerId set): owner = parent worker, so messages route back
 			// For regular tasks: owner = orchestrator
-			const ownerContext = task.parentWorkerId
-				? { ownerType: 'worker' as const, ownerId: task.parentWorkerId }
+			// IMPORTANT: options.parentWorkerId takes precedence over task.parentWorkerId
+			// This allows the orchestrator agent to set itself as parent when deploying tasks
+			const effectiveParentWorkerId = options?.parentWorkerId ?? task.parentWorkerId;
+			const ownerContext = effectiveParentWorkerId
+				? { ownerType: 'worker' as const, ownerId: effectiveParentWorkerId }
 				: { ownerType: 'orchestrator' as const, ownerId: 'orchestrator' };
+
+			// LOG: Verify parent worker ID is being set correctly
+			this._logService.info(`[Orchestrator:deploy] PARENT WORKER SETUP: taskId=${task.id}, options.parentWorkerId=${options?.parentWorkerId ?? '(none)'}, task.parentWorkerId=${task.parentWorkerId ?? '(none)'}, effectiveParentWorkerId=${effectiveParentWorkerId ?? '(none)'}, ownerContext=${JSON.stringify(ownerContext)}`);
+
 			const workerToolSet = this._workerToolsService.createWorkerToolSet(
 				worker.id,
 				worktreePath,
 				task.planId,
 				task.id,
-				task.parentWorkerId ? 1 : 0, // depth = 1 for subtasks, 0 for orchestrator-deployed workers
+				effectiveParentWorkerId ? 1 : 0, // depth = 1 for subtasks, 0 for orchestrator-deployed workers
 				ownerContext,
 				'orchestrator' // spawnContext = orchestrator allows depth up to 2
 			);
@@ -2864,6 +3010,14 @@ Focus on your assigned task and provide a clear, actionable result.`;
 				}
 			}
 
+			// Dispose Claude Code session for this worktree (stops the Claude process)
+			if (worktreePath) {
+				const removed = this._claudeSessionManager.removeSession(worktreePath);
+				if (removed) {
+					this._logService.info(`[OrchestratorService] Disposed Claude session for worktree: ${worktreePath}`);
+				}
+			}
+
 			// Remove the worktree
 			const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 			if (workspaceFolder) {
@@ -2981,6 +3135,14 @@ Focus on your assigned task and provide a clear, actionable result.`;
 		if (this._workerToolSets.has(workerId)) {
 			this._workerToolsService.disposeWorkerToolSet(workerId);
 			this._workerToolSets.delete(workerId);
+		}
+
+		// Dispose Claude Code session for this worktree (stops the Claude process)
+		if (worktreePath) {
+			const removed = this._claudeSessionManager.removeSession(worktreePath);
+			if (removed) {
+				this._logService.info(`[OrchestratorService] Disposed Claude session for worktree: ${worktreePath}`);
+			}
 		}
 
 		// Reset task if requested

@@ -76,6 +76,7 @@ import { IInstantiationServiceBuilder } from '../../../util/common/services';
 import { SyncDescriptor } from '../../../util/vs/platform/instantiation/common/descriptors';
 import { ClaudeAgentManager, IClaudeAgentManager } from '../../agents/claude/node/claudeCodeAgent';
 import { ClaudeCodeSdkService, IClaudeCodeSdkService } from '../../agents/claude/node/claudeCodeSdkService';
+import { ClaudeWorktreeSessionManager, IClaudeWorktreeSessionManager } from '../../agents/claude/node/claudeWorktreeSession';
 import { CommandServiceImpl, ICommandService } from '../../commands/node/commandService';
 import { ICopilotInlineCompletionItemProviderService } from '../../completions/common/copilotInlineCompletionItemProviderService';
 import { CopilotInlineCompletionItemProviderService } from '../../completions/vscode-node/copilotInlineCompletionItemProviderService';
@@ -196,6 +197,7 @@ export function registerServices(builder: IInstantiationServiceBuilder, extensio
 	builder.define(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistry));
 	builder.define(IClaudeAgentManager, new SyncDescriptor(ClaudeAgentManager));
 	builder.define(IClaudeCodeSdkService, new SyncDescriptor(ClaudeCodeSdkService));
+	builder.define(IClaudeWorktreeSessionManager, new SyncDescriptor(ClaudeWorktreeSessionManager));
 	builder.define(IWorkerToolsService, new SyncDescriptor(WorkerToolsService));
 	builder.define(IWorkerContext, new SyncDescriptor(GlobalWorkerContext));
 	builder.define(ISafetyLimitsService, new SyncDescriptor(SafetyLimitsService));

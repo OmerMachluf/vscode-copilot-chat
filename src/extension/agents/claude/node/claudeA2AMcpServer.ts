@@ -812,8 +812,16 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 					}
 
 					try {
-						const options = args.modelId ? { modelId: args.modelId } : undefined;
+						// CRITICAL: Pass the orchestrator's worker ID as parent
+						// This ensures deployed workers send progress updates back to the orchestrator
+						const orchestratorWorkerId = getWorkerContext().workerId;
+						console.log(`[MCP:orchestrator_deploy_task] Deploying task=${args.taskId ?? '(auto)'} with parentWorkerId=${orchestratorWorkerId}`);
+						const options = {
+							...(args.modelId ? { modelId: args.modelId } : {}),
+							parentWorkerId: orchestratorWorkerId,
+						};
 						const worker = await orchestratorService.deploy(args.taskId, options);
+						console.log(`[MCP:orchestrator_deploy_task] Deployed worker=${worker.id} for task, parent=${orchestratorWorkerId}`);
 
 						// Get the task info to show task name
 						const tasks = orchestratorService.getTasks();
@@ -828,8 +836,9 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 									workerId: worker.id,
 									workerName: worker.name,
 									worktreePath: worker.worktreePath,
+									parentWorkerId: orchestratorWorkerId,
 									status: 'deployed',
-									message: `Task "${task?.name ?? worker.name}" is now running.`
+									message: `Task "${task?.name ?? worker.name}" is now running. Progress updates will be sent to orchestrator.`
 								}, null, 2)
 							}]
 						};
@@ -862,15 +871,22 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 					}
 
 					try {
-						const worker = await orchestratorService.retryTask(args.taskId);
+						// CRITICAL: Pass the orchestrator's worker ID as parent
+						// This ensures retried workers send progress updates back to the orchestrator
+						const orchestratorWorkerId = getWorkerContext().workerId;
+						const options = {
+							parentWorkerId: orchestratorWorkerId,
+						};
+						const worker = await orchestratorService.retryTask(args.taskId, options);
 						return {
 							content: [{
 								type: 'text',
 								text: JSON.stringify({
 									taskId: args.taskId,
 									workerId: worker.id,
+									parentWorkerId: orchestratorWorkerId,
 									status: 'redeployed',
-									message: 'Task has been reset and a new worker deployed.'
+									message: 'Task has been reset and a new worker deployed. Progress updates will be sent to orchestrator.'
 								}, null, 2)
 							}]
 						};
