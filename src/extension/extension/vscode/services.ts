@@ -48,6 +48,7 @@ import { ILanguageFeaturesService } from '../../../platform/languages/common/lan
 import { LanguageDiagnosticsServiceImpl } from '../../../platform/languages/vscode/languageDiagnosticsServiceImpl';
 import { LanguageFeaturesServiceImpl } from '../../../platform/languages/vscode/languageFeaturesServicesImpl';
 import { ILogService, LogServiceImpl } from '../../../platform/log/common/logService';
+import { FileLogTarget, setFileLogTarget } from '../../../platform/log/vscode/fileLogTarget';
 import { NewOutputChannelLogTarget } from '../../../platform/log/vscode/outputChannelLogTarget';
 import { EditLogService, IEditLogService } from '../../../platform/multiFileEdit/common/editLogService';
 import { IMultiFileEditInternalTelemetryService, MultiFileEditInternalTelemetryService } from '../../../platform/multiFileEdit/common/multiFileEditQualityTelemetry';
@@ -140,7 +141,10 @@ export function registerServices(builder: IInstantiationServiceBuilder, extensio
 	});
 	builder.define(IChatSessionService, new SyncDescriptor(ChatSessionService));
 	builder.define(IConfigurationService, new SyncDescriptor(ConfigurationServiceImpl));
-	builder.define(ILogService, new SyncDescriptor(LogServiceImpl, [[new NewOutputChannelLogTarget(extensionContext)]]));
+	// Create file log target for orchestrator debugging - writes to extension storage
+	const fileLogTarget = new FileLogTarget(extensionContext);
+	setFileLogTarget(fileLogTarget); // Make accessible globally for log file path retrieval
+	builder.define(ILogService, new SyncDescriptor(LogServiceImpl, [[new NewOutputChannelLogTarget(extensionContext), fileLogTarget]]));
 	builder.define(IChatQuotaService, new SyncDescriptor(ChatQuotaService));
 	builder.define(ITasksService, new SyncDescriptor(TasksService));
 	builder.define(IGitExtensionService, new SyncDescriptor(GitExtensionServiceImpl));

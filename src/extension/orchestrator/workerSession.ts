@@ -473,6 +473,9 @@ export class WorkerSession extends Disposable {
 		this._lastActivityAt = this._createdAt;
 		this._cancellationTokenSource = new CancellationTokenSource();
 
+		console.log(`[WorkerSession:${this._id}] CREATED: name="${name}", worktreePath=${worktreePath}, agentId=${agentId ?? '(none)'}, modelId=${modelId ?? '(none)'}`);
+		console.log(`[WorkerSession:${this._id}] task preview: "${task.slice(0, 200).replace(/\n/g, '\\n')}..."`);
+
 		// Add initial system message
 		this._addMessage({
 			role: 'system',
@@ -495,8 +498,12 @@ export class WorkerSession extends Disposable {
 	 */
 	public interrupt(): void {
 		if (this._status !== 'running' && this._status !== 'waiting-approval') {
+			console.log(`[WorkerSession:${this._id}] interrupt() called but status=${this._status}, nothing to interrupt`);
 			return; // Nothing to interrupt
 		}
+
+		const prevStatus = this._status;
+		console.log(`[WorkerSession:${this._id}] STATUS CHANGE: ${prevStatus} -> idle (via interrupt, worktreePath=${this._worktreePath})`);
 
 		this._addMessage({
 			role: 'system',
@@ -1196,7 +1203,9 @@ export class WorkerSession extends Disposable {
 	 * Mark the worker as started
 	 */
 	public start(): void {
+		const prevStatus = this._status;
 		this._status = 'running';
+		console.log(`[WorkerSession:${this._id}] STATUS CHANGE: ${prevStatus} -> running (worktreePath=${this._worktreePath})`);
 		this._onDidChange.fire();
 	}
 
@@ -1205,7 +1214,9 @@ export class WorkerSession extends Disposable {
 	 * The worker will wait for new messages before continuing.
 	 */
 	public idle(): void {
+		const prevStatus = this._status;
 		this._status = 'idle';
+		console.log(`[WorkerSession:${this._id}] STATUS CHANGE: ${prevStatus} -> idle (worktreePath=${this._worktreePath})`);
 		this._addMessage({ role: 'system', content: 'Task finished. Send a message to continue, or click Complete to finish.' });
 		this._onDidChange.fire();
 	}
@@ -1215,7 +1226,9 @@ export class WorkerSession extends Disposable {
 	 * This triggers cleanup and prevents further interaction.
 	 */
 	public complete(): void {
+		const prevStatus = this._status;
 		this._status = 'completed';
+		console.log(`[WorkerSession:${this._id}] STATUS CHANGE: ${prevStatus} -> completed (worktreePath=${this._worktreePath})`);
 		this._addMessage({ role: 'system', content: 'Worker completed successfully.' });
 		// Cancel any pending wait for clarification
 		if (this._clarificationResolve) {
@@ -1229,8 +1242,10 @@ export class WorkerSession extends Disposable {
 	 * Mark the worker as errored
 	 */
 	public error(message: string): void {
+		const prevStatus = this._status;
 		this._status = 'error';
 		this._errorMessage = message;
+		console.log(`[WorkerSession:${this._id}] STATUS CHANGE: ${prevStatus} -> error (worktreePath=${this._worktreePath}, error=${message})`);
 		this._addMessage({ role: 'system', content: `Error: ${message}` });
 		// Cancel any pending wait for clarification
 		if (this._clarificationResolve) {

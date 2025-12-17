@@ -72,8 +72,11 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 
 		const startTime = Date.now();
 
-		this._logService.info(`[ClaudeCodeAgentExecutor] ========== CLAUDE CODE BACKEND ==========`);
-		this._logService.info(`[ClaudeCodeAgentExecutor] Task: ${taskId}, worktreePath: ${worktreePath}, hasWorkerContext: ${!!workerContext}, hasToolToken: ${!!toolInvocationToken}`);
+		this._logService.info(`[ClaudeExecutor:execute] ========== CLAUDE CODE BACKEND EXECUTE ==========`);
+		this._logService.info(`[ClaudeExecutor:execute] taskId=${taskId}, worktreePath=${worktreePath}`);
+		this._logService.info(`[ClaudeExecutor:execute] hasWorkerContext=${!!workerContext}, hasToolToken=${!!toolInvocationToken}, hasStream=${!!stream}`);
+		this._logService.info(`[ClaudeExecutor:execute] agentType: backend=${agentType.backend}, name=${agentType.agentName}, slashCommand=${agentType.slashCommand ?? '(none)'}`);
+		this._logService.info(`[ClaudeExecutor:execute] prompt length=${prompt.length}, preview="${prompt.slice(0, 300).replace(/\n/g, '\\n')}..."`);
 
 		// CRITICAL: Validate worktree path before proceeding
 		// Without a valid worktree, Claude will start in the wrong directory and fail silently
@@ -116,13 +119,16 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 			}
 
 			// Get or create session for this worktree
-			this._logService.info(`[ClaudeCodeAgentExecutor] Creating session for worktree: ${worktreePath}`);
+			this._logService.info(`[ClaudeExecutor:execute] Getting/creating Claude session for worktree: ${worktreePath}`);
 			const session = await this._claudeAgentManager.getOrCreateWorktreeSession(worktreePath);
+			this._logService.info(`[ClaudeExecutor:execute] Got session: sessionId=${session.sessionId}`);
 
 			// Set worker context for A2A orchestration if provided
 			if (workerContext) {
-				// this._logService.info(`[ClaudeCodeAgentExecutor] Setting worker context: depth=${workerContext.depth}, spawnContext=${workerContext.spawnContext}`);
+				this._logService.info(`[ClaudeExecutor:execute] Setting workerContext: workerId=${workerContext.workerId}, depth=${workerContext.depth}, spawnContext=${workerContext.spawnContext}, owner=${workerContext.owner?.ownerType}:${workerContext.owner?.ownerId}`);
 				session.session.setWorkerContext(workerContext);
+			} else {
+				this._logService.info(`[ClaudeExecutor:execute] No workerContext provided - worker will not have A2A context`);
 			}
 
 			// Track worker state
@@ -133,9 +139,12 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 				startTime,
 				toolInvocationToken,
 			});
+			this._logService.info(`[ClaudeExecutor:execute] Worker state tracked, total active workers: ${this._activeWorkers.size}`);
 
 			// Build prompt with slash command if specified
 			const fullPrompt = this._buildPrompt(prompt, agentType);
+			this._logService.info(`[ClaudeExecutor:execute] Built fullPrompt: length=${fullPrompt.length}, starts with slash=${fullPrompt.startsWith('/')}`);
+			this._logService.info(`[ClaudeExecutor:execute] fullPrompt preview="${fullPrompt.slice(0, 300).replace(/\n/g, '\\n')}..."`);
 
 			// Create a collector stream if no stream provided
 			const responseStream = stream ?? this._createCollectorStream();
@@ -162,12 +171,16 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 				// Execute via Claude session
 				// CRITICAL: Pass the real toolInvocationToken from the orchestrator, not a mock.
 				// Without a valid token, tool confirmations fail and the session completes immediately.
+				this._logService.info(`[ClaudeExecutor:execute] ========== INVOKING CLAUDE SESSION ==========`);
+				this._logService.info(`[ClaudeExecutor:execute] Calling session.session.invoke() with fullPrompt length=${fullPrompt.length}`);
+				this._logService.info(`[ClaudeExecutor:execute] toolInvocationToken.sessionId=${(toolInvocationToken as any)?.sessionId ?? '(no token)'}`);
 				await session.session.invoke(
 					fullPrompt,
 					toolInvocationToken!,
 					responseStream,
 					token
 				);
+				this._logService.info(`[ClaudeExecutor:execute] session.session.invoke() COMPLETED`);
 			} finally {
 				cancellationListener.dispose();
 			}
@@ -191,7 +204,7 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 				};
 			}
 
-			// this._logService.info(`[ClaudeCodeAgentExecutor] Completed execution for task ${taskId} in ${executionTime}ms`);
+			this._logService.info(`[ClaudeExecutor:execute] Execution SUCCESS for taskId=${taskId} in ${executionTime}ms, output length=${collectedOutput.join('').length}`);
 
 			return {
 				status: 'success',
@@ -202,16 +215,22 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 				},
 			};
 		} catch (error) {
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			const errorStack = error instanceof Error ? error.stack : undefined;
+
+			this._logService.error(`[ClaudeExecutor:execute] ========== EXECUTION FAILED ==========`);
+			this._logService.error(`[ClaudeExecutor:execute] taskId=${taskId}, error: ${errorMessage}`);
+			if (errorStack) {
+				this._logService.error(`[ClaudeExecutor:execute] Stack trace: ${errorStack}`);
+			}
+
 			const workerState = this._activeWorkers.get(taskId);
 			if (workerState) {
 				workerState.status = {
 					state: 'failed',
-					error: error instanceof Error ? error.message : String(error),
+					error: errorMessage,
 				};
 			}
-
-			const errorMessage = error instanceof Error ? error.message : String(error);
-			this._logService.error(`[ClaudeCodeAgentExecutor] Execution failed for task ${taskId}: ${errorMessage}`);
 
 			return {
 				status: 'failed',

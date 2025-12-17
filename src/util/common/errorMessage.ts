@@ -12,7 +12,8 @@ import * as types from '../vs/base/common/types';
 function exceptionToErrorMessage(exception: unknown, verbose: boolean): string {
 	if (verbose && ((exception as any).stack || (exception as any).stacktrace)) {
 		const stackStr = stackToString((exception as any).stack) || stackToString((exception as any).stacktrace);
-		return l10n.t('stackTrace.format', '{0}: {1}', detectSystemErrorMessage(exception), stackStr || '');
+		// l10n.t uses the first argument as the format string with placeholders
+		return l10n.t('{0}: {1}', detectSystemErrorMessage(exception), stackStr || '');
 	}
 
 	return detectSystemErrorMessage(exception);

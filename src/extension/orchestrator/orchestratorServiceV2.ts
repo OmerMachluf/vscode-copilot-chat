@@ -2297,6 +2297,10 @@ Process these updates and continue your work. If subtasks completed successfully
 	}
 
 	public async deploy(taskId?: string, options?: DeployOptions): Promise<WorkerSession> {
+		// === DEPLOY ENTRY POINT ===
+		this._logService.info(`[Orchestrator:deploy] ========== DEPLOY CALLED ==========`);
+		this._logService.info(`[Orchestrator:deploy] Input: taskId=${taskId ?? '(auto-select)'}, hasOptions=${!!options}, worktreePath=${options?.worktreePath ?? '(will create)'}, hasInstructionsBuilder=${!!options?.instructionsBuilder}`);
+
 		// Find task - either by ID or first ready task
 		let task: WorkerTask | undefined;
 		if (taskId) {
@@ -2312,8 +2316,11 @@ Process these updates and continue your work. If subtasks completed successfully
 		}
 
 		if (!task) {
+			this._logService.error(`[Orchestrator:deploy] ERROR: No tasks available for deployment`);
 			throw new Error('No tasks available');
 		}
+
+		this._logService.info(`[Orchestrator:deploy] Found task: id=${task.id}, name="${task.name}", agent=${task.agent ?? '@agent'}, parentWorkerId=${task.parentWorkerId ?? '(none)'}, hasContext=${!!task.context}, hasAdditionalInstructions=${!!task.context?.additionalInstructions}`);
 
 		// Validate dependencies are satisfied
 		const unsatisfiedDeps = task.dependencies.filter(depId => {
@@ -2343,6 +2350,7 @@ Process these updates and continue your work. If subtasks completed successfully
 			// and inject the built instructions into the task's context.
 			// This is critical for subtasks where the worktreePath wasn't known at creation time.
 			if (options?.instructionsBuilder) {
+				this._logService.info(`[Orchestrator:deploy] Calling instructionsBuilder for task ${task.id} with worktreePath=${worktreePath}`);
 				const builtInstructions = options.instructionsBuilder(worktreePath);
 				// Mutate the task's context to include the instructions
 				// This must happen BEFORE _runWorkerTask is called
@@ -2351,7 +2359,9 @@ Process these updates and continue your work. If subtasks completed successfully
 					(task as { context?: WorkerTaskContext }).context = {};
 				}
 				(task.context as { additionalInstructions?: string }).additionalInstructions = builtInstructions;
-				this._logService.debug(`[OrchestratorService] Injected instructions for task ${task.id} (${builtInstructions.length} chars)`);
+				this._logService.info(`[Orchestrator:deploy] Injected additionalInstructions for task ${task.id}: ${builtInstructions.length} chars, preview="${builtInstructions.slice(0, 200).replace(/\n/g, '\\n')}..."`);
+			} else {
+				this._logService.info(`[Orchestrator:deploy] NO instructionsBuilder provided for task ${task.id} - task.context.additionalInstructions will be: ${task.context?.additionalInstructions ? `${task.context.additionalInstructions.length} chars` : '(none)'}`);
 			}
 
 			// Parse and validate agent type using the centralized parser
@@ -2428,6 +2438,7 @@ Process these updates and continue your work. If subtasks completed successfully
 			const effectiveModelId = selectedModel?.id ?? preferredModelId;
 
 			// Create worker session with agent instructions and model
+			this._logService.info(`[Orchestrator:deploy] Creating WorkerSession: taskId=${task.id}, worktreePath=${worktreePath}, agentId=${agentId}, modelId=${effectiveModelId}, backend=${parsedAgentType.backend}`);
 			const worker = new WorkerSession(
 				task.name,
 				task.description,
@@ -2438,6 +2449,7 @@ Process these updates and continue your work. If subtasks completed successfully
 				composedInstructions.instructions,
 				effectiveModelId,
 			);
+			this._logService.info(`[Orchestrator:deploy] WorkerSession created: workerId=${worker.id}, taskId=${task.id}`);
 
 			// Create scoped tool set for this worker
 			// This ensures tools operate within the worker's worktree
@@ -2553,7 +2565,9 @@ Process these updates and continue your work. If subtasks completed successfully
 			this._saveState();
 
 			// Start the worker task asynchronously
+			this._logService.info(`[Orchestrator:deploy] Starting _runWorkerTask for workerId=${worker.id}, taskId=${task.id}, backend=${parsedAgentType.backend}, hasAdditionalInstructions=${!!task.context?.additionalInstructions}`);
 			this._runWorkerTask(worker, task).catch(error => {
+				this._logService.error(`[Orchestrator:deploy] _runWorkerTask FAILED for workerId=${worker.id}: ${error instanceof Error ? error.message : String(error)}`);
 				this._queueService.enqueueMessage({
 					id: generateUuid(),
 					timestamp: Date.now(),
@@ -2569,6 +2583,7 @@ Process these updates and continue your work. If subtasks completed successfully
 				worker.error(String(error));
 			});
 
+			this._logService.info(`[Orchestrator:deploy] Deploy COMPLETE - returning workerId=${worker.id}, taskId=${task.id}, worktreePath=${worktreePath}`);
 			return worker;
 		} catch (error) {
 			// Reset task status on deployment failure so it can be retried
@@ -3386,10 +3401,16 @@ Process these updates and continue your work. If subtasks completed successfully
 	}
 
 	private async _runWorkerTask(worker: WorkerSession, task: WorkerTask): Promise<void> {
+		this._logService.info(`[Orchestrator:_runWorkerTask] ========== WORKER TASK STARTING ==========`);
+		this._logService.info(`[Orchestrator:_runWorkerTask] workerId=${worker.id}, taskId=${task.id}, worktreePath=${worker.worktreePath}`);
+		this._logService.info(`[Orchestrator:_runWorkerTask] task.agent=${task.agent}, task.parsedAgentType.backend=${task.parsedAgentType?.backend}, task.parsedAgentType.agentName=${task.parsedAgentType?.agentName}`);
+		this._logService.info(`[Orchestrator:_runWorkerTask] task.context.additionalInstructions=${task.context?.additionalInstructions ? `${task.context.additionalInstructions.length} chars` : '(none)'}`);
+
 		worker.start();
 
 		// Start health monitoring
 		this._healthMonitor.startMonitoring(worker.id);
+		this._logService.info(`[Orchestrator:_runWorkerTask] Health monitoring started for workerId=${worker.id}`);
 
 		// Initialize circuit breaker if not exists
 		if (!this._circuitBreakers.has(worker.id)) {
@@ -3401,6 +3422,7 @@ Process these updates and continue your work. If subtasks completed successfully
 		const parsedAgentType = task.parsedAgentType;
 		if (!parsedAgentType) {
 			// This shouldn't happen since we set it during deploy, but handle gracefully
+			this._logService.error(`[Orchestrator:_runWorkerTask] ERROR: Task ${task.id} is missing parsedAgentType!`);
 			worker.error('Task is missing parsed agent type');
 			this._healthMonitor.stopMonitoring(worker.id);
 			return;
@@ -3409,14 +3431,19 @@ Process these updates and continue your work. If subtasks completed successfully
 		// For non-Copilot backends, use the executor registry directly
 		// The executor handles its own conversation management
 		if (parsedAgentType.backend !== 'copilot') {
+			this._logService.info(`[Orchestrator:_runWorkerTask] Backend is '${parsedAgentType.backend}' (not copilot) - dispatching to _runExecutorBasedTask`);
 			await this._runExecutorBasedTask(worker, task, parsedAgentType, circuitBreaker);
+			this._logService.info(`[Orchestrator:_runWorkerTask] _runExecutorBasedTask completed for workerId=${worker.id}`);
 			return;
 		}
+
+		this._logService.info(`[Orchestrator:_runWorkerTask] Backend is 'copilot' - using conversation loop`);
 
 		// For Copilot backend, use the existing sophisticated conversation loop
 		let currentPrompt = task.description;
 		if (task.context?.additionalInstructions) {
 			currentPrompt = `${task.context.additionalInstructions}\n\n${currentPrompt}`;
+			this._logService.info(`[Orchestrator:_runWorkerTask] Prepended additionalInstructions to prompt, total length=${currentPrompt.length}`);
 		}
 
 		worker.addUserMessage(currentPrompt);
@@ -3684,23 +3711,34 @@ Process these updates and continue your work. If subtasks completed successfully
 		parsedAgentType: ParsedAgentType,
 		circuitBreaker: CircuitBreaker
 	): Promise<void> {
+		this._logService.info(`[Orchestrator:_runExecutorBasedTask] ========== EXECUTOR-BASED TASK STARTING ==========`);
+		this._logService.info(`[Orchestrator:_runExecutorBasedTask] workerId=${worker.id}, taskId=${task.id}, backend=${parsedAgentType.backend}, agent=${parsedAgentType.agentName}`);
+		this._logService.info(`[Orchestrator:_runExecutorBasedTask] worktreePath=${worker.worktreePath}`);
+		this._logService.info(`[Orchestrator:_runExecutorBasedTask] task.description length=${task.description.length}, task.context.additionalInstructions=${task.context?.additionalInstructions ? `${task.context.additionalInstructions.length} chars` : '(none)'}`);
+
 		const MAX_RETRIES = 10;
 		let consecutiveFailures = 0;
 
 		let currentPrompt = task.description;
 		if (task.context?.additionalInstructions) {
 			currentPrompt = `${task.context.additionalInstructions}\n\n${currentPrompt}`;
+			this._logService.info(`[Orchestrator:_runExecutorBasedTask] Prepended additionalInstructions, final prompt length=${currentPrompt.length}`);
+		} else {
+			this._logService.info(`[Orchestrator:_runExecutorBasedTask] No additionalInstructions to prepend`);
 		}
 
 		// Get the executor for this backend
 		const executor = this._executorRegistry.getExecutor(parsedAgentType);
+		this._logService.info(`[Orchestrator:_runExecutorBasedTask] Got executor: ${executor ? executor.backendType : '(null!)'}`);
 
 		// Get the worker's scoped tool set
 		const workerToolSet = this._workerToolSets.get(worker.id);
+		this._logService.info(`[Orchestrator:_runExecutorBasedTask] WorkerToolSet: ${workerToolSet ? 'present' : '(null!)'}, workerContext=${workerToolSet?.workerContext ? 'present' : '(null)'}`);
 
 		// Get initial model
 		const modelOverride = this._workerModelOverrides.get(worker.id);
 		const model = await this._selectModel(modelOverride ?? task.modelId);
+		this._logService.info(`[Orchestrator:_runExecutorBasedTask] Model: ${model?.id ?? '(null!)'}`);
 
 		// Build conversation history
 		const history = this._buildConversationHistory(worker, currentPrompt);
@@ -3715,8 +3753,8 @@ Process these updates and continue your work. If subtasks completed successfully
 			}
 		}));
 
-		this._logService.info(`[OrchestratorService] ========== RUNNING ${parsedAgentType.backend.toUpperCase()} EXECUTOR ==========`);
-		this._logService.info(`[OrchestratorService] Task: ${task.id}, Agent: ${parsedAgentType.agentName}, Worktree: ${worker.worktreePath}`);
+		this._logService.info(`[Orchestrator:_runExecutorBasedTask] ========== STARTING ${parsedAgentType.backend.toUpperCase()} EXECUTOR LOOP ==========`);
+		this._logService.info(`[Orchestrator:_runExecutorBasedTask] worker.isActive=${worker.isActive}, worker.status=${worker.status}`);
 
 		// Conversation loop for executor-based tasks
 		while (worker.isActive) {
