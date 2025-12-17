@@ -234,14 +234,19 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 								}]
 							};
 						} else {
-							// Non-blocking: return task ID for later polling
+							// Non-blocking: start execution in background, return task ID for later polling
+							// IMPORTANT: We must call executeSubTask to actually run the task!
+							// Without this, the subtask is created but never executed.
+							void subTaskManager.executeSubTask(subtask.id, CancellationToken.None).catch(error => {
+								console.error(`[a2a_spawn_subtask] Background subtask ${subtask.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+							});
 							return {
 								content: [{
 									type: 'text',
 									text: JSON.stringify({
 										taskId: subtask.id,
 										status: 'spawned',
-										message: 'Subtask spawned. Use a2a_await_subtasks with this taskId to poll for completion.'
+										message: 'Subtask spawned and executing in background. Use a2a_await_subtasks with this taskId to poll for completion.'
 									}, null, 2)
 								}]
 							};
@@ -782,6 +787,57 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 							content: [{
 								type: 'text',
 								text: `ERROR: Failed to complete task: ${error instanceof Error ? error.message : String(error)}`
+							}]
+						};
+					}
+				}
+			),
+
+			// orchestrator_deploy_task - Deploy a task from a plan
+			tool(
+				'orchestrator_deploy_task',
+				'Deploy a task from a plan. This starts a worker for the task, marks it as running, and links it to the plan. Use orchestrator_list_workers to see ready tasks.',
+				{
+					taskId: z.string().optional().describe('ID of the task to deploy. If not provided, deploys the next ready task.'),
+					modelId: z.string().optional().describe('Optional model override for this task'),
+				},
+				async (args) => {
+					if (!orchestratorService) {
+						return {
+							content: [{
+								type: 'text',
+								text: 'ERROR: Orchestrator service not available. This tool requires orchestrator context.'
+							}]
+						};
+					}
+
+					try {
+						const options = args.modelId ? { modelId: args.modelId } : undefined;
+						const worker = await orchestratorService.deploy(args.taskId, options);
+
+						// Get the task info to show task name
+						const tasks = orchestratorService.getTasks();
+						const task = tasks.find(t => t.workerId === worker.id);
+
+						return {
+							content: [{
+								type: 'text',
+								text: JSON.stringify({
+									taskId: task?.id ?? args.taskId,
+									taskName: task?.name ?? worker.name,
+									workerId: worker.id,
+									workerName: worker.name,
+									worktreePath: worker.worktreePath,
+									status: 'deployed',
+									message: `Task "${task?.name ?? worker.name}" is now running.`
+								}, null, 2)
+							}]
+						};
+					} catch (error) {
+						return {
+							content: [{
+								type: 'text',
+								text: `ERROR: Failed to deploy task: ${error instanceof Error ? error.message : String(error)}`
 							}]
 						};
 					}

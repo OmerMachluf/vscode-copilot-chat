@@ -1515,6 +1515,28 @@
 				}
 			},
 			{
+				"name": "copilot_orchestratorDeployTask",
+				"toolReferenceName": "orchestrator_deployTask",
+				"displayName": "Deploy Task",
+				"modelDescription": "Deploys a task from a plan: creates a worker for the task, marks it as running, and links it to the plan. Use orchestrator_listWorkers to see ready tasks first.",
+				"userDescription": "Deploy a task from a plan",
+				"icon": "$(play)",
+				"tags": ["vscode_codesearch"],
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"taskId": {
+							"type": "string",
+							"description": "The ID of the task to deploy. If not provided, deploys the next ready task."
+						},
+						"modelId": {
+							"type": "string",
+							"description": "The language model ID to use for the worker. Overrides the task's default model."
+						}
+					}
+				}
+			},
+			{
 				"name": "copilot_orchestratorRetryTask",
 				"toolReferenceName": "orchestrator_retryTask",
 				"displayName": "Retry Task",

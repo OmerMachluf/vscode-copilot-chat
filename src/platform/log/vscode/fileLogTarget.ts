@@ -70,12 +70,12 @@ export class FileLogTarget implements ILogTarget {
 		// Format the log line
 		let logLine = `[${timestamp}] [${levelStr}] ${metadataStr}`;
 
-		// Add extra data if present
+		// Add extra data if present (single line, no pretty-print)
 		if (extra.length > 0) {
 			const extraStr = extra.map(e => {
 				if (typeof e === 'object') {
 					try {
-						return JSON.stringify(e, null, 2);
+						return JSON.stringify(e);
 					} catch {
 						return String(e);
 					}

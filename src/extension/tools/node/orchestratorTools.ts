@@ -489,6 +489,55 @@ class CancelTaskTool implements ICopilotTool<ICancelTaskParams> {
 }
 
 // ============================================================================
+// Deploy Task Tool
+// ============================================================================
+
+interface IDeployTaskParams {
+	taskId?: string;
+	modelId?: string;
+}
+
+class DeployTaskTool implements ICopilotTool<IDeployTaskParams> {
+	public static readonly toolName = ToolName.OrchestratorDeployTask;
+
+	constructor(
+		@IOrchestratorService private readonly _orchestratorService: IOrchestratorService
+	) { }
+
+	prepareInvocation(options: LanguageModelToolInvocationPrepareOptions<IDeployTaskParams>, _token: CancellationToken): ProviderResult<any> {
+		const taskDesc = options.input.taskId ? `task "${options.input.taskId}"` : 'the next ready task';
+		return {
+			confirmationMessages: {
+				title: 'Deploy Task',
+				message: `Deploy ${taskDesc}? A new worker will be created.`
+			}
+		};
+	}
+
+	async invoke(options: LanguageModelToolInvocationOptions<IDeployTaskParams>, _token: CancellationToken): Promise<LanguageModelToolResult> {
+		const { taskId, modelId } = options.input;
+		const deployOptions = modelId ? { modelId } : undefined;
+
+		try {
+			const worker = await this._orchestratorService.deploy(taskId, deployOptions);
+			const tasks = this._orchestratorService.getTasks();
+			const task = tasks.find(t => t.workerId === worker.id);
+			const taskName = task?.name ?? worker.name;
+			const modelInfo = modelId ? ` (model: ${modelId})` : '';
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`✅ Task "${taskName}" deployed${modelInfo}. Worker: ${worker.id}, Worktree: ${worker.worktreePath}`)
+			]);
+		} catch (e: any) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`❌ Failed to deploy task: ${e.message}`)
+			]);
+		}
+	}
+}
+
+ToolRegistry.registerTool(DeployTaskTool);
+
+// ============================================================================
 // Retry Task Tool
 // ============================================================================
 
