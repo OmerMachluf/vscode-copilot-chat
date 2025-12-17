@@ -591,6 +591,9 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 	/** Map of worker ID -> wake-up adapter disposables */
 	private readonly _wakeUpAdapters = new Map<string, { dispose(): void }>();
 
+	/** Map of worker ID -> active inquiry listener disposables (idle/progress). Cleaned up when new inquiry sent or worker interrupted. */
+	private readonly _activeInquiryListeners = new Map<string, { dispose(): void }>();
+
 	/** Event-driven orchestrator service for LLM-based decision making */
 	private readonly _eventDrivenOrchestrator: EventDrivenOrchestratorService;
 
@@ -971,10 +974,21 @@ This is a scheduled progress check. Please provide a brief status update:
 	): void {
 		this._orchLog('Setting up progress inquiry response capture', { childWorkerId, parentWorkerId, taskId: task.id });
 
+		// Clean up any existing inquiry listeners for this worker to prevent old listeners
+		// from capturing responses meant for new inquiries (race condition fix)
+		this._cleanupInquiryListeners(childWorkerId);
+
 		// Set up a listener to capture the child's response when streaming ends
 		const responseTimeout = 60000; // 60 second timeout for response
 		let responded = false;
 		let responseContent = '';
+
+		// Helper to clean up and remove from tracking
+		const cleanup = () => {
+			streamPartDisposable.dispose();
+			streamEndDisposable.dispose();
+			this._activeInquiryListeners.delete(childWorkerId);
+		};
 
 		// Listen for streaming parts to capture the response
 		const streamPartDisposable = worker.onStreamPart((part) => {
@@ -992,8 +1006,7 @@ This is a scheduled progress check. Please provide a brief status update:
 				return;
 			}
 			responded = true;
-			streamPartDisposable.dispose();
-			streamEndDisposable.dispose();
+			cleanup();
 
 			// Truncate response if too long
 			const maxResponseLength = 2000;
@@ -1027,12 +1040,16 @@ This is a scheduled progress check. Please provide a brief status update:
 			});
 		});
 
+		// Track these listeners so they can be cleaned up if a new inquiry is sent
+		this._activeInquiryListeners.set(childWorkerId, {
+			dispose: cleanup
+		});
+
 		// Set up timeout
 		setTimeout(() => {
 			if (!responded) {
 				responded = true;
-				streamPartDisposable.dispose();
-				streamEndDisposable.dispose();
+				cleanup();
 
 				this._orchLog('Child did not respond to progress inquiry (timeout)', {
 					childWorkerId,
@@ -1184,10 +1201,21 @@ This is a scheduled progress check. Please provide a brief status update:
 	): void {
 		this._orchLog('Setting up idle inquiry response capture', { childWorkerId, parentWorkerId, taskId: task.id });
 
+		// Clean up any existing inquiry listeners for this worker to prevent old listeners
+		// from capturing responses meant for new inquiries (race condition fix)
+		this._cleanupInquiryListeners(childWorkerId);
+
 		// Set up a listener to capture the child's response when streaming ends
 		const responseTimeout = 60000; // 60 second timeout for response
 		let responded = false;
 		let responseContent = '';
+
+		// Helper to clean up and remove from tracking
+		const cleanup = () => {
+			streamPartDisposable.dispose();
+			streamEndDisposable.dispose();
+			this._activeInquiryListeners.delete(childWorkerId);
+		};
 
 		// Listen to stream parts to capture the response content
 		const streamPartDisposable = worker.onStreamPart((part) => {
@@ -1206,8 +1234,7 @@ This is a scheduled progress check. Please provide a brief status update:
 			}
 
 			responded = true;
-			streamPartDisposable.dispose();
-			streamEndDisposable.dispose();
+			cleanup();
 
 			// Queue the combined idle + response update for parent
 			const truncatedResponse = responseContent.length > 500
@@ -1235,12 +1262,16 @@ This is a scheduled progress check. Please provide a brief status update:
 			this._orchLog('Queued idle_response update for parent', { childWorkerId, parentWorkerId, taskId: task.id });
 		});
 
+		// Track these listeners so they can be cleaned up if a new inquiry is sent
+		this._activeInquiryListeners.set(childWorkerId, {
+			dispose: cleanup
+		});
+
 		// Set up timeout in case child doesn't respond
 		setTimeout(() => {
 			if (!responded) {
 				responded = true;
-				streamPartDisposable.dispose();
-				streamEndDisposable.dispose();
+				cleanup();
 
 				this._orchLog('Child did not respond to idle inquiry (timeout)', {
 					childWorkerId,
@@ -1265,6 +1296,20 @@ This is a scheduled progress check. Please provide a brief status update:
 		// Send the inquiry to wake up the child
 		this._orchLog('Sending idle inquiry clarification to child', { childWorkerId });
 		worker.sendClarification(inquiryMessage);
+	}
+
+	/**
+	 * Clean up any active inquiry listeners for a worker.
+	 * Called before setting up new listeners to prevent race conditions where
+	 * old listeners might capture responses meant for new inquiries.
+	 */
+	private _cleanupInquiryListeners(workerId: string): void {
+		const existing = this._activeInquiryListeners.get(workerId);
+		if (existing) {
+			this._orchLog('Cleaning up existing inquiry listeners', { workerId });
+			existing.dispose();
+			this._activeInquiryListeners.delete(workerId);
+		}
 	}
 
 	/**

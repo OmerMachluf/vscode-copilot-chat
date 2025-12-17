@@ -639,6 +639,11 @@ export class ClaudeCodeSession extends Disposable {
 	 * Routes messages to appropriate handlers and manages request completion
 	 */
 	private async _processMessages(): Promise<void> {
+		// Capture the generator we're processing - used to detect if we've been superseded
+		// by a new loop after abort(). Without this check, the old loop's catch block
+		// would trample the new loop's state (_promptQueue, _queryGenerator, _pendingPrompt).
+		const myGenerator = this._queryGenerator;
+
 		try {
 			const unprocessedToolCalls = new Map<string, Anthropic.ToolUseBlock>();
 			for await (const message of this._queryGenerator!) {
@@ -667,14 +672,21 @@ export class ClaudeCodeSession extends Disposable {
 				}
 			}
 		} catch (error) {
-			// Reject all pending requests
-			this._promptQueue.forEach(req => req.deferred.error(error as Error));
-			this._promptQueue = [];
-			this._pendingPrompt?.error(error as Error);
-			this._pendingPrompt = undefined;
-			// Clear the query generator so next invoke() will start a fresh session
-			// This is important for recovery after cancellation/interruption
-			this._queryGenerator = undefined;
+			// Only clean up state if we're still the active loop.
+			// If abort() was called and a new invoke() started a new loop, the generator
+			// reference will have changed. In that case, we must NOT touch the shared state
+			// because it now belongs to the new loop.
+			if (this._queryGenerator === myGenerator || this._queryGenerator === undefined) {
+				// Reject all pending requests that belong to this loop
+				this._promptQueue.forEach(req => req.deferred.error(error as Error));
+				this._promptQueue = [];
+				this._pendingPrompt?.error(error as Error);
+				this._pendingPrompt = undefined;
+				// Clear the query generator so next invoke() will start a fresh session
+				// This is important for recovery after cancellation/interruption
+				this._queryGenerator = undefined;
+			}
+			// If _queryGenerator !== myGenerator, a new loop has taken over - don't interfere
 		}
 	}
 
