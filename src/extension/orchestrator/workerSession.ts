@@ -1190,9 +1190,12 @@ export class WorkerSession extends Disposable {
 		if (this._clarificationResolve) {
 			const resolve = this._clarificationResolve;
 			this._clarificationResolve = undefined;
+			console.log(`[WorkerSession:${this._id}] sendClarification: Worker IS waiting, delivering message immediately (${message.length} chars)`);
 			resolve(message);
 		} else {
 			// Store as pending for when worker starts waiting
+			// NOTE: If worker is mid-execution, this message won't be seen until execution completes!
+			console.log(`[WorkerSession:${this._id}] sendClarification: Worker NOT waiting (likely executing), QUEUING message for later (${message.length} chars)`);
 			this._pendingClarification = message;
 		}
 
@@ -1266,15 +1269,18 @@ export class WorkerSession extends Disposable {
 		if (this._pendingClarification) {
 			const message = this._pendingClarification;
 			this._pendingClarification = undefined;
+			console.log(`[WorkerSession:${this._id}] waitForClarification: Found QUEUED message, returning immediately (${message.length} chars)`);
 			return message;
 		}
 
 		// If already completed, don't wait
 		if (this._status === 'completed' || this._status === 'error') {
+			console.log(`[WorkerSession:${this._id}] waitForClarification: Worker is ${this._status}, returning undefined`);
 			return undefined;
 		}
 
 		// Wait for a clarification
+		console.log(`[WorkerSession:${this._id}] waitForClarification: No pending message, waiting for clarification...`);
 		return new Promise<string | undefined>((resolve) => {
 			this._clarificationResolve = resolve;
 		});

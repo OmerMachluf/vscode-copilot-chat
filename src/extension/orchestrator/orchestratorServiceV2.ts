@@ -923,7 +923,11 @@ This is a scheduled progress check. Please provide a brief status update:
 `;
 
 		// Send the progress inquiry
+		// IMPORTANT: Must interrupt first to stop current execution, then send message
 		this._orchLog('Sending progress inquiry to worker', { workerId, parentWorkerId: parentWorkerId ?? '(orchestrator-deployed)', taskId: task.id });
+
+		// Interrupt the worker to stop current execution and allow message delivery
+		worker.interrupt();
 
 		if (isChildWorker && parentWorkerId) {
 			// Child worker: capture response for parent
