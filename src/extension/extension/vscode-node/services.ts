@@ -131,6 +131,8 @@ import { ToolsService } from '../../tools/vscode-node/toolsService';
 import { LanguageContextServiceImpl } from '../../typescriptContext/vscode-node/languageContextService';
 import { IWorkspaceListenerService } from '../../workspaceRecorder/common/workspaceListenerService';
 import { WorkspacListenerService } from '../../workspaceRecorder/vscode-node/workspaceListenerService';
+import { IOnboardingAgentService, IRepositoryAnalyzerService, IArchitectureDocumentBuilderService, IAgentRecommendationEngineService } from '../../agents/onboarding/common/onboardingTypes';
+import { OnboardingAgentService, RepositoryAnalyzerService, ArchitectureDocumentBuilderService, AgentRecommendationEngineService } from '../../agents/onboarding/common';
 import { registerServices as registerCommonServices } from '../vscode/services';
 
 // ###########################################################################################
@@ -251,6 +253,12 @@ export function registerServices(builder: IInstantiationServiceBuilder, extensio
 	builder.define(IProxyModelsService, new SyncDescriptor(ProxyModelsService));
 	builder.define(IInlineEditsModelService, new SyncDescriptor(InlineEditsModelService));
 	builder.define(ICopilotInlineCompletionItemProviderService, new SyncDescriptor(CopilotInlineCompletionItemProviderService));
+
+	// Onboarding agent services
+	builder.define(IOnboardingAgentService, new SyncDescriptor(OnboardingAgentService));
+	builder.define(IRepositoryAnalyzerService, new SyncDescriptor(RepositoryAnalyzerService));
+	builder.define(IArchitectureDocumentBuilderService, new SyncDescriptor(ArchitectureDocumentBuilderService));
+	builder.define(IAgentRecommendationEngineService, new SyncDescriptor(AgentRecommendationEngineService));
 }
 
 function setupMSFTExperimentationService(builder: IInstantiationServiceBuilder, extensionContext: ExtensionContext) {

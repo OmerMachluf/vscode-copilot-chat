@@ -21,8 +21,18 @@
 // Core types and interfaces
 export * from './common/onboardingTypes';
 
-// Repository analysis service
+// Repository analysis services
 export { RepositoryAnalyzerService } from './node/repositoryAnalyzer';
+export { RepositoryInvestigationEngine } from './node/repositoryInvestigationEngine';
+
+// Architecture and documentation services
+export { ArchitectureDocumentBuilderService } from './node/architectureDocumentBuilder';
+
+// Agent recommendation services
+export { AgentRecommendationEngineService } from './node/agentRecommendationEngine';
+
+// Main orchestration service
+export { OnboardingAgentService } from './node/onboardingAgentService';
 
 // Service identifiers for dependency injection
 export {
