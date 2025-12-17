@@ -3312,7 +3312,8 @@ Process these updates and continue your work. If subtasks completed successfully
 		const gitPath = path.join(worktreePath, '.git');
 		if (fs.existsSync(worktreePath)) {
 			if (fs.existsSync(gitPath)) {
-				// Valid worktree exists
+				// Valid worktree exists - ensure .claude folder is copied
+				await this._copyClaudeFolderToWorktree(workspaceFolder, worktreePath);
 				return worktreePath;
 			}
 			// Directory exists but is not a valid worktree - clean it up
@@ -3329,6 +3330,8 @@ Process these updates and continue your work. If subtasks completed successfully
 					await this._execGit(['worktree', 'add', worktreePath, branchName], workspaceFolder);
 				} catch {
 					if (fs.existsSync(worktreePath) && fs.existsSync(gitPath)) {
+						// Worktree exists - still ensure .claude is copied
+						await this._copyClaudeFolderToWorktree(workspaceFolder, worktreePath);
 						return worktreePath;
 					}
 					throw error;
@@ -3337,6 +3340,10 @@ Process these updates and continue your work. If subtasks completed successfully
 				throw error;
 			}
 		}
+
+		// Copy .claude folder to worktree (contains agents, commands, skills)
+		// This folder is in .gitignore so it's not copied automatically
+		await this._copyClaudeFolderToWorktree(workspaceFolder, worktreePath);
 
 		return worktreePath;
 	}
@@ -3352,6 +3359,55 @@ Process these updates and continue your work. If subtasks completed successfully
 		} catch {
 			// If git command fails, assume clean to allow worktree creation
 			return false;
+		}
+	}
+
+	/**
+	 * Copy the .claude folder from workspace to worktree.
+	 * The .claude folder contains agents, commands, and skills that are needed
+	 * for Claude to work properly but is typically in .gitignore.
+	 */
+	private async _copyClaudeFolderToWorktree(workspaceFolder: string, worktreePath: string): Promise<void> {
+		const sourceClaudeDir = path.join(workspaceFolder, '.claude');
+		const targetClaudeDir = path.join(worktreePath, '.claude');
+
+		// Only copy if source exists and target doesn't
+		if (!fs.existsSync(sourceClaudeDir)) {
+			return; // No .claude folder in main repo
+		}
+
+		if (fs.existsSync(targetClaudeDir)) {
+			return; // Already copied
+		}
+
+		try {
+			// Recursively copy the .claude folder
+			this._copyDirRecursive(sourceClaudeDir, targetClaudeDir);
+			this._logService.info(`[Orchestrator] Copied .claude folder to worktree: ${worktreePath}`);
+		} catch (error) {
+			// Log but don't fail - the worker might still work without custom agents
+			this._logService.warn(`[Orchestrator] Failed to copy .claude folder to worktree: ${error}`);
+		}
+	}
+
+	/**
+	 * Recursively copy a directory
+	 */
+	private _copyDirRecursive(source: string, target: string): void {
+		if (!fs.existsSync(target)) {
+			fs.mkdirSync(target, { recursive: true });
+		}
+
+		const entries = fs.readdirSync(source, { withFileTypes: true });
+		for (const entry of entries) {
+			const sourcePath = path.join(source, entry.name);
+			const targetPath = path.join(target, entry.name);
+
+			if (entry.isDirectory()) {
+				this._copyDirRecursive(sourcePath, targetPath);
+			} else {
+				fs.copyFileSync(sourcePath, targetPath);
+			}
 		}
 	}
 
