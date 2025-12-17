@@ -20,6 +20,12 @@ export interface IWorkerHealthMetrics {
 	isStuck: boolean;
 	isLooping: boolean;
 	isIdle: boolean;
+	/**
+	 * Whether the worker is currently executing (inside invoke() or run()).
+	 * When true, we should NOT fire idle events even if no stream output is produced.
+	 * This prevents false idle detection during "thinking" phases.
+	 */
+	isExecuting: boolean;
 	/** Whether an idle inquiry has been sent and is awaiting response */
 	idleInquiryPending: boolean;
 	/** Timestamp when idle inquiry was sent (for timeout tracking) */
@@ -58,6 +64,16 @@ export interface IWorkerHealthMonitor {
 	clearIdleInquiry(workerId: string): void;
 	/** Mark that a progress check has been sent */
 	markProgressCheckSent(workerId: string): void;
+	/**
+	 * Mark execution start - worker is now inside executor.execute() or agentRunner.run().
+	 * While executing, idle detection is suppressed to avoid false positives during "thinking".
+	 */
+	markExecutionStart(workerId: string): void;
+	/**
+	 * Mark execution end - worker has returned from execute()/run().
+	 * Idle detection resumes normally.
+	 */
+	markExecutionEnd(workerId: string): void;
 	onWorkerUnhealthy: Event<{ workerId: string; reason: WorkerUnhealthyReason }>;
 	/** Event fired when a worker goes idle (before being marked stuck) */
 	onWorkerIdle: Event<{ workerId: string; reason: WorkerIdleReason }>;
@@ -142,6 +158,7 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 			isStuck: false,
 			isLooping: false,
 			isIdle: false,
+			isExecuting: false, // Will be set true during execute()/run()
 			idleInquiryPending: false,
 			idleInquirySentAt: undefined,
 			lastProgressCheckAt: Date.now(), // Initialize to now so first check is after interval
@@ -344,6 +361,32 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 	}
 
 	/**
+	 * Mark execution start - worker is now inside executor.execute() or agentRunner.run().
+	 * While executing, idle detection is suppressed to avoid false positives during "thinking".
+	 */
+	public markExecutionStart(workerId: string): void {
+		const metrics = this._metrics.get(workerId);
+		if (metrics) {
+			metrics.isExecuting = true;
+			metrics.lastActivityTimestamp = Date.now(); // Reset activity timestamp
+			this._log('Marked execution start', { workerId });
+		}
+	}
+
+	/**
+	 * Mark execution end - worker has returned from execute()/run().
+	 * Idle detection resumes normally.
+	 */
+	public markExecutionEnd(workerId: string): void {
+		const metrics = this._metrics.get(workerId);
+		if (metrics) {
+			metrics.isExecuting = false;
+			metrics.lastActivityTimestamp = Date.now(); // Reset activity timestamp
+			this._log('Marked execution end', { workerId });
+		}
+	}
+
+	/**
 	 * Periodic check for idle, stuck workers, and progress checks
 	 */
 	private _checkStuckWorkers(): void {
@@ -360,6 +403,7 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 				idleTimeoutMs: this._config.idleTimeoutMs,
 				isIdle: metrics.isIdle,
 				isStuck: metrics.isStuck,
+				isExecuting: metrics.isExecuting,
 				idleInquiryPending: metrics.idleInquiryPending,
 				timeSinceProgressCheckMs: timeSinceProgressCheck,
 			});
@@ -370,8 +414,11 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 			// 2. Worker is not already stuck
 			// 3. No idle inquiry is already pending
 			// 4. Idle timeout has been exceeded
+			// 5. Worker is NOT currently executing (inside invoke()/run())
+			//    - During execution, the worker may be "thinking" without producing output
+			//    - We don't want to interrupt that with idle inquiries
 			if (!metrics.isIdle && !metrics.isStuck && !metrics.idleInquiryPending &&
-				timeSinceActivity > this._config.idleTimeoutMs) {
+				!metrics.isExecuting && timeSinceActivity > this._config.idleTimeoutMs) {
 				metrics.isIdle = true;
 				this._log('FIRING onWorkerIdle event', { workerId, reason: 'no_activity', timeSinceActivityMs: timeSinceActivity });
 				this._onWorkerIdle.fire({ workerId, reason: 'no_activity' });
@@ -381,13 +428,15 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 			// Only fire if:
 			// 1. Worker is not stuck (still active)
 			// 2. Progress check interval has passed since last check
-			if (!metrics.isStuck && timeSinceProgressCheck > this._config.progressCheckIntervalMs) {
+			// 3. Worker IS executing (we want progress reports during long executions)
+			if (!metrics.isStuck && metrics.isExecuting && timeSinceProgressCheck > this._config.progressCheckIntervalMs) {
 				// Fire the event - the handler is responsible for calling markProgressCheckSent
 				this._log('FIRING onProgressCheckDue event', { workerId, timeSinceProgressCheckMs: timeSinceProgressCheck, intervalMs: this._config.progressCheckIntervalMs });
 				this._onProgressCheckDue.fire({ workerId });
 			}
 
 			// Check for stuck (longer timeout)
+			// This fires even during execution - if no activity for 5+ minutes, something's wrong
 			if (!metrics.isStuck && timeSinceActivity > this._config.stuckTimeoutMs) {
 				metrics.isStuck = true;
 				this._log('FIRING onWorkerUnhealthy event (stuck)', { workerId, timeSinceActivityMs: timeSinceActivity, stuckTimeoutMs: this._config.stuckTimeoutMs });

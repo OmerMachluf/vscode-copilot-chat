@@ -40,6 +40,19 @@ import { WorkerHealthMonitor, WorkerIdleReason } from './workerHealthMonitor';
 import { SerializedWorkerState, WorkerResponseStream, WorkerSession, WorkerSessionState } from './workerSession';
 import { IWorkerToolsService, WorkerToolSet } from './workerToolsService';
 
+/**
+ * Escape a file path for safe display in markdown.
+ * On Windows, backslashes need to be doubled to prevent markdown escape sequences
+ * like `\.` being interpreted as just `.`.
+ */
+function escapePathForMarkdown(filePath: string | undefined): string {
+	if (!filePath) {
+		return '';
+	}
+	// Double backslashes so they display correctly in markdown
+	return filePath.replace(/\\/g, '\\\\');
+}
+
 export const IOrchestratorService = createDecorator<IOrchestratorService>('orchestratorService');
 
 // ============================================================================
@@ -734,6 +747,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		const toolSet = this._workerToolSets.get(workerId);
 		const ownerContext = toolSet?.workerContext?.owner;
 		const isChildWorker = ownerContext && ownerContext.ownerType === 'worker';
+		const parentWorkerId = isChildWorker ? ownerContext.ownerId : undefined;
 
 		this._orchLog('Checking worker parent context', {
 			workerId,
@@ -744,15 +758,10 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			isChildWorker,
 		});
 
-		// If this is NOT a child worker (i.e., it's a top-level parent), and it has no
-		// pending updates, it's just waiting for its children - that's normal, do nothing
-		if (!isChildWorker) {
-			this._orchLog('Top-level worker idle with no pending updates - waiting for children', { workerId });
-			return;
-		}
-
-		// This is a CHILD worker that went idle - send inquiry to gather context for parent
-		this._orchLog('Child worker went idle - will send inquiry', { workerId, parentWorkerId: ownerContext.ownerId });
+		// Send idle inquiry to ALL workers that go idle (both top-level and child workers)
+		// - For child workers: response is queued for parent
+		// - For top-level workers: helps them realize they need to complete or continue
+		this._orchLog('Worker went idle - will send inquiry', { workerId, parentWorkerId: parentWorkerId ?? '(top-level)' });
 
 		// Don't send inquiry if one is already pending
 		const inquiryPending = this._healthMonitor.hasIdleInquiryPending(workerId);
@@ -777,8 +786,9 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 			return;
 		}
 
-		// Build the idle inquiry message for the CHILD
-		const inquiryMessage = `
+		// Build different inquiry messages for child vs top-level workers
+		const inquiryMessage = isChildWorker
+			? `
 ## Status Check
 
 You appear to be idle (no recent activity). Please respond with your current status.
@@ -799,12 +809,42 @@ We will handle blockers on your behalf - just describe what you need.
 Briefly describe what you're currently processing and we'll check back later.
 
 **Please respond now** - your parent task is waiting for your status update.
+`
+			: `
+## Status Check
+
+You appear to be idle (no recent activity). Please respond with your current status.
+
+### If you have COMPLETED your task:
+**You MUST:**
+1. **Commit your changes** using git (if you haven't already)
+2. **Call \`orchestrator_completeTask\`** with taskId="${task.id}" to signal completion
+
+### If you are BLOCKED or cannot proceed:
+Tell us what's preventing you from moving forward:
+- **Permissions needed?** (e.g., need approval to run a command, access a file)
+- **Missing information?** (e.g., need clarification, waiting for input)
+- **Technical blocker?** (e.g., error you can't resolve, dependency issue)
+- **Other reason?**
+
+### If you are still WORKING:
+Briefly describe what you're currently processing and we'll check back later.
+
+**Please respond now.**
 `;
 
-		// Send the inquiry to the CHILD worker and capture response
-		// We use a wrapper to capture the child's response and queue it with the idle notification
-		this._orchLog('Sending idle inquiry to child worker', { childWorkerId: workerId, parentWorkerId: ownerContext.ownerId, taskId: task.id });
-		this._sendIdleInquiryAndCaptureResponse(worker, workerId, task, ownerContext.ownerId, inquiryMessage);
+		// Send the inquiry to the worker
+		// For child workers: capture response and queue it for parent
+		// For top-level workers: just send the inquiry (no parent to notify)
+		this._orchLog('Sending idle inquiry to worker', { workerId, parentWorkerId: parentWorkerId ?? '(top-level)', taskId: task.id });
+
+		if (isChildWorker && parentWorkerId) {
+			// Child worker: capture response for parent
+			this._sendIdleInquiryAndCaptureResponse(worker, workerId, task, parentWorkerId, inquiryMessage);
+		} else {
+			// Top-level worker: just send the inquiry directly
+			worker.sendClarification(inquiryMessage);
+		}
 	}
 
 	/**
@@ -1707,6 +1747,69 @@ Process these updates and continue your work. If subtasks completed successfully
 		return lines.join('\n');
 	}
 
+	/**
+	 * Build additional instructions for an orchestrator-deployed worker.
+	 * This provides context about the worker's environment, completion requirements,
+	 * and available capabilities - similar to what subtasks get via _buildSubTaskAdditionalInstructions.
+	 */
+	private _buildWorkerInstructions(task: WorkerTask, worktreePath: string, plan?: OrchestratorPlan): string {
+		const maxDepth = this._subTaskManager.maxDepth;
+		const planContext = plan
+			? `- **Plan:** "${plan.name}" (${plan.id})\n- **Plan Description:** ${plan.description}`
+			: '- **Plan:** Ad-hoc task (no plan)';
+
+		return `## WORKER CONTEXT
+You are a worker deployed by the Orchestrator to complete a specific task.
+- **Task ID:** ${task.id}
+- **Task Name:** ${task.name}
+${planContext}
+- **Depth Level:** 0 (top-level worker)
+
+## YOUR WORKTREE
+You are working in your own dedicated worktree at: ${escapePathForMarkdown(worktreePath)}
+This is an isolated copy of the repository on a new branch. Changes here do not affect the main workspace until merged.
+
+## ⚠️ CRITICAL: YOU MUST COMMIT AND COMPLETE YOUR TASK
+**When you finish your task, you MUST:**
+1. **Commit your changes** using git (stage and commit with a descriptive message)
+2. **Call \`orchestrator_completeTask\`** with your taskId to signal completion
+
+Example completion:
+\`\`\`
+# First commit your changes
+git add -A
+git commit -m "feat: descriptive message of your changes"
+
+# Then call the completion tool
+orchestrator_completeTask with taskId="${task.id}"
+\`\`\`
+
+**⚠️ WARNING: If you don't commit your changes before completing, they may be lost!**
+**⚠️ WARNING: If you don't call orchestrator_completeTask, the orchestrator won't know you're done!**
+
+## WORKTREE RESTRICTION
+**You can ONLY modify files within your worktree: ${escapePathForMarkdown(worktreePath)}**
+Any attempt to read, write, or modify files outside this path should be avoided.
+
+## SUB-TASK SPAWNING
+You CAN spawn sub-tasks if needed using \`a2a_spawn_subtask\` or \`a2a_spawn_parallel_subtasks\` tools.
+Use \`a2a_list_agents\` to discover available agent types.
+- Maximum depth for sub-tasks: ${maxDepth}
+- Good reasons to spawn sub-tasks:
+  - Investigating API documentation or external resources
+  - Code review by a specialist agent
+  - Build/test troubleshooting while you focus on main task
+  - Any independent research that would distract from your core goal
+
+## YOUR RESPONSIBILITIES
+1. Complete the specific task assigned to you
+2. Make file changes directly in your worktree using standard tools
+3. Commit your changes with a descriptive message
+4. Call \`orchestrator_completeTask\` when done
+
+Focus on your assigned task and provide a clear, actionable result.`;
+	}
+
 	// NOTE: _buildOrchestratorGuidance was removed along with _notifyOrchestratorOfWorkerCompletion.
 	// These functions were part of the old idle→completed coupling that has been removed.
 
@@ -2346,10 +2449,15 @@ Process these updates and continue your work. If subtasks completed successfully
 			// Note: Use || instead of ?? to treat empty string as falsy
 			const worktreePath = options?.worktreePath || await this._createWorktree(task.name, baseBranch);
 
-			// If an instructions builder was provided, call it with the actual worktree path
-			// and inject the built instructions into the task's context.
-			// This is critical for subtasks where the worktreePath wasn't known at creation time.
+			// Inject additional instructions into the task's context.
+			// This provides workers with critical context about their environment and responsibilities.
+			//
+			// Priority:
+			// 1. If instructionsBuilder provided (subtasks) → use it
+			// 2. If top-level worker (no parentWorkerId) → build default worker instructions
+			// 3. Otherwise → use existing context.additionalInstructions (if any)
 			if (options?.instructionsBuilder) {
+				// Subtask case: use the provided builder
 				this._logService.info(`[Orchestrator:deploy] Calling instructionsBuilder for task ${task.id} with worktreePath=${worktreePath}`);
 				const builtInstructions = options.instructionsBuilder(worktreePath);
 				// Mutate the task's context to include the instructions
@@ -2360,8 +2468,17 @@ Process these updates and continue your work. If subtasks completed successfully
 				}
 				(task.context as { additionalInstructions?: string }).additionalInstructions = builtInstructions;
 				this._logService.info(`[Orchestrator:deploy] Injected additionalInstructions for task ${task.id}: ${builtInstructions.length} chars, preview="${builtInstructions.slice(0, 200).replace(/\n/g, '\\n')}..."`);
+			} else if (!task.parentWorkerId && !task.context?.additionalInstructions) {
+				// Top-level orchestrator-deployed worker: build default instructions
+				this._logService.info(`[Orchestrator:deploy] Building default worker instructions for top-level task ${task.id}`);
+				const builtInstructions = this._buildWorkerInstructions(task, worktreePath, plan);
+				if (!task.context) {
+					(task as { context?: WorkerTaskContext }).context = {};
+				}
+				(task.context as { additionalInstructions?: string }).additionalInstructions = builtInstructions;
+				this._logService.info(`[Orchestrator:deploy] Injected default worker instructions for task ${task.id}: ${builtInstructions.length} chars`);
 			} else {
-				this._logService.info(`[Orchestrator:deploy] NO instructionsBuilder provided for task ${task.id} - task.context.additionalInstructions will be: ${task.context?.additionalInstructions ? `${task.context.additionalInstructions.length} chars` : '(none)'}`);
+				this._logService.info(`[Orchestrator:deploy] Using existing additionalInstructions for task ${task.id}: ${task.context?.additionalInstructions ? `${task.context.additionalInstructions.length} chars` : '(none)'}`);
 			}
 
 			// Parse and validate agent type using the centralized parser
@@ -3524,6 +3641,20 @@ Process these updates and continue your work. If subtasks completed successfully
 			}
 		}));
 
+		// CRITICAL: Track stream activity for health monitoring
+		// During long-running agent executions, recordActivity() only gets called at iteration
+		// start/end. This listener ensures activity is recorded whenever the worker produces
+		// output, preventing false idle/stuck detection.
+		let lastActivityRecordedAt = 0;
+		const ACTIVITY_THROTTLE_MS = 5000; // Record activity at most every 5 seconds
+		const streamActivityDisposable = worker.onStreamPart(() => {
+			const now = Date.now();
+			if (now - lastActivityRecordedAt > ACTIVITY_THROTTLE_MS) {
+				lastActivityRecordedAt = now;
+				this._healthMonitor.recordActivity(worker.id, 'message');
+			}
+		});
+
 		// Note: toolInvocationToken is set during deploy() with a synthetic token.
 		// This enables tool UI bubbles without waiting for user interaction.
 
@@ -3584,29 +3715,36 @@ Process these updates and continue your work. If subtasks completed successfully
 				// This gives the agent context of previous exchanges in this session
 				const history = this._buildConversationHistory(worker, currentPrompt);
 
-				// Record activity start
+				// Record activity start and mark execution in progress
 				this._healthMonitor.recordActivity(worker.id, 'message');
+				this._healthMonitor.markExecutionStart(worker.id);
 
 				// Run the agent using the proper IAgentRunner service
 				// Use the captured iterationToken so interrupt() can stop it
 				// Pass the toolInvocationToken if available for inline confirmations
-				const result = await this._agentRunner.run(
-					{
-						prompt: currentPrompt,
-						sessionId,
-						model,
-						suggestedFiles: task.context?.suggestedFiles,
-						additionalInstructions: combinedInstructions || undefined,
-						token: iterationToken,
-						onPaused: pausedEmitter.event,
-						maxToolCallIterations: 200,
-						workerToolSet,
-						worktreePath: worker.worktreePath, // Kept for prompt context
-						history, // Pass conversation history for context
-						toolInvocationToken: worker.toolInvocationToken, // For inline tool confirmations
-					},
-					stream as unknown as vscode.ChatResponseStream
-				);
+				let result;
+				try {
+					result = await this._agentRunner.run(
+						{
+							prompt: currentPrompt,
+							sessionId,
+							model,
+							suggestedFiles: task.context?.suggestedFiles,
+							additionalInstructions: combinedInstructions || undefined,
+							token: iterationToken,
+							onPaused: pausedEmitter.event,
+							maxToolCallIterations: 200,
+							workerToolSet,
+							worktreePath: worker.worktreePath, // Kept for prompt context
+							history, // Pass conversation history for context
+							toolInvocationToken: worker.toolInvocationToken, // For inline tool confirmations
+						},
+						stream as unknown as vscode.ChatResponseStream
+					);
+				} finally {
+					// Mark execution complete regardless of success/failure
+					this._healthMonitor.markExecutionEnd(worker.id);
+				}
 
 				stream.flush();
 
@@ -3753,7 +3891,8 @@ Process these updates and continue your work. If subtasks completed successfully
 			}
 		}
 
-		// Stop monitoring when worker loop ends
+		// Cleanup: dispose stream activity listener and stop health monitoring
+		streamActivityDisposable.dispose();
 		this._healthMonitor.stopMonitoring(worker.id);
 	}
 
@@ -3809,6 +3948,20 @@ Process these updates and continue your work. If subtasks completed successfully
 			}
 		}));
 
+		// CRITICAL: Track stream activity for health monitoring
+		// During long-running Claude executions, recordActivity() only gets called at iteration
+		// start/end. This listener ensures activity is recorded whenever the worker produces
+		// output, preventing false idle/stuck detection.
+		let lastActivityRecordedAt = 0;
+		const ACTIVITY_THROTTLE_MS = 5000; // Record activity at most every 5 seconds
+		const streamActivityDisposable = worker.onStreamPart(() => {
+			const now = Date.now();
+			if (now - lastActivityRecordedAt > ACTIVITY_THROTTLE_MS) {
+				lastActivityRecordedAt = now;
+				this._healthMonitor.recordActivity(worker.id, 'message');
+			}
+		});
+
 		this._logService.info(`[Orchestrator:_runExecutorBasedTask] ========== STARTING ${parsedAgentType.backend.toUpperCase()} EXECUTOR LOOP ==========`);
 		this._logService.info(`[Orchestrator:_runExecutorBasedTask] worker.isActive=${worker.isActive}, worker.status=${worker.status}`);
 
@@ -3842,35 +3995,42 @@ Process these updates and continue your work. If subtasks completed successfully
 
 				worker.addUserMessage(currentPrompt);
 
-				// Record activity start
+				// Record activity start and mark execution in progress
 				this._healthMonitor.recordActivity(worker.id, 'message');
+				this._healthMonitor.markExecutionStart(worker.id);
 
 				// Create response stream for the executor
 				const stream = new WorkerResponseStream(worker);
 
 				// Execute using the executor
-				const result = await executor.execute(
-					{
-						taskId: task.id,
-						prompt: currentPrompt,
-						worktreePath: worker.worktreePath,
-						agentType: parsedAgentType,
-						parentWorkerId: task.parentWorkerId,
-						model,
-						modelId: modelOverride ?? task.modelId,
-						options: {
-							maxToolCallIterations: 200,
+				let result;
+				try {
+					result = await executor.execute(
+						{
+							taskId: task.id,
+							prompt: currentPrompt,
+							worktreePath: worker.worktreePath,
+							agentType: parsedAgentType,
+							parentWorkerId: task.parentWorkerId,
+							model,
+							modelId: modelOverride ?? task.modelId,
+							options: {
+								maxToolCallIterations: 200,
+							},
+							history,
+							additionalInstructions: task.context?.additionalInstructions,
+							workerToolSet,
+							workerContext: workerToolSet?.workerContext,
+							toolInvocationToken: worker.toolInvocationToken,
+							token: iterationToken,
+							onPaused: pausedEmitter.event,
 						},
-						history,
-						additionalInstructions: task.context?.additionalInstructions,
-						workerToolSet,
-						workerContext: workerToolSet?.workerContext,
-						toolInvocationToken: worker.toolInvocationToken,
-						token: iterationToken,
-						onPaused: pausedEmitter.event,
-					},
-					stream as unknown as vscode.ChatResponseStream
-				);
+						stream as unknown as vscode.ChatResponseStream
+					);
+				} finally {
+					// Mark execution complete regardless of success/failure
+					this._healthMonitor.markExecutionEnd(worker.id);
+				}
 
 				stream.flush();
 
@@ -3976,7 +4136,8 @@ Process these updates and continue your work. If subtasks completed successfully
 			}
 		}
 
-		// Stop monitoring when worker loop ends
+		// Cleanup: dispose stream activity listener and stop health monitoring
+		streamActivityDisposable.dispose();
 		this._healthMonitor.stopMonitoring(worker.id);
 	}
 
