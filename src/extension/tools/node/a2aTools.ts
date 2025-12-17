@@ -1429,7 +1429,7 @@ export class A2ASendMessageToWorkerTool implements ICopilotTool<SendMessageToWor
 		options: vscode.LanguageModelToolInvocationOptions<SendMessageToWorkerParams>,
 		_token: CancellationToken
 	): Promise<LanguageModelToolResult> {
-		const { workerId, message } = options.input;
+		let { workerId, message } = options.input;
 
 		if (!workerId) {
 			return new LanguageModelToolResult([
@@ -1437,20 +1437,38 @@ export class A2ASendMessageToWorkerTool implements ICopilotTool<SendMessageToWor
 			]);
 		}
 
+		// Try to resolve task ID to worker ID (same logic as orchestrator tool)
+		const tasks = this._orchestratorService.getTasks();
+		const task = tasks.find(t => t.id === workerId);
+		if (task?.workerId) {
+			workerId = task.workerId;
+		}
+
+		// Validate worker exists before sending
+		const workerState = this._orchestratorService.getWorkerState(workerId);
+		if (!workerState) {
+			return new LanguageModelToolResult([
+				new LanguageModelTextPart(`ERROR: Worker "${workerId}" not found.`),
+			]);
+		}
+
 		this._logService.info(`[A2ASendMessageToWorkerTool] Sending message to worker ${workerId}`);
 
 		try {
 			// Send message to worker via orchestrator service
-			// The worker's status will change to 'running' which updates the session status
-			// in the VS Code chat sessions panel (shows as "In Progress")
 			this._orchestratorService.sendMessageToWorker(workerId, message);
+
+			// Provide status-specific feedback
+			const statusNote = workerState.status === 'running'
+				? 'The worker will receive this message and respond when they reach a stopping point.'
+				: workerState.status === 'idle'
+					? 'The worker was idle and will now process your message.'
+					: `The worker is currently in "${workerState.status}" status.`;
 
 			return new LanguageModelToolResult([
 				new LanguageModelTextPart(
-					`Message sent to worker ${workerId}.\n\n` +
-					'The worker will wake up and continue working based on your feedback. ' +
-					'Look for the worker session in the chat sessions panel - it will show as "In Progress" while working. ' +
-					'Click on the session to see real-time progress and results.'
+					`Message sent to worker "${workerId}".\n\n${statusNote}\n\n` +
+					'Look for the worker session in the chat sessions panel to see progress.'
 				),
 			]);
 
