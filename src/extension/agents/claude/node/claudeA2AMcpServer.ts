@@ -36,12 +36,22 @@ export interface IA2AMcpServerDependencies {
 /**
  * Default worker context for standalone sessions (not spawned as subtasks).
  * Used when no workerContext is provided.
+ *
+ * CRITICAL: We use workspaceRoot from dependencies instead of process.cwd()
+ * because in VS Code's extension host, process.cwd() often returns the
+ * VS Code installation directory (e.g., C:\Program Files\Microsoft VS Code),
+ * not the actual workspace. This was causing tasks to fail immediately.
  */
-function getDefaultWorkerContext(): IWorkerContext {
+function getDefaultWorkerContext(workspaceRoot: string | undefined): IWorkerContext {
+	// CRITICAL: If no workspaceRoot is available, we should NOT use process.cwd()
+	// as it returns VS Code's installation directory in the extension host.
+	// Instead, leave it undefined and let the caller handle the validation.
+	const effectiveWorktreePath = workspaceRoot || undefined;
+
 	return {
 		_serviceBrand: undefined,
 		workerId: `claude-standalone-${Date.now()}`,
-		worktreePath: process.cwd(),
+		worktreePath: effectiveWorktreePath!,  // May be undefined, but typed as string
 		depth: 0,
 		spawnContext: 'agent' as SpawnContext,
 	};
@@ -70,7 +80,8 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 	} = deps;
 
 	// Use provided context or default for standalone sessions
-	const getWorkerContext = () => deps.workerContext ?? getDefaultWorkerContext();
+	// Pass workspaceRoot to default context to avoid using process.cwd() which returns VS Code installation dir
+	const getWorkerContext = () => deps.workerContext ?? getDefaultWorkerContext(workspaceRoot);
 
 	// Helper to resolve file paths
 	const resolveFilePath = (filePath: string): string => {

@@ -460,14 +460,34 @@ export class ClaudeCodeSession extends Disposable {
 	private async _startSession(token: vscode.CancellationToken): Promise<void> {
 		// Build options for the Claude Code SDK
 		const isDebugEnabled = this.configService.getConfig(ConfigKey.Advanced.ClaudeCodeDebugEnabled);
-		// this.logService.trace(`appRoot: ${this.envService.appRoot}`);
 		const pathSep = isWindows ? ';' : ':';
 
 		// Determine working directory: use constructor worktreePath first, then workerContext, then main workspace
 		const mainWorkspace = this.workspaceService.getWorkspaceFolders().at(0)?.fsPath;
 		const workingDirectory = this._worktreePath || this._workerContext?.worktreePath || mainWorkspace;
 
-		// this.logService.info(`[ClaudeCodeSession] Starting session with cwd: ${workingDirectory} (worktree: ${!!this._workerContext?.worktreePath})`);
+		// CRITICAL: Validate working directory to prevent using VS Code installation directory
+		// This can happen when no workspace is open or worktree paths are not properly propagated
+		if (!workingDirectory) {
+			throw new Error(
+				'[ClaudeCodeSession] No valid working directory found. ' +
+				'Please open a workspace folder before running Claude tasks. ' +
+				`(worktreePath=${this._worktreePath}, workerContextPath=${this._workerContext?.worktreePath}, mainWorkspace=${mainWorkspace})`
+			);
+		}
+
+		// Detect if we're about to use VS Code's installation directory (common misconfiguration)
+		const invalidPaths = ['Microsoft VS Code', 'Visual Studio Code', 'VSCode'];
+		if (invalidPaths.some(p => workingDirectory.includes(p))) {
+			throw new Error(
+				`[ClaudeCodeSession] Invalid working directory detected: ${workingDirectory}. ` +
+				'This appears to be VS Code installation directory, not a project workspace. ' +
+				`Please ensure worktree path is correctly propagated. ` +
+				`(worktreePath=${this._worktreePath}, workerContextPath=${this._workerContext?.worktreePath}, mainWorkspace=${mainWorkspace})`
+			);
+		}
+
+		this.logService.info(`[ClaudeCodeSession] Starting session with cwd: ${workingDirectory} (worktreePath=${this._worktreePath}, workerContextPath=${this._workerContext?.worktreePath}, mainWorkspace=${mainWorkspace})`);
 
 		// Create in-process MCP server for A2A orchestration tools
 		// Get optional services via instantiation service to avoid circular dependency issues

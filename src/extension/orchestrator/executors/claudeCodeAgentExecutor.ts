@@ -73,7 +73,40 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 		const startTime = Date.now();
 
 		this._logService.info(`[ClaudeCodeAgentExecutor] ========== CLAUDE CODE BACKEND ==========`);
-		// this._logService.info(`[ClaudeCodeAgentExecutor] Starting execution for task ${taskId} in ${worktreePath}`);
+		this._logService.info(`[ClaudeCodeAgentExecutor] Task: ${taskId}, worktreePath: ${worktreePath}, hasWorkerContext: ${!!workerContext}, hasToolToken: ${!!toolInvocationToken}`);
+
+		// CRITICAL: Validate worktree path before proceeding
+		// Without a valid worktree, Claude will start in the wrong directory and fail silently
+		if (!worktreePath) {
+			const errorMsg = `No worktree path provided for task ${taskId}. ` +
+				`This usually indicates the orchestrator failed to set up the worktree. ` +
+				`workerContext.worktreePath=${workerContext?.worktreePath}`;
+			this._logService.error(`[ClaudeCodeAgentExecutor] ${errorMsg}`);
+			return {
+				status: 'failed',
+				output: '',
+				error: errorMsg,
+			};
+		}
+
+		// Detect invalid VS Code installation directory
+		const invalidPaths = ['Microsoft VS Code', 'Visual Studio Code', 'VSCode'];
+		if (invalidPaths.some(p => worktreePath.includes(p))) {
+			const errorMsg = `Invalid worktree path for task ${taskId}: ${worktreePath}. ` +
+				`This appears to be VS Code installation directory, not a project workspace. ` +
+				`The orchestrator must provide a valid workspace or worktree path.`;
+			this._logService.error(`[ClaudeCodeAgentExecutor] ${errorMsg}`);
+			return {
+				status: 'failed',
+				output: '',
+				error: errorMsg,
+			};
+		}
+
+		// Validate toolInvocationToken - without it, tool confirmations fail
+		if (!toolInvocationToken) {
+			this._logService.warn(`[ClaudeCodeAgentExecutor] No toolInvocationToken provided for task ${taskId}. Tool confirmations may fail.`);
+		}
 
 		try {
 			// Auto-migrate Claude configuration on first task (once per session)
@@ -83,6 +116,7 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 			}
 
 			// Get or create session for this worktree
+			this._logService.info(`[ClaudeCodeAgentExecutor] Creating session for worktree: ${worktreePath}`);
 			const session = await this._claudeAgentManager.getOrCreateWorktreeSession(worktreePath);
 
 			// Set worker context for A2A orchestration if provided

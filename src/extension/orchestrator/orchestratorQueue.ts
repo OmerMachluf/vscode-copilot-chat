@@ -313,9 +313,32 @@ export class OrchestratorQueueService extends Disposable implements IOrchestrato
 		this._isProcessing = true;
 		const startTime = Date.now();
 
+		// TTL for messages - discard messages older than 1 hour to prevent queue buildup
+		const MESSAGE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
 		try {
 			const message = this._queue.peek();
 			if (message) {
+				// TTL check - discard stale messages to prevent queue buildup
+				const messageAge = startTime - message.timestamp;
+				if (messageAge > MESSAGE_TTL_MS) {
+					this._queue.dequeue();
+					this._qLog('Discarding stale message (TTL exceeded)', {
+						messageId: message.id,
+						type: message.type,
+						ageMs: messageAge,
+						ttlMs: MESSAGE_TTL_MS,
+						workerId: message.workerId,
+					});
+					this._processedMessageIds.add(message.id); // Mark as processed to prevent re-queuing
+					this._isProcessing = false;
+					// Continue processing next message
+					if (!this._queue.isEmpty()) {
+						setTimeout(() => this.processNext(), 0);
+					}
+					return;
+				}
+
 				// Find the appropriate handler for this message
 				const handler = this._getHandlerForMessage(message);
 				if (!handler) {
