@@ -70,7 +70,8 @@ export async function assertReadFileSizeLimit(fileSystemService: IFileSystemServ
 	if (stat.size > FS_READ_MAX_FILE_SIZE) {
 		if (!onlyWarn) {
 			const message = `[FileSystemService] ${uri.toString()} EXCEEDS max file size. FAILED to read ${Math.round(stat.size / (1024 * 1024))}MB > ${Math.round(FS_READ_MAX_FILE_SIZE / (1024 * 1024))}MB`;
-			throw new Error(message);
+			console.warn(message);
+			// throw new Error(message);
 		} else {
 			const message = `[FileSystemService] ${uri.toString()} is a LARGE file (${Math.round(stat.size / (1024 * 1024))}MB > ${Math.round(FS_READ_MAX_FILE_SIZE / (1024 * 1024))}MB)`;
 			console.warn(message);
