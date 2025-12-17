@@ -105,7 +105,7 @@ const DEFAULT_CONFIG: HealthMonitorConfig = {
 	loopThreshold: 5,
 	errorThreshold: 5,
 	checkIntervalMs: 30 * 1000, // 30 seconds
-	progressCheckIntervalMs: 5 * 60 * 1000, // 5 minutes - periodic progress report interval
+	progressCheckIntervalMs: 60 * 1000, // 60 seconds - periodic progress report interval (reduced for testing)
 };
 
 /**

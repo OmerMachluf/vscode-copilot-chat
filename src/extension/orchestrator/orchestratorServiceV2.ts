@@ -849,8 +849,9 @@ Briefly describe what you're currently processing and we'll check back later.
 
 	/**
 	 * Handle periodic progress check for a worker.
-	 * Every 5 minutes, asks the worker for a progress report and queues it for the parent.
-	 * This keeps parents informed about their children's progress even when they're actively working.
+	 * Every 5 minutes, asks the worker for a progress report.
+	 * - For child workers (spawned by another worker): queues response for parent
+	 * - For orchestrator-deployed workers: sends inquiry directly (no parent to notify)
 	 */
 	private _handleProgressCheck(workerId: string): void {
 		this._orchLog('Handling progress check', { workerId });
@@ -864,9 +865,11 @@ Briefly describe what you're currently processing and we'll check back later.
 		// Mark that we're sending a progress check
 		this._healthMonitor.markProgressCheckSent(workerId);
 
-		// Check if this worker has a parent (only children need progress reports)
+		// Check if this worker has a parent worker (vs orchestrator)
 		const toolSet = this._workerToolSets.get(workerId);
 		const ownerContext = toolSet?.workerContext?.owner;
+		const isChildWorker = ownerContext && ownerContext.ownerType === 'worker';
+		const parentWorkerId = isChildWorker ? ownerContext.ownerId : undefined;
 
 		this._orchLog('Checking worker parent context for progress check', {
 			workerId,
@@ -874,13 +877,8 @@ Briefly describe what you're currently processing and we'll check back later.
 			hasOwnerContext: !!ownerContext,
 			ownerType: ownerContext?.ownerType ?? null,
 			ownerId: ownerContext?.ownerId ?? null,
+			isChildWorker,
 		});
-
-		if (!ownerContext?.ownerId || ownerContext.ownerType !== 'worker') {
-			// Top-level orchestrator or no parent - no progress report needed
-			this._orchLog('Skipping progress check - worker is top-level or has no parent', { workerId });
-			return;
-		}
 
 		// Get the task for context
 		const task = this._tasks.find(t => t.workerId === workerId);
@@ -889,8 +887,9 @@ Briefly describe what you're currently processing and we'll check back later.
 			return;
 		}
 
-		// Build the progress check message
-		const progressMessage = `
+		// Build different progress messages for child vs orchestrator-deployed workers
+		const progressMessage = isChildWorker
+			? `
 ## Progress Check (Periodic)
 
 This is a scheduled progress check. Please provide a brief status update:
@@ -904,11 +903,35 @@ This is a scheduled progress check. Please provide a brief status update:
 4. **Any blockers or issues?** (Anything preventing progress)
 
 **Reminder:** When you have fully completed your task, you MUST call \`a2a_subtask_complete\` to notify your parent.
+`
+			: `
+## Progress Check (Periodic)
+
+This is a scheduled progress check. Please provide a brief status update:
+
+1. **What have you completed so far?** (List the main accomplishments)
+
+2. **What are you currently working on?** (Current task or step)
+
+3. **What remains to be done?** (Remaining tasks or next steps)
+
+4. **Any blockers or issues?** (Anything preventing progress)
+
+**Reminder:** When you have fully completed your task, you MUST:
+1. **Commit your changes** using git
+2. **Call \`orchestrator_completeTask\`** with taskId="${task.id}"
 `;
 
-		// Send the progress inquiry and capture response
-		this._orchLog('Sending progress inquiry to child worker', { childWorkerId: workerId, parentWorkerId: ownerContext.ownerId, taskId: task.id });
-		this._sendProgressInquiryAndCaptureResponse(worker, workerId, task, ownerContext.ownerId, progressMessage);
+		// Send the progress inquiry
+		this._orchLog('Sending progress inquiry to worker', { workerId, parentWorkerId: parentWorkerId ?? '(orchestrator-deployed)', taskId: task.id });
+
+		if (isChildWorker && parentWorkerId) {
+			// Child worker: capture response for parent
+			this._sendProgressInquiryAndCaptureResponse(worker, workerId, task, parentWorkerId, progressMessage);
+		} else {
+			// Orchestrator-deployed worker: just send the inquiry directly
+			worker.sendClarification(progressMessage);
+		}
 	}
 
 	/**
