@@ -3715,7 +3715,8 @@ Process these updates and continue your work. If subtasks completed successfully
 			}
 		}));
 
-		this._logService.info(`[OrchestratorService] Running task ${task.id} with ${parsedAgentType.backend} executor`);
+		this._logService.info(`[OrchestratorService] ========== RUNNING ${parsedAgentType.backend.toUpperCase()} EXECUTOR ==========`);
+		this._logService.info(`[OrchestratorService] Task: ${task.id}, Agent: ${parsedAgentType.agentName}, Worktree: ${worker.worktreePath}`);
 
 		// Conversation loop for executor-based tasks
 		while (worker.isActive) {
@@ -3769,6 +3770,7 @@ Process these updates and continue your work. If subtasks completed successfully
 						history,
 						additionalInstructions: task.context?.additionalInstructions,
 						workerToolSet,
+						workerContext: workerToolSet?.workerContext,
 						toolInvocationToken: worker.toolInvocationToken,
 						token: iterationToken,
 						onPaused: pausedEmitter.event,

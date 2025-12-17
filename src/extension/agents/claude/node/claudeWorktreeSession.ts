@@ -28,6 +28,11 @@ export interface IClaudeCodeSession extends IDisposable {
 	 * Should be called before invoke() when running as a subtask.
 	 */
 	setWorkerContext(context: IWorkerContext): void;
+	/**
+	 * Aborts the current operation without disposing the session.
+	 * Call this when the user interrupts/stops the worker.
+	 */
+	abort(): void;
 }
 
 /**

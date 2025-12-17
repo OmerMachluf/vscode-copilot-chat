@@ -58,7 +58,8 @@ export class ClaudeWorktreeSessionFactory implements IWorktreeSessionFactory {
 		const session = this.instantiationService.createInstance(
 			ClaudeCodeSession,
 			config.serverConfig,
-			config.sessionId
+			config.sessionId,
+			config.worktreePath  // Pass worktreePath so Claude process starts in the right directory
 		);
 
 		const worktreeUri = URI.file(config.worktreePath);
@@ -114,14 +115,14 @@ export class ClaudeAgentManager extends Disposable implements IClaudeAgentManage
 		// Check for existing active session
 		const existing = this._worktreeSessions.get(normalizedPath);
 		if (existing && existing.isActive) {
-			this.logService.trace(`[ClaudeAgentManager] Reusing worktree session for: ${normalizedPath}`);
+			// this.logService.trace(`[ClaudeAgentManager] Reusing worktree session for: ${normalizedPath}`);
 			return existing;
 		}
 
 		// Get server config for the session
 		const serverConfig = (await this.getLangModelServer()).getConfig();
 
-		this.logService.trace(`[ClaudeAgentManager] Creating worktree session for: ${normalizedPath}`);
+		// this.logService.trace(`[ClaudeAgentManager] Creating worktree session for: ${normalizedPath}`);
 
 		const config: IWorktreeSessionConfig = {
 			worktreePath: worktreePath, // Use original path for the session
@@ -142,7 +143,7 @@ export class ClaudeAgentManager extends Disposable implements IClaudeAgentManage
 		const session = this._worktreeSessions.get(normalizedPath);
 
 		if (session) {
-			this.logService.trace(`[ClaudeAgentManager] Removing worktree session for: ${normalizedPath}`);
+			// this.logService.trace(`[ClaudeAgentManager] Removing worktree session for: ${normalizedPath}`);
 			this._worktreeSessions.deleteAndDispose(normalizedPath);
 			return true;
 		}
@@ -181,14 +182,14 @@ export class ClaudeAgentManager extends Disposable implements IClaudeAgentManage
 			const serverConfig = (await this.getLangModelServer()).getConfig();
 
 			const sessionIdForLog = claudeSessionId ?? 'new';
-			this.logService.trace(`[ClaudeAgentManager] Handling request for sessionId=${sessionIdForLog}.`);
+			// this.logService.trace(`[ClaudeAgentManager] Handling request for sessionId=${sessionIdForLog}.`);
 			let session: ClaudeCodeSession;
 			if (claudeSessionId && this._sessions.has(claudeSessionId)) {
-				this.logService.trace(`[ClaudeAgentManager] Reusing Claude session ${claudeSessionId}.`);
+				// this.logService.trace(`[ClaudeAgentManager] Reusing Claude session ${claudeSessionId}.`);
 				session = this._sessions.get(claudeSessionId)!;
 			} else {
-				this.logService.trace(`[ClaudeAgentManager] Creating Claude session for sessionId=${sessionIdForLog}.`);
-				const newSession = this.instantiationService.createInstance(ClaudeCodeSession, serverConfig, claudeSessionId);
+				// this.logService.trace(`[ClaudeAgentManager] Creating Claude session for sessionId=${sessionIdForLog}.`);
+				const newSession = this.instantiationService.createInstance(ClaudeCodeSession, serverConfig, claudeSessionId, undefined);
 				if (newSession.sessionId) {
 					this._sessions.set(newSession.sessionId, newSession);
 				}
@@ -204,7 +205,7 @@ export class ClaudeAgentManager extends Disposable implements IClaudeAgentManage
 
 			// Store the session if sessionId was assigned during invoke
 			if (session.sessionId && !this._sessions.has(session.sessionId)) {
-				this.logService.trace(`[ClaudeAgentManager] Tracking Claude session ${claudeSessionId} -> ${session.sessionId}`);
+				// this.logService.trace(`[ClaudeAgentManager] Tracking Claude session ${claudeSessionId} -> ${session.sessionId}`);
 				this._sessions.set(session.sessionId, session);
 			}
 
@@ -231,7 +232,7 @@ export class ClaudeAgentManager extends Disposable implements IClaudeAgentManage
 		stream: vscode.ChatResponseStream,
 		token: vscode.CancellationToken
 	): Promise<vscode.ChatResult & { claudeSessionId?: string }> {
-		this.logService.trace(`[ClaudeAgentManager] Handling worktree request for: ${worktreePath}`);
+		// this.logService.trace(`[ClaudeAgentManager] Handling worktree request for: ${worktreePath}`);
 
 		const worktreeSession = await this.getOrCreateWorktreeSession(worktreePath);
 
@@ -270,7 +271,7 @@ export class ClaudeAgentManager extends Disposable implements IClaudeAgentManage
 			const commandContent = await this.claudeCommandService.getCommandContent(commandName);
 			if (commandContent) {
 				// Prepend the command instructions to the prompt
-				this.logService.trace(`[ClaudeAgentManager] Resolved custom command: /${commandName}`);
+				// this.logService.trace(`[ClaudeAgentManager] Resolved custom command: /${commandName}`);
 				prompt = `<command-instructions name="${commandName}">\n${commandContent}\n</command-instructions>\n\n${args || ''}`;
 			}
 			// If not found as custom command, pass through as-is (Claude CLI handles built-in commands)
@@ -341,6 +342,7 @@ export class ClaudeCodeSession extends Disposable {
 	constructor(
 		private readonly serverConfig: ILanguageModelServerConfig,
 		public sessionId: string | undefined,
+		private readonly _worktreePath: string | undefined,
 		@ILogService private readonly logService: ILogService,
 		@IConfigurationService private readonly configService: IConfigurationService,
 		@IWorkspaceService private readonly workspaceService: IWorkspaceService,
@@ -380,6 +382,24 @@ export class ClaudeCodeSession extends Disposable {
 		this._pendingPrompt?.error(new Error('Session disposed'));
 		this._pendingPrompt = undefined;
 		super.dispose();
+	}
+
+	/**
+	 * Aborts the current operation without disposing the session.
+	 * The session can still be used for future invocations after calling this.
+	 */
+	public abort(): void {
+		this.logService.info(`[ClaudeCodeSession] abort() called - aborting current operation`);
+		// Abort current operation - this signals the Claude SDK to stop
+		this._abortController.abort();
+		// Create new controller for future operations
+		this._abortController = new AbortController();
+		// Reject current request if any
+		if (this._promptQueue.length > 0) {
+			const currentRequest = this._promptQueue.shift();
+			this.logService.info(`[ClaudeCodeSession] Rejecting current request from queue`);
+			currentRequest?.deferred.error(new Error('Operation aborted by user'));
+		}
 	}
 
 	/**
@@ -440,14 +460,14 @@ export class ClaudeCodeSession extends Disposable {
 	private async _startSession(token: vscode.CancellationToken): Promise<void> {
 		// Build options for the Claude Code SDK
 		const isDebugEnabled = this.configService.getConfig(ConfigKey.Advanced.ClaudeCodeDebugEnabled);
-		this.logService.trace(`appRoot: ${this.envService.appRoot}`);
+		// this.logService.trace(`appRoot: ${this.envService.appRoot}`);
 		const pathSep = isWindows ? ';' : ':';
 
-		// Determine working directory: use worktree path for workers, main workspace otherwise
+		// Determine working directory: use constructor worktreePath first, then workerContext, then main workspace
 		const mainWorkspace = this.workspaceService.getWorkspaceFolders().at(0)?.fsPath;
-		const workingDirectory = this._workerContext?.worktreePath ?? mainWorkspace;
+		const workingDirectory = this._worktreePath || this._workerContext?.worktreePath || mainWorkspace;
 
-		this.logService.info(`[ClaudeCodeSession] Starting session with cwd: ${workingDirectory} (worktree: ${!!this._workerContext?.worktreePath})`);
+		// this.logService.info(`[ClaudeCodeSession] Starting session with cwd: ${workingDirectory} (worktree: ${!!this._workerContext?.worktreePath})`);
 
 		// Create in-process MCP server for A2A orchestration tools
 		// Get optional services via instantiation service to avoid circular dependency issues
@@ -511,12 +531,12 @@ export class ClaudeCodeSession extends Disposable {
 			settingSources: ['user', 'project', 'local'],
 			...(isDebugEnabled && {
 				stderr: data => {
-					this.logService.trace(`claude-agent-sdk stderr: ${data}`);
+					// this.logService.trace(`claude-agent-sdk stderr: ${data}`);
 				}
 			})
 		};
 
-		this.logService.trace(`claude-agent-sdk: Starting query with options: ${JSON.stringify(options)}`);
+		// this.logService.trace(`claude-agent-sdk: Starting query with options: ${JSON.stringify(options)}`);
 		this._queryGenerator = await this.claudeCodeService.query({
 			prompt: this._createPromptIterable(),
 			options
@@ -604,7 +624,7 @@ export class ClaudeCodeSession extends Disposable {
 					throw new Error('Request was cancelled');
 				}
 
-				this.logService.trace(`claude-agent-sdk Message: ${JSON.stringify(message, null, 2)}`);
+				// this.logService.trace(`claude-agent-sdk Message: ${JSON.stringify(message, null, 2)}`);
 				if (message.session_id) {
 					this.sessionId = message.session_id;
 				}
@@ -747,9 +767,9 @@ export class ClaudeCodeSession extends Disposable {
 	 * Handles tool permission requests by showing a confirmation dialog to the user
 	 */
 	private async canUseTool(toolName: string, input: Record<string, unknown>, toolInvocationToken: vscode.ChatParticipantToolToken): Promise<{ behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }> {
-		this.logService.trace(`ClaudeCodeSession: canUseTool: ${toolName}(${JSON.stringify(input)})`);
+		// this.logService.trace(`ClaudeCodeSession: canUseTool: ${toolName}(${JSON.stringify(input)})`);
 		if (await this.canAutoApprove(toolName, input)) {
-			this.logService.trace(`ClaudeCodeSession: auto-approving ${toolName}`);
+			// this.logService.trace(`ClaudeCodeSession: auto-approving ${toolName}`);
 
 			return {
 				behavior: 'allow',

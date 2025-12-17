@@ -72,7 +72,8 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 
 		const startTime = Date.now();
 
-		this._logService.info(`[ClaudeCodeAgentExecutor] Starting execution for task ${taskId} in ${worktreePath}`);
+		this._logService.info(`[ClaudeCodeAgentExecutor] ========== CLAUDE CODE BACKEND ==========`);
+		// this._logService.info(`[ClaudeCodeAgentExecutor] Starting execution for task ${taskId} in ${worktreePath}`);
 
 		try {
 			// Auto-migrate Claude configuration on first task (once per session)
@@ -86,7 +87,7 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 
 			// Set worker context for A2A orchestration if provided
 			if (workerContext) {
-				this._logService.info(`[ClaudeCodeAgentExecutor] Setting worker context: depth=${workerContext.depth}, spawnContext=${workerContext.spawnContext}`);
+				// this._logService.info(`[ClaudeCodeAgentExecutor] Setting worker context: depth=${workerContext.depth}, spawnContext=${workerContext.spawnContext}`);
 				session.session.setWorkerContext(workerContext);
 			}
 
@@ -116,15 +117,26 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 				};
 			}
 
-			// Execute via Claude session
-			// CRITICAL: Pass the real toolInvocationToken from the orchestrator, not a mock.
-			// Without a valid token, tool confirmations fail and the session completes immediately.
-			await session.session.invoke(
-				fullPrompt,
-				toolInvocationToken!,
-				responseStream,
-				token
-			);
+			// Listen for cancellation to abort the Claude session
+			// This is critical for the stop button to actually stop the worker
+			const cancellationListener = token.onCancellationRequested(() => {
+				this._logService.info(`[ClaudeCodeAgentExecutor] Cancellation requested - aborting Claude session`);
+				session.session.abort();
+			});
+
+			try {
+				// Execute via Claude session
+				// CRITICAL: Pass the real toolInvocationToken from the orchestrator, not a mock.
+				// Without a valid token, tool confirmations fail and the session completes immediately.
+				await session.session.invoke(
+					fullPrompt,
+					toolInvocationToken!,
+					responseStream,
+					token
+				);
+			} finally {
+				cancellationListener.dispose();
+			}
 
 			const endTime = Date.now();
 			const executionTime = endTime - startTime;
@@ -145,7 +157,7 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 				};
 			}
 
-			this._logService.info(`[ClaudeCodeAgentExecutor] Completed execution for task ${taskId} in ${executionTime}ms`);
+			// this._logService.info(`[ClaudeCodeAgentExecutor] Completed execution for task ${taskId} in ${executionTime}ms`);
 
 			return {
 				status: 'success',
@@ -187,11 +199,11 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 				this._pendingMessages.set(workerId, []);
 			}
 			this._pendingMessages.get(workerId)!.push(message);
-			this._logService.info(`[ClaudeCodeAgentExecutor] Message queued for worker ${workerId}: ${message.substring(0, 100)}...`);
+			// this._logService.info(`[ClaudeCodeAgentExecutor] Message queued for worker ${workerId}: ${message.substring(0, 100)}...`);
 			return;
 		}
 
-		this._logService.info(`[ClaudeCodeAgentExecutor] Sending message to worker ${workerId}: ${message.substring(0, 100)}...`);
+		// this._logService.info(`[ClaudeCodeAgentExecutor] Sending message to worker ${workerId}: ${message.substring(0, 100)}...`);
 
 		// Create a dummy stream for the follow-up message
 		const collectorStream = this._createCollectorStream();
@@ -216,7 +228,7 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 	async cancel(workerId: string): Promise<void> {
 		const workerState = this._activeWorkers.get(workerId);
 		if (workerState) {
-			this._logService.info(`[ClaudeCodeAgentExecutor] Cancelling execution for worker ${workerId}`);
+			// this._logService.info(`[ClaudeCodeAgentExecutor] Cancelling execution for worker ${workerId}`);
 
 			// Mark session as inactive
 			workerState.session.markInactive();
@@ -303,7 +315,7 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 	cleanupWorktree(worktreePath: string): void {
 		for (const [workerId, workerState] of this._activeWorkers) {
 			if (workerState.worktreePath === worktreePath) {
-				this._logService.info(`[ClaudeCodeAgentExecutor] Cleaning up worker ${workerId} for removed worktree`);
+				// this._logService.info(`[ClaudeCodeAgentExecutor] Cleaning up worker ${workerId} for removed worktree`);
 				this._activeWorkers.delete(workerId);
 				this._pendingMessages.delete(workerId);
 			}
@@ -318,17 +330,17 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 		try {
 			const shouldMigrate = await this._claudeMigrationService.shouldMigrate();
 			if (shouldMigrate) {
-				this._logService.info('[ClaudeCodeAgentExecutor] Auto-migrating Claude configuration...');
+				// this._logService.info('[ClaudeCodeAgentExecutor] Auto-migrating Claude configuration...');
 				const result = await this._claudeMigrationService.migrate();
 				if (result.status === 'completed') {
-					this._logService.info(`[ClaudeCodeAgentExecutor] Claude configuration generated: ${result.generatedFiles.join(', ')}`);
+					// this._logService.info(`[ClaudeCodeAgentExecutor] Claude configuration generated: ${result.generatedFiles.join(', ')}`);
 				} else if (result.status === 'failed') {
-					this._logService.warn(`[ClaudeCodeAgentExecutor] Claude configuration migration failed: ${result.error}`);
+					// this._logService.warn(`[ClaudeCodeAgentExecutor] Claude configuration migration failed: ${result.error}`);
 				}
 			}
 		} catch (error) {
 			// Don't fail the task if migration fails - it's optional
-			this._logService.warn(`[ClaudeCodeAgentExecutor] Auto-migration check failed: ${error}`);
+			// this._logService.warn(`[ClaudeCodeAgentExecutor] Auto-migration check failed: ${error}`);
 		}
 	}
 }
