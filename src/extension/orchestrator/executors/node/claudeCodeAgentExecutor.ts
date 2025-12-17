@@ -161,7 +161,9 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 			}
 
 			// Listen for cancellation to abort the Claude session
-			// This is critical for the stop button to actually stop the worker
+			// This provides immediate stopping when user clicks stop or when interrupted.
+			// The session can recover because claudeCodeAgent.ts clears _queryGenerator on error,
+			// allowing the next invoke() to create a fresh session.
 			const cancellationListener = token.onCancellationRequested(() => {
 				this._logService.info(`[ClaudeCodeAgentExecutor] Cancellation requested - aborting Claude session`);
 				session.session.abort();
@@ -173,7 +175,7 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 				// Without a valid token, tool confirmations fail and the session completes immediately.
 				this._logService.info(`[ClaudeExecutor:execute] ========== INVOKING CLAUDE SESSION ==========`);
 				this._logService.info(`[ClaudeExecutor:execute] Calling session.session.invoke() with fullPrompt length=${fullPrompt.length}`);
-				this._logService.info(`[ClaudeExecutor:execute] toolInvocationToken.sessionId=${(toolInvocationToken as any)?.sessionId ?? '(no token)'}`);
+				this._logService.info(`[ClaudeExecutor:execute] toolInvocationToken.sessionId=${(toolInvocationToken as { sessionId: string })?.sessionId ?? '(no token)'}`);
 				await session.session.invoke(
 					fullPrompt,
 					toolInvocationToken!,

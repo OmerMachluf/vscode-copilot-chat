@@ -669,6 +669,9 @@ export class ClaudeCodeSession extends Disposable {
 			this._promptQueue = [];
 			this._pendingPrompt?.error(error as Error);
 			this._pendingPrompt = undefined;
+			// Clear the query generator so next invoke() will start a fresh session
+			// This is important for recovery after cancellation/interruption
+			this._queryGenerator = undefined;
 		}
 	}
 
