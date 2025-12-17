@@ -1040,6 +1040,11 @@ This is a scheduled progress check. Please provide a brief status update:
 				taskId: task.id,
 				responsePreview: truncatedResponse?.substring(0, 100) ?? '(empty)',
 			});
+
+			// Immediately deliver the update to parent (don't wait for parent to go idle)
+			this._deliverUpdatesToParent(parentWorkerId).catch(err => {
+				this._logService.error(`[Orchestrator] Error delivering update to parent ${parentWorkerId}: ${err}`);
+			});
 		});
 
 		// Track listeners for cleanup
@@ -1076,6 +1081,11 @@ This is a scheduled progress check. Please provide a brief status update:
 						timestamp: Date.now(),
 					});
 				}
+
+				// Deliver timeout notification to parent immediately
+				this._deliverUpdatesToParent(parentWorkerId).catch(err => {
+					this._logService.error(`[Orchestrator] Error delivering timeout update to parent ${parentWorkerId}: ${err}`);
+				});
 			}
 		}, responseTimeout);
 
@@ -1205,6 +1215,35 @@ This is a scheduled progress check. Please provide a brief status update:
 			existing.dispose();
 			this._activeInquiryListeners.delete(workerId);
 		}
+	}
+
+	/**
+	 * Deliver queued updates to a parent worker immediately.
+	 * Interrupts the parent (if running) to ensure updates are delivered promptly
+	 * rather than waiting for the parent to go idle.
+	 */
+	private async _deliverUpdatesToParent(parentWorkerId: string): Promise<void> {
+		this._orchLog('Delivering updates to parent immediately', { parentWorkerId });
+
+		const parentWorker = this._workers.get(parentWorkerId);
+		if (!parentWorker) {
+			this._orchLog('Parent worker not found for update delivery', { parentWorkerId });
+			return;
+		}
+
+		// Check if there are actually updates to deliver
+		if (!this._taskMonitorService.hasPendingUpdates(parentWorkerId)) {
+			this._orchLog('No pending updates to deliver', { parentWorkerId });
+			return;
+		}
+
+		// Interrupt parent and wait for stream to end before injecting updates
+		// This prevents the race condition where we'd capture the dying stream
+		await parentWorker.interrupt();
+		this._orchLog('Parent interrupted, delivering updates', { parentWorkerId });
+
+		// Now inject the updates
+		this._injectPendingSubtaskUpdates(parentWorkerId, parentWorker);
 	}
 
 	/**
