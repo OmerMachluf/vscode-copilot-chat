@@ -87,7 +87,7 @@ export interface IWorkerHealthMonitor {
 interface HealthMonitorConfig {
 	/** Timeout in ms before a worker is considered stuck (default: 5 minutes) */
 	stuckTimeoutMs: number;
-	/** Timeout in ms before a worker is considered idle (default: 30 seconds) */
+	/** Timeout in ms before a worker is considered idle (default: 60 seconds) */
 	idleTimeoutMs: number;
 	/** Number of consecutive same-tool calls before considering the worker looping */
 	loopThreshold: number;
@@ -101,11 +101,11 @@ interface HealthMonitorConfig {
 
 const DEFAULT_CONFIG: HealthMonitorConfig = {
 	stuckTimeoutMs: 5 * 60 * 1000, // 5 minutes
-	idleTimeoutMs: 30 * 1000, // 30 seconds - shorter threshold to detect idle before stuck
+	idleTimeoutMs: 60 * 1000, // 60 seconds - threshold to detect idle before stuck
 	loopThreshold: 5,
 	errorThreshold: 5,
 	checkIntervalMs: 30 * 1000, // 30 seconds
-	progressCheckIntervalMs: 60 * 1000, // 60 seconds - periodic progress report interval (reduced for testing)
+	progressCheckIntervalMs: 5 * 60 * 1000, // 5 minutes - periodic progress report interval
 };
 
 /**

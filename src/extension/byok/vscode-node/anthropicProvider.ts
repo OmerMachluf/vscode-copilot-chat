@@ -66,6 +66,7 @@ export class AnthropicLMProvider implements BYOKModelProvider<LanguageModelChatI
 			normalized.startsWith('claude-sonnet-4') ||
 			normalized.startsWith('claude-haiku-4-5') ||
 			normalized.startsWith('claude-opus-4-1') ||
+			normalized.startsWith('claude-opus-4-5') ||
 			normalized.startsWith('claude-opus-4');
 	}
 

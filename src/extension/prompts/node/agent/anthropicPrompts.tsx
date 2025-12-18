@@ -206,6 +206,7 @@ class AnthropicPromptResolver implements IAgentPrompt {
 	resolveSystemPrompt(endpoint: IChatEndpoint): SystemPrompt | undefined {
 		const normalizedModel = endpoint.model?.replace(/\./g, '-');
 		if (normalizedModel?.startsWith('claude-sonnet-4-5') ||
+			normalizedModel?.startsWith('claude-opus-4-5') ||
 			normalizedModel?.startsWith('claude-haiku-4-5')) {
 			return Claude45DefaultPrompt;
 		}
