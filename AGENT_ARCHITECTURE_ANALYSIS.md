@@ -426,6 +426,22 @@ The callback mechanisms exist for all agent types. The main issue was Claude Cod
    - Added `_createCollectorStream()` method
    - Modified `receiveChildUpdate()` to call wake-up
 
+2. **`src/extension/orchestrator/orchestratorServiceV2.ts`** (Modified progress/idle inquiry system)
+   - Updated progress inquiry message to instruct workers to wrap responses in `<update_parent_start>...<update_parent_end>` delimiters
+   - Updated idle inquiry message with same delimiter instructions
+   - Modified `_sendInquiryAndCaptureResponse()` to detect and extract content between delimiters mid-stream
+   - Workers now continue working after responding (don't wait for stream end)
+   - Fallback to full response if delimiters not detected (backward compatibility)
+
+3. **`src/extension/tools/node/a2aTools.ts`** (Added monitoring registration)
+   - Added `ITaskMonitorService` injection
+   - Call `taskMonitorService.startMonitoring()` for non-blocking subtasks
+   - Ensures parent gets notified when child completes via `a2a_subtask_complete`
+
+4. **`src/extension/orchestrator/workerHealthMonitor.ts`** (Timing adjustments)
+   - Changed idle timeout from 30s to 60s
+   - Changed progress check interval from 60s to 5 minutes
+
 ### Testing Recommendations
 
 1. Spawn a non-blocking subtask from a Claude Code session
@@ -433,6 +449,8 @@ The callback mechanisms exist for all agent types. The main issue was Claude Cod
 3. Verify the child update content is injected into the prompt
 4. Test with multiple parallel subtasks
 5. Test cancellation handling
+6. Verify progress responses are captured mid-stream without timeout
+7. Verify worker continues working after responding to progress inquiry
 
 ### Remaining Considerations
 
@@ -441,3 +459,5 @@ The callback mechanisms exist for all agent types. The main issue was Claude Cod
 2. **Multiple Wake-ups**: If multiple updates arrive quickly, the first wake-up will process all pending updates (they're batched in `_createPromptIterable`).
 
 3. **Token Reuse**: We're reusing the last `toolInvocationToken`. If the original request's tools are different from what the continuation needs, there might be issues.
+
+4. **Delimiter Format**: Workers are instructed to use `<update_parent_start>...<update_parent_end>`. If workers don't follow this format, the system falls back to capturing the full response.

@@ -843,6 +843,14 @@ We will handle blockers on your behalf - just describe what you need.
 ### If you are still WORKING:
 Briefly describe what you're currently processing and we'll check back later.
 
+**IMPORTANT:** Wrap your response in delimiters like this:
+
+<update_parent_start>
+Your status update here...
+<update_parent_end>
+
+**After you finish writing <update_parent_end>, continue working on your task immediately. Do not wait for further instructions.**
+
 **Please respond now** - your parent task is waiting for your status update.
 `
 			: `
@@ -935,6 +943,14 @@ This is a scheduled progress check. Please provide a brief status update:
 
 4. **Any blockers or issues?** (Anything preventing progress)
 
+**IMPORTANT:** Wrap your response in delimiters like this:
+
+<update_parent_start>
+Your status update here...
+<update_parent_end>
+
+**After you finish writing <update_parent_end>, continue working on your task immediately. Do not wait for further instructions.**
+
 **Reminder:** When you have fully completed your task, you MUST call \`a2a_subtask_complete\` to notify your parent.
 `
 			: `
@@ -972,9 +988,9 @@ This is a scheduled progress check. Please provide a brief status update:
 	 * Unified method to send an inquiry to a child worker and capture its response.
 	 * Handles both progress checks and idle inquiries with the same flow:
 	 * 1. Interrupt worker and wait for old stream to end (prevents capturing dying stream)
-	 * 2. Set up listeners for new response
+	 * 2. Set up listeners for new response with delimiter detection
 	 * 3. Send clarification message
-	 * 4. Capture response and queue update for parent
+	 * 4. Capture response between delimiters and queue update for parent
 	 */
 	private async _sendInquiryAndCaptureResponse(
 		worker: WorkerSession,
@@ -995,9 +1011,11 @@ This is a scheduled progress check. Please provide a brief status update:
 		this._cleanupInquiryListeners(childWorkerId);
 
 		const responseTimeout = 120000; // 2 minutes - allow time for worker to think and respond
-		const maxResponseLength = inquiryType === 'progress' ? 2000 : 500;
 		let responded = false;
 		let responseContent = '';
+		let captureStarted = false;
+		const startDelimiter = '<update_parent_start>';
+		const endDelimiter = '<update_parent_end>';
 
 		const cleanup = () => {
 			streamPartDisposable.dispose();
@@ -1005,32 +1023,29 @@ This is a scheduled progress check. Please provide a brief status update:
 			this._activeInquiryListeners.delete(childWorkerId);
 		};
 
-		// Listen for streaming parts to capture the response
-		const streamPartDisposable = worker.onStreamPart((part) => {
-			if (!responded && part.type === 'markdown' && part.content) {
-				const content = typeof part.content === 'string' ? part.content : part.content.value;
-				if (content) {
-					responseContent += content;
-				}
-			}
-		});
+		const queueUpdateToParent = () => {
+			// Extract content between delimiters
+			const startIndex = responseContent.indexOf(startDelimiter);
+			const endIndex = responseContent.indexOf(endDelimiter);
 
-		// Listen for stream end to queue the update
-		const streamEndDisposable = worker.onStreamEnd(() => {
-			if (responded) {
-				return;
+			let extractedResponse = '';
+			if (startIndex !== -1 && endIndex !== -1) {
+				// Extract content between delimiters, excluding the delimiters themselves
+				extractedResponse = responseContent.substring(startIndex + startDelimiter.length, endIndex).trim();
+			} else if (captureStarted) {
+				// Delimiter started but not ended - use what we have
+				extractedResponse = responseContent.substring(responseContent.indexOf(startDelimiter) + startDelimiter.length).trim();
+			} else {
+				// No delimiters found - use full content (fallback for old behavior)
+				extractedResponse = responseContent.trim();
 			}
-			responded = true;
-			cleanup();
-
-			const truncatedResponse = responseContent;
 
 			this._orchLog(`Child responded to ${inquiryType} inquiry`, {
 				childWorkerId,
 				parentWorkerId,
 				taskId: task.id,
-				responseLength: responseContent.length,
-				wasTruncated: responseContent.length > maxResponseLength,
+				responseLength: extractedResponse.length,
+				hadDelimiters: startIndex !== -1 && endIndex !== -1,
 			});
 
 			// Queue the appropriate update type for parent
@@ -1039,7 +1054,7 @@ This is a scheduled progress check. Please provide a brief status update:
 					type: 'progress',
 					subTaskId: task.id,
 					parentWorkerId,
-					progressReport: truncatedResponse || 'Worker provided no progress details.',
+					progressReport: extractedResponse || 'Worker provided no progress details.',
 					timestamp: Date.now(),
 				});
 			} else {
@@ -1047,8 +1062,8 @@ This is a scheduled progress check. Please provide a brief status update:
 					type: 'idle_response',
 					subTaskId: task.id,
 					parentWorkerId,
-					idleReason: truncatedResponse
-						? `Child went idle and responded: ${truncatedResponse}`
+					idleReason: extractedResponse
+						? `Child went idle and responded: ${extractedResponse}`
 						: 'Child went idle. Response was empty or non-text.',
 					timestamp: Date.now(),
 				});
@@ -1058,13 +1073,53 @@ This is a scheduled progress check. Please provide a brief status update:
 				childWorkerId,
 				parentWorkerId,
 				taskId: task.id,
-				responsePreview: truncatedResponse?.substring(0, 100) ?? '(empty)',
+				responsePreview: extractedResponse?.substring(0, 100) ?? '(empty)',
 			});
 
 			// Immediately deliver the update to parent (don't wait for parent to go idle)
 			this._deliverUpdatesToParent(parentWorkerId).catch(err => {
 				this._logService.error(`[Orchestrator] Error delivering update to parent ${parentWorkerId}: ${err}`);
 			});
+		};
+
+		// Listen for streaming parts to capture the response
+		const streamPartDisposable = worker.onStreamPart((part) => {
+			if (responded || part.type !== 'markdown' || !part.content) {
+				return;
+			}
+
+			const content = typeof part.content === 'string' ? part.content : part.content.value;
+			if (!content) {
+				return;
+			}
+
+			responseContent += content;
+
+			// Check if we've received the start delimiter
+			if (!captureStarted && responseContent.includes(startDelimiter)) {
+				captureStarted = true;
+				this._orchLog(`Delimiter start detected for ${inquiryType} inquiry`, { childWorkerId });
+			}
+
+			// Check if we've received the end delimiter
+			if (captureStarted && responseContent.includes(endDelimiter)) {
+				this._orchLog(`Delimiter end detected for ${inquiryType} inquiry - capturing response`, { childWorkerId });
+				responded = true;
+				cleanup();
+				queueUpdateToParent();
+			}
+		});
+
+		// Listen for stream end as fallback (in case delimiters aren't used or worker finishes)
+		const streamEndDisposable = worker.onStreamEnd(() => {
+			if (responded) {
+				return;
+			}
+			responded = true;
+			cleanup();
+
+			this._orchLog(`Stream ended for ${inquiryType} inquiry (fallback capture)`, { childWorkerId, hadStartDelimiter: captureStarted });
+			queueUpdateToParent();
 		});
 
 		// Track listeners for cleanup
@@ -1081,6 +1136,7 @@ This is a scheduled progress check. Please provide a brief status update:
 					parentWorkerId,
 					taskId: task.id,
 					timeoutMs: responseTimeout,
+					hadPartialResponse: responseContent.length > 0,
 				});
 
 				// Queue timeout notification
