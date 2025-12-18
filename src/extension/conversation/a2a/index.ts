@@ -13,6 +13,7 @@
  * - Git operations for worktree management
  * - Merge utilities with conflict detection
  * - Support for multiple merge strategies (merge, squash, rebase)
+ * - Architecture documentation generation
  */
 
 // Message types and protocols
@@ -119,4 +120,62 @@ export {
 	// Conflict resolution
 	resolveAllConflicts
 } from './mergeUtils';
+
+// Architecture Documentation Generator
+export {
+	// Types and interfaces
+	ComponentType,
+	ComponentVisibility,
+	ComplexityLevel,
+	IFileInfo,
+	IDirectoryInfo,
+	IRepositoryStats,
+	SymbolType,
+	ICodeSymbol,
+	ICodeDependency,
+	IArchitectureComponent,
+	IArchitectureLayer,
+	IArchitectureModule,
+	IArchitecturePattern,
+	IArchitectureInsight,
+	ITechnology,
+	ITechnologyStack,
+	ICodingConvention,
+	IDevelopmentWorkflow,
+	IArchitectureModel,
+	IDocumentSection,
+	IDocumentTemplate,
+	IDocumentGenerationOptions,
+	IDocumentGenerationResult,
+	DiagramType,
+	IDiagramOptions,
+	IGeneratedDiagram,
+	IArchitectureAnalyzer,
+	IAnalysisOptions,
+	IDocumentBuilder,
+	IDiagramGenerator,
+	IMarkdownGenerator,
+
+	// Templates
+	STANDARD_TEMPLATE,
+	MINIMAL_TEMPLATE,
+	ONBOARDING_TEMPLATE,
+	TECHNICAL_TEMPLATE,
+	API_TEMPLATE,
+	BUILT_IN_TEMPLATES,
+	getTemplateById,
+	getAvailableTemplateIds,
+	createCustomTemplate,
+	filterTemplateSections,
+	getAllSectionIds,
+	findSectionById,
+
+	// Generators and services
+	MarkdownGenerator,
+	markdownGenerator,
+	DiagramGenerator,
+	diagramGenerator,
+	DocumentBuilder,
+	documentBuilder
+} from './architectureDoc';
 
