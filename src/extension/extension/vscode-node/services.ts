@@ -92,6 +92,7 @@ import { collectFetcherTelemetry } from '../../log/vscode-node/loggingActions';
 import { DebugCommandToConfigConverter, IDebugCommandToConfigConverter } from '../../onboardDebug/node/commandToConfigConverter';
 import { DebuggableCommandIdentifier, IDebuggableCommandIdentifier } from '../../onboardDebug/node/debuggableCommandIdentifier';
 import { ILanguageToolsProvider, LanguageToolsProvider } from '../../onboardDebug/node/languageToolsProvider';
+import { AgentRecommendationService, IAgentRecommendationService } from '../../agentRecommendation/node/agentRecommendationService';
 import { AgentDiscoveryService, IAgentDiscoveryService } from '../../orchestrator/agentDiscoveryService';
 import { AgentInstructionService, IAgentInstructionService } from '../../orchestrator/agentInstructionService';
 import { AgentRunnerService, IAgentRunner } from '../../orchestrator/agentRunner';
@@ -180,6 +181,7 @@ export function registerServices(builder: IInstantiationServiceBuilder, extensio
 	builder.define(ITestGenInfoStorage, new SyncDescriptor(TestGenInfoStorage)); // Used for test generation (/tests intent)
 	builder.define(IAgentInstructionService, new SyncDescriptor(AgentInstructionService));
 	builder.define(IAgentDiscoveryService, new SyncDescriptor(AgentDiscoveryService));
+	builder.define(IAgentRecommendationService, new SyncDescriptor(AgentRecommendationService));
 	builder.define(IAgentRunner, new SyncDescriptor(AgentRunnerService));
 	builder.define(IWorkerToolsService, new SyncDescriptor(WorkerToolsService));
 	builder.define(IWorkerContext, new SyncDescriptor(GlobalWorkerContext));
