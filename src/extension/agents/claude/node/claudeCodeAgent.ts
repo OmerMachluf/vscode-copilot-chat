@@ -8,6 +8,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type * as vscode from 'vscode';
 import { ConfigKey, IConfigurationService } from '../../../../platform/configuration/common/configurationService';
 import { IEnvService } from '../../../../platform/env/common/envService';
+import { ILanguageFeaturesService } from '../../../../platform/languages/common/languageFeaturesService';
 import { ILogService } from '../../../../platform/log/common/logService';
 import { IWorkspaceService } from '../../../../platform/workspace/common/workspaceService';
 import { isLocation } from '../../../../util/common/types';
@@ -18,7 +19,6 @@ import { isWindows } from '../../../../util/vs/base/common/platform';
 import { URI } from '../../../../util/vs/base/common/uri';
 import { IInstantiationService } from '../../../../util/vs/platform/instantiation/common/instantiation';
 import { LanguageModelTextPart } from '../../../../vscodeTypes';
-import { ILanguageFeaturesService } from '../../../../platform/languages/common/languageFeaturesService';
 import { IAgentDiscoveryService } from '../../../orchestrator/agentDiscoveryService';
 import { IClaudeCommandService } from '../../../orchestrator/claudeCommandService';
 import { ISubTaskManager } from '../../../orchestrator/orchestratorInterfaces';
@@ -33,8 +33,8 @@ import { ExternalEditTracker } from '../../common/externalEditTracker';
 import { ILanguageModelServerConfig, LanguageModelServer } from '../../node/langModelServer';
 import { claudeEditTools, ClaudeToolNames, getAffectedUrisForEditTool, IExitPlanModeInput, ITodoWriteInput } from '../common/claudeTools';
 import { createFormattedToolInvocation } from '../common/toolInvocationFormatter';
-import { IClaudeAgentManager } from './claudeAgentManagerTypes';
 import { createA2AMcpServer } from './claudeA2AMcpServer';
+import { IClaudeAgentManager } from './claudeAgentManagerTypes';
 import { IClaudeCodeSdkService } from './claudeCodeSdkService';
 import { ClaudeWorktreeSession, IWorktreeSessionConfig, IWorktreeSessionFactory } from './claudeWorktreeSession';
 
@@ -340,6 +340,12 @@ export class ClaudeCodeSession extends Disposable {
 	private _pendingChildUpdates: string[] = [];
 
 	/**
+	 * Last tool invocation token used.
+	 * Stored so we can create synthetic requests when child updates arrive.
+	 */
+	private _lastToolInvocationToken: vscode.ChatParticipantToolToken | undefined;
+
+	/**
 	 * Worker context for A2A orchestration.
 	 * Set by executor when running as a subtask in a worktree.
 	 */
@@ -384,11 +390,14 @@ export class ClaudeCodeSession extends Disposable {
 	/**
 	 * Receives an update message from a child subtask.
 	 * The message will be included in the next prompt to the session.
+	 * If the session is idle, this will wake it up to process the updates.
 	 * @param message The formatted update message from the child
 	 */
 	public receiveChildUpdate(message: string): void {
 		this.logService.info(`[ClaudeCodeSession] Received child update: ${message.substring(0, 100)}...`);
 		this._pendingChildUpdates.push(message);
+		// Try to wake up the session if it's idle and waiting for input
+		this._tryWakeUpSession();
 	}
 
 	public override dispose(): void {
@@ -422,6 +431,78 @@ export class ClaudeCodeSession extends Disposable {
 	}
 
 	/**
+	 * Tries to wake up the session if it's idle and waiting for input.
+	 * Called when child updates arrive to allow the session to continue processing.
+	 */
+	private _tryWakeUpSession(): void {
+		// Only wake up if:
+		// 1. Session is waiting for next prompt (_pendingPrompt is set)
+		// 2. We have a stored tool invocation token
+		// 3. The session generator is still running
+		if (!this._pendingPrompt || !this._lastToolInvocationToken || !this._queryGenerator) {
+			this.logService.debug(
+				`[ClaudeCodeSession] Cannot wake up: pendingPrompt=${!!this._pendingPrompt}, ` +
+				`hasToken=${!!this._lastToolInvocationToken}, hasGenerator=${!!this._queryGenerator}`
+			);
+			return;
+		}
+
+		this.logService.info(`[ClaudeCodeSession] Waking up session with ${this._pendingChildUpdates.length} pending child updates`);
+
+		// Create a continuation prompt - the actual updates will be injected by _createPromptIterable
+		const continuationPrompt = 'Continue your work. Review the updates from your spawned subtasks (shown in the system reminder above) and proceed accordingly.';
+
+		// Create a collector stream for the response (we don't have a real VS Code stream)
+		const collectorStream = this._createCollectorStream();
+
+		// Create the synthetic request
+		const deferred = new DeferredPromise<void>();
+		const request: QueuedRequest = {
+			prompt: continuationPrompt,
+			stream: collectorStream,
+			toolInvocationToken: this._lastToolInvocationToken,
+			token: CancellationToken.None,
+			deferred,
+		};
+
+		// Add to queue
+		this._promptQueue.push(request);
+
+		// Resolve the pending prompt to wake up the session
+		const pendingPrompt = this._pendingPrompt;
+		this._pendingPrompt = undefined;
+		pendingPrompt.complete(request);
+
+		// Log that we're not awaiting the deferred - the session loop handles completion
+		this.logService.debug(`[ClaudeCodeSession] Wake-up request queued, session loop will process it`);
+	}
+
+	/**
+	 * Creates a collector stream that captures output but doesn't display it.
+	 * Used for synthetic requests when no VS Code stream is available.
+	 */
+	private _createCollectorStream(): vscode.ChatResponseStream {
+		const collected: string[] = [];
+		return {
+			markdown: (value: string | vscode.MarkdownString) => {
+				const text = typeof value === 'string' ? value : value.value;
+				collected.push(text);
+			},
+			anchor: () => { },
+			button: () => { },
+			filetree: () => { },
+			progress: () => { },
+			reference: () => { },
+			push: () => { },
+			confirmation: () => { },
+			warning: () => { },
+			textEdit: () => { },
+			codeblockUri: () => { },
+			detectedParticipant: () => { },
+		} as unknown as vscode.ChatResponseStream;
+	}
+
+	/**
 	 * Invokes the Claude Code session with a user prompt
 	 * @param prompt The user's prompt text
 	 * @param toolInvocationToken Token for invoking tools
@@ -451,6 +532,9 @@ export class ClaudeCodeSession extends Disposable {
 			token,
 			deferred
 		};
+
+		// Store the token for potential use in child update wake-ups
+		this._lastToolInvocationToken = toolInvocationToken;
 
 		this._promptQueue.push(request);
 
