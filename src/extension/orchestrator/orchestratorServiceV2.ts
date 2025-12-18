@@ -994,7 +994,7 @@ This is a scheduled progress check. Please provide a brief status update:
 		// Clean up any existing inquiry listeners for this worker
 		this._cleanupInquiryListeners(childWorkerId);
 
-		const responseTimeout = 60000;
+		const responseTimeout = 120000; // 2 minutes - allow time for worker to think and respond
 		const maxResponseLength = inquiryType === 'progress' ? 2000 : 500;
 		let responded = false;
 		let responseContent = '';

@@ -97,6 +97,7 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 		@IWorkerContext private readonly _workerContext: IWorkerContext,
 		@IOrchestratorQueueService private readonly _queueService: IOrchestratorQueueService,
 		@ISubtaskProgressService private readonly _progressService: ISubtaskProgressService,
+		@ITaskMonitorService private readonly _taskMonitorService: ITaskMonitorService,
 		@ILogService private readonly _logService: ILogService,
 	) { }
 
@@ -255,6 +256,10 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 			// This handler stays active until the subtask completes
 			const parentWorkerId = this._workerContext?.workerId;
 			if (parentWorkerId) {
+				// CRITICAL: Start monitoring so TaskMonitorService tracks this subtask
+				// Without this, parent never gets notified of completion!
+				this._logService.debug(`[A2ASpawnSubTaskTool] Non-blocking: Starting monitoring for subtask ${subTask.id} with parent ${parentWorkerId}`);
+				this._taskMonitorService.startMonitoring(subTask.id, parentWorkerId);
 				this._logService.debug(`[A2ASpawnSubTaskTool] Non-blocking: Registering persistent handler for parentWorkerId '${parentWorkerId}'`);
 				const handlerDisposable = this._queueService.registerOwnerHandler(parentWorkerId, async (message) => {
 					this._logService.info(`[A2ASpawnSubTaskTool] Non-blocking: RECEIVED MESSAGE from subtask: type=${message.type}, taskId=${message.taskId}`);
