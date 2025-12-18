@@ -95,6 +95,7 @@ import { collectFetcherTelemetry } from '../../log/vscode-node/loggingActions';
 import { DebugCommandToConfigConverter, IDebugCommandToConfigConverter } from '../../onboardDebug/node/commandToConfigConverter';
 import { DebuggableCommandIdentifier, IDebuggableCommandIdentifier } from '../../onboardDebug/node/debuggableCommandIdentifier';
 import { ILanguageToolsProvider, LanguageToolsProvider } from '../../onboardDebug/node/languageToolsProvider';
+import { AgentRecommendationService, IAgentRecommendationService } from '../../agentRecommendation/node/agentRecommendationService';
 import { AgentDiscoveryService, IAgentDiscoveryService } from '../../orchestrator/agentDiscoveryService';
 import { IAgentExecutorRegistry } from '../../orchestrator/agentExecutor';
 import { AgentExecutorRegistry } from '../../orchestrator/agentExecutorRegistry';
@@ -193,6 +194,7 @@ export function registerServices(builder: IInstantiationServiceBuilder, extensio
 	builder.define(IClaudeMigrationService, new SyncDescriptor(ClaudeMigrationService));
 	builder.define(IClaudeCommandService, new SyncDescriptor(ClaudeCommandService));
 	builder.define(ISkillsService, new SyncDescriptor(SkillsService));
+	builder.define(IAgentRecommendationService, new SyncDescriptor(AgentRecommendationService));
 	builder.define(IAgentRunner, new SyncDescriptor(AgentRunnerService));
 	builder.define(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistry));
 	builder.define(IClaudeAgentManager, new SyncDescriptor(ClaudeAgentManager));
