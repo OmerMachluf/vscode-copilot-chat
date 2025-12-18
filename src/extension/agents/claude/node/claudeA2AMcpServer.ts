@@ -3,14 +3,14 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { createSdkMcpServer, tool, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
+import { createSdkMcpServer, McpSdkServerConfigWithInstance, tool } from '@anthropic-ai/claude-agent-sdk';
 import * as vscode from 'vscode';
 import { z } from 'zod';
-import { CancellationToken } from '../../../../util/vs/base/common/cancellation';
 import { ILanguageFeaturesService, isLocationLink } from '../../../../platform/languages/common/languageFeaturesService';
+import { CancellationToken } from '../../../../util/vs/base/common/cancellation';
 import { IAgentDiscoveryService } from '../../../orchestrator/agentDiscoveryService';
 import { ISubTaskCreateOptions, ISubTaskManager, ISubTaskResult } from '../../../orchestrator/orchestratorInterfaces';
-import { IOrchestratorService, CreateTaskOptions } from '../../../orchestrator/orchestratorServiceV2';
+import { CreateTaskOptions, IOrchestratorService } from '../../../orchestrator/orchestratorServiceV2';
 import { ISafetyLimitsService, SpawnContext } from '../../../orchestrator/safetyLimits';
 import { ITaskMonitorService } from '../../../orchestrator/taskMonitorService';
 import { IWorkerContext } from '../../../orchestrator/workerToolsService';
@@ -31,6 +31,11 @@ export interface IA2AMcpServerDependencies {
 	languageFeaturesService?: ILanguageFeaturesService;
 	/** Optional workspace root for resolving file paths */
 	workspaceRoot?: string;
+	/**
+	 * Callback for receiving updates from child subtasks.
+	 * Used by standalone sessions to receive pushed updates from orchestrator.
+	 */
+	onChildUpdate?: (message: string) => void;
 }
 
 /**
@@ -237,6 +242,20 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 							// Non-blocking: start execution in background, return task ID for later polling
 							// IMPORTANT: We must call executeSubTask to actually run the task!
 							// Without this, the subtask is created but never executed.
+
+							// Register standalone parent handler for pushed updates if callback available
+							if (deps.onChildUpdate && orchestratorService) {
+								orchestratorService.registerStandaloneParentHandler(
+									workerContext.workerId,
+									deps.onChildUpdate
+								);
+								console.log(`[a2a_spawn_subtask] Registered standalone parent handler for ${workerContext.workerId}`);
+							}
+
+							// Start monitoring this subtask so updates will be queued for parent
+							deps.taskMonitorService.startMonitoring(subtask.id, workerContext.workerId);
+							console.log(`[a2a_spawn_subtask] Started monitoring subtask ${subtask.id} for parent ${workerContext.workerId}`);
+
 							void subTaskManager.executeSubTask(subtask.id, CancellationToken.None).catch(error => {
 								console.error(`[a2a_spawn_subtask] Background subtask ${subtask.id} failed: ${error instanceof Error ? error.message : String(error)}`);
 							});
@@ -480,14 +499,33 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 								}]
 							};
 						} else {
-							// Return task IDs for later polling
+							// Non-blocking: start execution in background, return task IDs for later polling
+
+							// Register standalone parent handler for pushed updates if callback available
+							if (deps.onChildUpdate && orchestratorService) {
+								orchestratorService.registerStandaloneParentHandler(
+									workerContext.workerId,
+									deps.onChildUpdate
+								);
+								console.log(`[a2a_spawn_parallel_subtasks] Registered standalone parent handler for ${workerContext.workerId}`);
+							}
+
+							// Start monitoring and executing all subtasks
+							for (const subtask of subtasks) {
+								deps.taskMonitorService.startMonitoring(subtask.id, workerContext.workerId);
+								void subTaskManager.executeSubTask(subtask.id, CancellationToken.None).catch(error => {
+									console.error(`[a2a_spawn_parallel_subtasks] Background subtask ${subtask.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+								});
+							}
+							console.log(`[a2a_spawn_parallel_subtasks] Started monitoring ${subtasks.length} subtasks for parent ${workerContext.workerId}`);
+
 							return {
 								content: [{
 									type: 'text',
 									text: JSON.stringify({
 										taskIds: subtasks.map(st => st.id),
 										status: 'spawned',
-										message: 'Subtasks spawned in parallel. Use a2a_await_subtasks to poll for completion.'
+										message: 'Subtasks spawned in parallel and executing in background. Use a2a_await_subtasks to poll for completion.'
 									}, null, 2)
 								}]
 							};

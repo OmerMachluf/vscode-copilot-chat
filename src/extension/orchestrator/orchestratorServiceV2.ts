@@ -9,7 +9,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { ILogService } from '../../platform/log/common/logService';
 import { Emitter, Event } from '../../util/vs/base/common/event';
-import { Disposable } from '../../util/vs/base/common/lifecycle';
+import { Disposable, IDisposable, toDisposable } from '../../util/vs/base/common/lifecycle';
 import { generateUuid } from '../../util/vs/base/common/uuid';
 import { createDecorator, IInstantiationService } from '../../util/vs/platform/instantiation/common/instantiation';
 import { IClaudeWorktreeSessionManager } from '../agents/claude/node/claudeWorktreeSession';
@@ -36,7 +36,7 @@ import { IOrchestratorQueueMessage, IOrchestratorQueueService } from './orchestr
 import { IParentCompletionService, WorkerSessionWakeUpAdapter } from './parentCompletionService';
 import { ISubTaskManager } from './subTaskManager';
 import { ISubtaskProgressService } from './subtaskProgressService';
-import { ITaskMonitorService } from './taskMonitorService';
+import { ITaskMonitorService, ITaskUpdate } from './taskMonitorService';
 import { WorkerHealthMonitor, WorkerIdleReason } from './workerHealthMonitor';
 import { SerializedWorkerState, WorkerResponseStream, WorkerSession, WorkerSessionState } from './workerSession';
 import { IWorkerToolsService, WorkerToolSet } from './workerToolsService';
@@ -388,6 +388,19 @@ export interface IOrchestratorService {
 
 	// Legacy compatibility
 	getWorkers(): Record<string, any>;
+
+	// --- Standalone Session Support ---
+
+	/**
+	 * Register a handler to receive updates for a standalone parent session.
+	 * Standalone sessions (claude-standalone-*) are not in the _workers map
+	 * but need to receive updates from subtasks they spawn.
+	 *
+	 * @param parentId The standalone session's worker ID (e.g., claude-standalone-xxx)
+	 * @param handler Callback invoked with update messages to deliver to the session
+	 * @returns Disposable to unregister the handler
+	 */
+	registerStandaloneParentHandler(parentId: string, handler: (message: string) => void): IDisposable;
 }
 
 /**
@@ -593,6 +606,13 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 
 	/** Map of worker ID -> active inquiry listener disposables (idle/progress). Cleaned up when new inquiry sent or worker interrupted. */
 	private readonly _activeInquiryListeners = new Map<string, { dispose(): void }>();
+
+	/**
+	 * Map of standalone parent ID -> message handler.
+	 * Used to deliver updates to standalone sessions (claude-standalone-*) that spawned subtasks.
+	 * These sessions are not in _workers but need to receive updates from their children.
+	 */
+	private readonly _standaloneParentHandlers = new Map<string, (message: string) => void>();
 
 	/** Event-driven orchestrator service for LLM-based decision making */
 	private readonly _eventDrivenOrchestrator: EventDrivenOrchestratorService;
@@ -1219,17 +1239,12 @@ This is a scheduled progress check. Please provide a brief status update:
 
 	/**
 	 * Deliver queued updates to a parent worker immediately.
-	 * Interrupts the parent (if running) to ensure updates are delivered promptly
-	 * rather than waiting for the parent to go idle.
+	 * Supports both managed workers (in _workers map) and standalone sessions (claude-standalone-*).
+	 * For managed workers: interrupts and injects via sendClarification.
+	 * For standalone: uses registered handler callback.
 	 */
 	private async _deliverUpdatesToParent(parentWorkerId: string): Promise<void> {
 		this._orchLog('Delivering updates to parent immediately', { parentWorkerId });
-
-		const parentWorker = this._workers.get(parentWorkerId);
-		if (!parentWorker) {
-			this._orchLog('Parent worker not found for update delivery', { parentWorkerId });
-			return;
-		}
 
 		// Check if there are actually updates to deliver
 		if (!this._taskMonitorService.hasPendingUpdates(parentWorkerId)) {
@@ -1237,13 +1252,89 @@ This is a scheduled progress check. Please provide a brief status update:
 			return;
 		}
 
-		// Interrupt parent and wait for stream to end before injecting updates
-		// This prevents the race condition where we'd capture the dying stream
-		await parentWorker.interrupt();
-		this._orchLog('Parent interrupted, delivering updates', { parentWorkerId });
+		// Try managed worker first
+		const parentWorker = this._workers.get(parentWorkerId);
+		if (parentWorker) {
+			// Managed worker: interrupt and inject
+			await parentWorker.interrupt();
+			this._orchLog('Parent worker interrupted, delivering updates', { parentWorkerId });
+			this._injectPendingSubtaskUpdates(parentWorkerId, parentWorker);
+			return;
+		}
 
-		// Now inject the updates
-		this._injectPendingSubtaskUpdates(parentWorkerId, parentWorker);
+		// Try standalone parent handler
+		const standaloneHandler = this._standaloneParentHandlers.get(parentWorkerId);
+		if (standaloneHandler) {
+			this._orchLog('Delivering to standalone parent via handler', { parentWorkerId });
+			// Consume updates and format as message
+			const updates = this._taskMonitorService.consumeUpdates(parentWorkerId);
+			if (updates.length > 0) {
+				const message = this._formatUpdatesAsMessage(updates);
+				this._orchLog('*** STANDALONE PARENT RECEIVING UPDATES ***', {
+					parentWorkerId,
+					updateCount: updates.length,
+					messageLength: message.length,
+				});
+				standaloneHandler(message);
+			}
+			return;
+		}
+
+		// No handler available - updates remain queued for polling via a2a_get_subtask_updates
+		this._orchLog('No handler for parent - updates queued for polling', {
+			parentWorkerId,
+			isStandaloneSession: parentWorkerId.startsWith('claude-standalone-'),
+		});
+	}
+
+	/**
+	 * Format task updates as a message string for delivery.
+	 */
+	private _formatUpdatesAsMessage(updates: ITaskUpdate[]): string {
+		const updateMessages: string[] = [];
+		for (const update of updates) {
+			switch (update.type) {
+				case 'completed':
+					updateMessages.push(
+						`✅ **Subtask Completed** (\`${update.subTaskId}\`)\n` +
+						(update.result?.output ? `Output: ${update.result.output.slice(0, 500)}${update.result.output.length > 500 ? '...' : ''}` : 'No output')
+					);
+					break;
+				case 'failed':
+					updateMessages.push(
+						`❌ **Subtask Failed** (\`${update.subTaskId}\`)\n` +
+						`Error: ${update.error || update.result?.error || 'Unknown error'}`
+					);
+					break;
+				case 'idle':
+				case 'idle_response':
+					updateMessages.push(
+						`⏸️ **Subtask Idle** (\`${update.subTaskId}\`)\n` +
+						`Reason: ${update.idleReason || 'No activity'}`
+					);
+					break;
+				case 'progress':
+					if (update.progressReport) {
+						updateMessages.push(
+							`📊 **Subtask Progress Report** (\`${update.subTaskId}\`)\n\n` +
+							update.progressReport
+						);
+					} else if (update.progress !== undefined) {
+						updateMessages.push(
+							`📊 **Subtask Progress** (\`${update.subTaskId}\`): ${update.progress}%`
+						);
+					}
+					break;
+				case 'error':
+					updateMessages.push(
+						`⚠️ **Subtask Error** (\`${update.subTaskId}\`)\n` +
+						`Error: ${update.error || 'Unknown error'}`
+					);
+					break;
+			}
+		}
+
+		return `## Subtask Updates\n\n${updates.length} update${updates.length > 1 ? 's' : ''} from your spawned subtasks:\n\n${updateMessages.join('\n\n')}`;
 	}
 
 	/**
@@ -3528,6 +3619,21 @@ Focus on your assigned task and provide a clear, actionable result.`;
 			};
 		}
 		return result;
+	}
+
+	// --- Standalone Session Support ---
+
+	/**
+	 * Register a handler to receive updates for a standalone parent session.
+	 * Called when a standalone session (claude-standalone-*) spawns a subtask.
+	 */
+	public registerStandaloneParentHandler(parentId: string, handler: (message: string) => void): IDisposable {
+		this._orchLog('Registering standalone parent handler', { parentId });
+		this._standaloneParentHandlers.set(parentId, handler);
+		return toDisposable(() => {
+			this._orchLog('Unregistering standalone parent handler', { parentId });
+			this._standaloneParentHandlers.delete(parentId);
+		});
 	}
 
 	public addPlanTask(task: string): void {

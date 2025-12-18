@@ -334,6 +334,12 @@ export class ClaudeCodeSession extends Disposable {
 	private _editTracker = new ExternalEditTracker();
 
 	/**
+	 * Pending updates from child subtasks.
+	 * These are injected into the next prompt when the session processes a new request.
+	 */
+	private _pendingChildUpdates: string[] = [];
+
+	/**
 	 * Worker context for A2A orchestration.
 	 * Set by executor when running as a subtask in a worktree.
 	 */
@@ -373,6 +379,16 @@ export class ClaudeCodeSession extends Disposable {
 	 */
 	public get workerContext(): IWorkerContext | undefined {
 		return this._workerContext;
+	}
+
+	/**
+	 * Receives an update message from a child subtask.
+	 * The message will be included in the next prompt to the session.
+	 * @param message The formatted update message from the child
+	 */
+	public receiveChildUpdate(message: string): void {
+		this.logService.info(`[ClaudeCodeSession] Received child update: ${message.substring(0, 100)}...`);
+		this._pendingChildUpdates.push(message);
 	}
 
 	public override dispose(): void {
@@ -507,6 +523,8 @@ export class ClaudeCodeSession extends Disposable {
 				orchestratorService,
 				languageFeaturesService,
 				workspaceRoot: workingDirectory,
+				// Callback for receiving pushed updates from child subtasks
+				onChildUpdate: (message: string) => this.receiveChildUpdate(message),
 			});
 		});
 
@@ -605,11 +623,20 @@ export class ClaudeCodeSession extends Disposable {
 				token: request.token
 			};
 
+			// Build prompt with any pending child updates prepended
+			let prompt = request.prompt;
+			if (this._pendingChildUpdates.length > 0) {
+				const updates = this._pendingChildUpdates.splice(0, this._pendingChildUpdates.length);
+				const updatesText = updates.join('\n\n');
+				prompt = `<system-reminder>\nUpdates from your spawned subtasks:\n${updatesText}\n</system-reminder>\n\n${prompt}`;
+				this.logService.info(`[ClaudeCodeSession] Injected ${updates.length} child updates into prompt`);
+			}
+
 			yield {
 				type: 'user',
 				message: {
 					role: 'user',
-					content: request.prompt
+					content: prompt
 				},
 				parent_tool_use_id: null,
 				session_id: this.sessionId ?? ''
