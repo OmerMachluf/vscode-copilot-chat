@@ -865,6 +865,15 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 						const tasks = orchestratorService.getTasks();
 						const task = tasks.find(t => t.workerId === worker.id);
 
+						if (deps.onChildUpdate && orchestratorService) {
+							orchestratorService.registerStandaloneParentHandler(
+								orchestratorWorkerId,
+								deps.onChildUpdate
+							);
+							console.log(`[a2a_spawn_parallel_subtasks] Registered standalone parent handler for ${orchestratorWorkerId}`);
+						}
+
+
 						return {
 							content: [{
 								type: 'text',
