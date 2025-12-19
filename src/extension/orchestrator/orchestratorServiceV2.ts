@@ -4137,6 +4137,23 @@ Focus on your assigned task and provide a clear, actionable result.`;
 						const delay = baseDelay * consecutiveFailures;
 						this._logService.warn(`[OrchestratorService] RETRYABLE ERROR for worker ${worker.id}: ${result.error} (attempt ${consecutiveFailures}/${MAX_RETRIES}, waiting ${delay}ms)`);
 						worker.addAssistantMessage(`[System: ${isRateLimit ? 'Rate limited' : 'Error'}: ${result.error}. Retrying in ${Math.ceil(delay / 1000)}s (attempt ${consecutiveFailures}/${MAX_RETRIES})]`);
+
+						// Immediately notify parent of the error (before waiting for retry)
+						if (task.parentWorkerId) {
+							this._taskMonitorService.queueUpdate({
+								type: 'error',
+								subTaskId: task.id,
+								parentWorkerId: task.parentWorkerId,
+								error: result.error,
+								retryInfo: {
+									attempt: consecutiveFailures,
+									maxRetries: MAX_RETRIES,
+									retryAfterMs: delay,
+								},
+								timestamp: Date.now(),
+							});
+						}
+
 						await new Promise(resolve => setTimeout(resolve, delay));
 						continue;
 					}
@@ -4217,6 +4234,23 @@ Focus on your assigned task and provide a clear, actionable result.`;
 					const delay = baseDelay * consecutiveFailures;
 					this._logService.warn(`[Orchestrator] Worker ${worker.id}: ${isRateLimitError ? 'Rate limit' : 'Network'} error, retry ${consecutiveFailures}/${MAX_RETRIES} after ${delay / 1000}s`);
 					worker.addAssistantMessage(`[System: ${isRateLimitError ? 'Rate limited' : 'Network error'}, retrying in ${delay / 1000}s (attempt ${consecutiveFailures}/${MAX_RETRIES})]`);
+
+					// Immediately notify parent of the error (before waiting for retry)
+					if (task.parentWorkerId) {
+						this._taskMonitorService.queueUpdate({
+							type: 'error',
+							subTaskId: task.id,
+							parentWorkerId: task.parentWorkerId,
+							error: errorMessage,
+							retryInfo: {
+								attempt: consecutiveFailures,
+								maxRetries: MAX_RETRIES,
+								retryAfterMs: delay,
+							},
+							timestamp: Date.now(),
+						});
+					}
+
 					await new Promise(resolve => setTimeout(resolve, delay));
 					continue;
 				}
@@ -4414,6 +4448,23 @@ Focus on your assigned task and provide a clear, actionable result.`;
 						const delay = baseDelay * consecutiveFailures;
 						this._logService.warn(`[OrchestratorService] Executor error for worker ${worker.id}: ${result.error} (retry ${consecutiveFailures}/${MAX_RETRIES})`);
 						worker.addAssistantMessage(`[System: ${isRateLimit ? 'Rate limited' : 'Error'}. Retrying in ${Math.ceil(delay / 1000)}s]`);
+
+						// Immediately notify parent of the error (before waiting for retry)
+						if (task.parentWorkerId) {
+							this._taskMonitorService.queueUpdate({
+								type: 'error',
+								subTaskId: task.id,
+								parentWorkerId: task.parentWorkerId,
+								error: result.error,
+								retryInfo: {
+									attempt: consecutiveFailures,
+									maxRetries: MAX_RETRIES,
+									retryAfterMs: delay,
+								},
+								timestamp: Date.now(),
+							});
+						}
+
 						await new Promise(resolve => setTimeout(resolve, delay));
 						continue;
 					}
@@ -4462,6 +4513,23 @@ Focus on your assigned task and provide a clear, actionable result.`;
 				if (consecutiveFailures < MAX_RETRIES) {
 					const delay = 2000 * consecutiveFailures;
 					this._logService.warn(`[OrchestratorService] Executor exception for worker ${worker.id}: ${errorMessage} (retry ${consecutiveFailures}/${MAX_RETRIES})`);
+
+					// Immediately notify parent of the error (before waiting for retry)
+					if (task.parentWorkerId) {
+						this._taskMonitorService.queueUpdate({
+							type: 'error',
+							subTaskId: task.id,
+							parentWorkerId: task.parentWorkerId,
+							error: errorMessage,
+							retryInfo: {
+								attempt: consecutiveFailures,
+								maxRetries: MAX_RETRIES,
+								retryAfterMs: delay,
+							},
+							timestamp: Date.now(),
+						});
+					}
+
 					await new Promise(resolve => setTimeout(resolve, delay));
 					continue;
 				}
