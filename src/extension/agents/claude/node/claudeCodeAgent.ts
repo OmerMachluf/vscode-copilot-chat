@@ -3,9 +3,10 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { HookInput, HookJSONOutput, Options, PreToolUseHookInput, Query, SDKAssistantMessage, SDKResultMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { HookInput, HookJSONOutput, McpSdkServerConfigWithInstance, Options, PreToolUseHookInput, Query, SDKAssistantMessage, SDKResultMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import Anthropic from '@anthropic-ai/sdk';
 import type * as vscode from 'vscode';
+import { IAuthenticationService } from '../../../../platform/authentication/common/authentication';
 import { ConfigKey, IConfigurationService } from '../../../../platform/configuration/common/configurationService';
 import { IEnvService } from '../../../../platform/env/common/envService';
 import { ILanguageFeaturesService } from '../../../../platform/languages/common/languageFeaturesService';
@@ -18,6 +19,8 @@ import { Disposable, DisposableMap } from '../../../../util/vs/base/common/lifec
 import { isWindows } from '../../../../util/vs/base/common/platform';
 import { URI } from '../../../../util/vs/base/common/uri';
 import { IInstantiationService } from '../../../../util/vs/platform/instantiation/common/instantiation';
+import { ICopilotCLIMCPHandler, MCPServerConfig } from '../../copilotcli/node/mcpHandler';
+import { GitHubMcpDefinitionProvider } from '../../../githubMcp/common/githubMcpDefinitionProvider';
 import { IAgentDiscoveryService } from '../../../orchestrator/agentDiscoveryService';
 import { IClaudeCommandService } from '../../../orchestrator/claudeCommandService';
 import { ISubTaskManager } from '../../../orchestrator/orchestratorInterfaces';
@@ -36,6 +39,32 @@ import { createA2AMcpServer } from './claudeA2AMcpServer';
 import { IClaudeAgentManager } from './claudeAgentManagerTypes';
 import { IClaudeCodeSdkService } from './claudeCodeSdkService';
 import { ClaudeWorktreeSession, IWorktreeSessionConfig, IWorktreeSessionFactory } from './claudeWorktreeSession';
+
+/**
+ * Claude SDK MCP server configuration types.
+ * These represent the external MCP servers that can be added to the SDK options.
+ */
+interface ClaudeSdkStdioMcpServer {
+	readonly type: 'stdio';
+	readonly command: string;
+	readonly args?: string[];
+	readonly env?: Record<string, string>;
+	readonly cwd?: string;
+}
+
+interface ClaudeSdkHttpMcpServer {
+	readonly type: 'http';
+	readonly url: string;
+	readonly headers?: Record<string, string>;
+}
+
+interface ClaudeSdkSseMcpServer {
+	readonly type: 'sse';
+	readonly url: string;
+	readonly headers?: Record<string, string>;
+}
+
+type ClaudeSdkMcpServerConfig = ClaudeSdkStdioMcpServer | ClaudeSdkHttpMcpServer | ClaudeSdkSseMcpServer;
 
 // Re-export the interface and service identifier for consumers
 export { IClaudeAgentManager } from './claudeAgentManagerTypes';
@@ -366,6 +395,7 @@ export class ClaudeCodeSession extends Disposable {
 		@IAgentDiscoveryService private readonly agentDiscoveryService: IAgentDiscoveryService,
 		@ISafetyLimitsService private readonly safetyLimitsService: ISafetyLimitsService,
 		@ITaskMonitorService private readonly taskMonitorService: ITaskMonitorService,
+		@IAuthenticationService private readonly authenticationService: IAuthenticationService,
 	) {
 		super();
 	}
@@ -611,6 +641,14 @@ export class ClaudeCodeSession extends Disposable {
 			});
 		});
 
+		// Build shared MCP servers from workspace and GitHub sources
+		// These are merged with the built-in A2A orchestration MCP server
+		const sharedMcpServers = await this._buildSharedMcpServers(workingDirectory);
+		const mcpServerCount = Object.keys(sharedMcpServers).length;
+		if (mcpServerCount > 0) {
+			this.logService.info(`[ClaudeCodeSession] Loaded ${mcpServerCount} shared MCP servers: ${Object.keys(sharedMcpServers).join(', ')}`);
+		}
+
 		const options: Options = {
 			cwd: workingDirectory,
 			abortController: this._abortController,
@@ -626,9 +664,10 @@ export class ClaudeCodeSession extends Disposable {
 				PATH: `${this.envService.appRoot}/node_modules/@vscode/ripgrep/bin${pathSep}${process.env.PATH}`
 			},
 			resume: this.sessionId,
-			// Register the A2A MCP server as an in-process SDK server
+			// Register MCP servers: A2A orchestration (in-process) + shared servers (workspace/GitHub)
 			mcpServers: {
-				'a2a-orchestration': a2aMcpServer
+				'a2a-orchestration': a2aMcpServer,
+				...sharedMcpServers,
 			},
 			hooks: {
 				PreToolUse: [
@@ -670,6 +709,137 @@ export class ClaudeCodeSession extends Disposable {
 
 		// Start the message processing loop
 		this._processMessages();
+	}
+
+	/**
+	 * Builds shared MCP server configurations from workspace and GitHub sources.
+	 * These are merged with the built-in A2A orchestration MCP server.
+	 *
+	 * MCP servers are shared between Copilot and Claude SDK to provide consistent
+	 * tool access across both agents.
+	 *
+	 * @param workingDirectory The current working directory for the session
+	 * @returns Record of MCP server configurations keyed by server name
+	 */
+	private async _buildSharedMcpServers(workingDirectory: string | undefined): Promise<Record<string, ClaudeSdkMcpServerConfig>> {
+		const servers: Record<string, ClaudeSdkMcpServerConfig> = {};
+
+		try {
+			// Priority 1: Add workspace MCP servers from .vscode/mcp.json
+			await this._addWorkspaceMcpServers(servers, workingDirectory);
+
+			// Priority 2: Add GitHub MCP server if available
+			await this._addGitHubMcpServer(servers);
+		} catch (error) {
+			this.logService.warn(`[ClaudeCodeSession] Failed to build shared MCP servers: ${error instanceof Error ? error.message : String(error)}`);
+		}
+
+		return servers;
+	}
+
+	/**
+	 * Adds workspace-configured MCP servers from .vscode/mcp.json to the servers record.
+	 * Excludes the 'github' server as it's handled separately.
+	 *
+	 * @param servers Record to add servers to
+	 * @param workingDirectory The working directory containing the workspace
+	 */
+	private async _addWorkspaceMcpServers(
+		servers: Record<string, ClaudeSdkMcpServerConfig>,
+		workingDirectory: string | undefined
+	): Promise<void> {
+		try {
+			const mcpHandler = this.instantiationService.createInstance<ICopilotCLIMCPHandler>(
+				(await import('../../copilotcli/node/mcpHandler')).CopilotCLIMCPHandler
+			);
+			const workingDirectoryUri = workingDirectory ? URI.file(workingDirectory) : undefined;
+			const config = await mcpHandler.loadMcpConfig(workingDirectoryUri);
+
+			if (!config) {
+				return;
+			}
+
+			for (const [name, server] of Object.entries(config)) {
+				// Skip GitHub server (handled separately) and default servers that are duplicated
+				if (name === 'github' && server.isDefaultServer) {
+					continue;
+				}
+
+				const converted = this._convertToClaudeSdkFormat(server);
+				if (converted) {
+					servers[name] = converted;
+					this.logService.trace(`[ClaudeCodeSession] Added workspace MCP server: ${name}`);
+				}
+			}
+		} catch (error) {
+			this.logService.warn(`[ClaudeCodeSession] Failed to load workspace MCP servers: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	/**
+	 * Adds the GitHub MCP server if authentication is available and the server is enabled.
+	 *
+	 * @param servers Record to add the GitHub server to
+	 */
+	private async _addGitHubMcpServer(servers: Record<string, ClaudeSdkMcpServerConfig>): Promise<void> {
+		// Skip if already configured from workspace
+		if (servers['github']) {
+			return;
+		}
+
+		try {
+			const definitionProvider = this.instantiationService.createInstance(GitHubMcpDefinitionProvider);
+			const definitions = definitionProvider.provideMcpServerDefinitions();
+
+			if (!definitions || definitions.length === 0) {
+				this.logService.trace('[ClaudeCodeSession] No GitHub MCP server definitions available.');
+				return;
+			}
+
+			// Resolve the definition to get the access token
+			const resolvedDefinition = await definitionProvider.resolveMcpServerDefinition(definitions[0], CancellationToken.None);
+
+			servers['github'] = {
+				type: 'http',
+				url: resolvedDefinition.uri.toString(),
+				headers: resolvedDefinition.headers,
+			};
+			this.logService.trace('[ClaudeCodeSession] Added GitHub MCP server.');
+		} catch (error) {
+			// Authentication may not be available - this is not an error condition
+			this.logService.trace(`[ClaudeCodeSession] GitHub MCP server not available: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	/**
+	 * Converts a Copilot MCP server configuration to Claude SDK format.
+	 *
+	 * @param server The Copilot MCP server configuration
+	 * @returns Claude SDK MCP server configuration, or undefined if conversion fails
+	 */
+	private _convertToClaudeSdkFormat(server: MCPServerConfig): ClaudeSdkMcpServerConfig | undefined {
+		// Handle HTTP and SSE servers
+		if (server.type === 'http' || server.type === 'sse') {
+			return {
+				type: server.type,
+				url: server.url,
+				headers: server.headers,
+			};
+		}
+
+		// Handle local/stdio servers
+		if (!server.type || server.type === 'local' || server.type === 'stdio') {
+			return {
+				type: 'stdio',
+				command: server.command,
+				args: server.args,
+				env: server.env,
+				cwd: server.cwd,
+			};
+		}
+
+		this.logService.warn(`[ClaudeCodeSession] Unsupported MCP server type: ${server.type}`);
+		return undefined;
 	}
 
 	private async _onWillEditTool(input: HookInput, toolUseID: string | undefined, token: CancellationToken): Promise<HookJSONOutput> {
