@@ -19,6 +19,23 @@ import { ISubTask, ISubTaskManager, ISubTaskResult } from './orchestratorInterfa
 export type TaskUpdateType = 'completed' | 'failed' | 'idle' | 'progress' | 'idle_response' | 'error';
 
 /**
+ * Error types that categorize different failure modes
+ */
+export type TaskErrorType = 'rate_limit' | 'network' | 'auth' | 'fatal' | 'unknown';
+
+/**
+ * Retry information for recoverable errors
+ */
+export interface IRetryInfo {
+	/** Current attempt number (1-based) */
+	attempt: number;
+	/** Maximum number of retry attempts */
+	maxAttempts: number;
+	/** Seconds until next retry (if applicable) */
+	retryAfterSeconds?: number;
+}
+
+/**
  * An update from a monitored subtask to its parent
  */
 export interface ITaskUpdate {
@@ -32,6 +49,10 @@ export interface ITaskUpdate {
 	result?: ISubTaskResult;
 	/** Error details (for failed/error) */
 	error?: string;
+	/** Categorized error type for error updates */
+	errorType?: TaskErrorType;
+	/** Retry information for recoverable errors */
+	retryInfo?: IRetryInfo;
 	/** Idle reason (for idle/idle_response) */
 	idleReason?: string;
 	/** Progress percentage (for progress) */
