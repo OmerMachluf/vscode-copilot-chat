@@ -42,3 +42,7 @@ test/simulation/cache/_base.sqlite
 .copilot-orchestrator-queue.json
 
 test/aml/outnul
+test/aml/out
+
+# Ignore files in huksy (else we always end up with files when creating worktrees)
+.husky/_/

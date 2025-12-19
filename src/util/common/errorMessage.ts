@@ -31,15 +31,15 @@ function detectSystemErrorMessage(exception: any): string {
 
 	// Custom node.js error from us
 	if (exception.code === 'ERR_UNC_HOST_NOT_ALLOWED') {
-		return `${exception.message}. Please update the 'security.allowedUNCHosts' setting if you want to allow this host.`;
+		return l10n.t("{0}. Please update the '{1}' setting if you want to allow this host.", exception.message, 'security.allowedUNCHosts');
 	}
 
 	// See https://nodejs.org/api/errors.html#errors_class_system_error
 	if (typeof exception.code === 'string' && typeof exception.errno === 'number' && typeof exception.syscall === 'string') {
-		return l10n.t('nodeExceptionMessage', 'A system error occurred ({0})', exception.message);
+		return l10n.t('A system error occurred ({0})', exception.message);
 	}
 
-	return exception.message || l10n.t('error.defaultMessage', 'An unknown error occurred. Please consult the log for more details.');
+	return exception.message || l10n.t('An unknown error occurred. Please consult the log for more details.');
 }
 
 /**
@@ -50,7 +50,7 @@ function detectSystemErrorMessage(exception: any): string {
  */
 export function toErrorMessage(error: any = null, verbose: boolean = false): string {
 	if (!error) {
-		return l10n.t('error.defaultMessage', 'An unknown error occurred. Please consult the log for more details.');
+		return l10n.t('An unknown error occurred. Please consult the log for more details.');
 	}
 
 	if (Array.isArray(error)) {
@@ -58,7 +58,7 @@ export function toErrorMessage(error: any = null, verbose: boolean = false): str
 		const msg = toErrorMessage(errors[0], verbose);
 
 		if (errors.length > 1) {
-			return l10n.t('error.moreErrors', '{0} ({1} errors in total)', msg, errors.length);
+			return l10n.t('{0} ({1} errors in total)', msg, errors.length);
 		}
 
 		return msg;
@@ -88,5 +88,5 @@ export function toErrorMessage(error: any = null, verbose: boolean = false): str
 		return error.message;
 	}
 
-	return l10n.t('error.defaultMessage', 'An unknown error occurred. Please consult the log for more details.');
+	return l10n.t('An unknown error occurred. Please consult the log for more details.');
 }
