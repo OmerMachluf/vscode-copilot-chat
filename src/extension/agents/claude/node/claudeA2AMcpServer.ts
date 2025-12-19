@@ -15,6 +15,7 @@ import { ISafetyLimitsService, SpawnContext } from '../../../orchestrator/safety
 import { ITaskMonitorService } from '../../../orchestrator/taskMonitorService';
 import { IWorkerContext } from '../../../orchestrator/workerToolsService';
 import { getCurrentBranch } from '../../../conversation/a2a/gitOperations';
+import { classifyError } from '../../../tools/node/a2aTools';
 
 /**
  * Dependencies required to create the A2A MCP server.
@@ -304,17 +305,32 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 					timeout: z.number().default(300000).describe('Maximum time to wait in milliseconds (default: 5 minutes)'),
 				},
 				async (args) => {
-					const results: Array<ISubTaskResult | { taskId: string; status: string; error?: string }> = [];
+					const results: Array<{
+						taskId: string;
+						status: string;
+						output?: string;
+						error?: string;
+						errorType?: string;
+						retryInfo?: {
+							retriable: boolean;
+							suggestedDelayMs?: number;
+							maxRetries?: number;
+							suggestion: string;
+						};
+					}> = [];
 
 					for (const taskId of args.taskIds) {
 						try {
 							const subtask = subTaskManager.getSubTask(taskId);
 							if (!subtask) {
+								const { errorType, retryInfo } = classifyError('Task not found');
 								results.push({
 									taskId,
 									status: 'failed',
 									output: '',
-									error: 'Task not found - it may have been cleaned up or never existed'
+									error: 'Task not found - it may have been cleaned up or never existed',
+									errorType,
+									retryInfo,
 								});
 								continue;
 							}
@@ -323,11 +339,14 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 							const startTime = Date.now();
 							while (subtask.status === 'pending' || subtask.status === 'running') {
 								if (Date.now() - startTime > args.timeout) {
+									const { errorType, retryInfo } = classifyError('timeout');
 									results.push({
 										taskId,
 										status: 'timeout',
 										output: '',
-										error: `Timed out after ${args.timeout}ms`
+										error: `Timed out after ${args.timeout}ms`,
+										errorType,
+										retryInfo,
 									});
 									break;
 								}
@@ -342,20 +361,43 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 
 							// Get the result
 							if (subtask.result) {
-								results.push(subtask.result);
+								const resultEntry: typeof results[0] = {
+									taskId,
+									status: subtask.result.status,
+									output: subtask.result.output,
+									error: subtask.result.error,
+								};
+								// Add error classification for failed tasks
+								if (subtask.result.status !== 'success' && subtask.result.error) {
+									const { errorType, retryInfo } = classifyError(subtask.result.error);
+									resultEntry.errorType = errorType;
+									resultEntry.retryInfo = retryInfo;
+								}
+								results.push(resultEntry);
 							} else {
-								results.push({
+								const errorMsg = subtask.status === 'cancelled' ? 'Task was cancelled' : undefined;
+								const resultEntry: typeof results[0] = {
 									taskId,
 									status: subtask.status,
 									output: '',
-									error: subtask.status === 'cancelled' ? 'Task was cancelled' : undefined
-								});
+									error: errorMsg,
+								};
+								if (errorMsg) {
+									const { errorType, retryInfo } = classifyError(errorMsg);
+									resultEntry.errorType = errorType;
+									resultEntry.retryInfo = retryInfo;
+								}
+								results.push(resultEntry);
 							}
 						} catch (error) {
+							const errorMsg = `Error polling task: ${error instanceof Error ? error.message : String(error)}`;
+							const { errorType, retryInfo } = classifyError(errorMsg);
 							results.push({
 								taskId,
 								status: 'failed',
-								error: `Error polling task: ${error instanceof Error ? error.message : String(error)}`
+								error: errorMsg,
+								errorType,
+								retryInfo,
 							});
 						}
 					}
@@ -1257,23 +1299,33 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 							};
 						}
 
-						// Format updates for the agent
-						const formattedUpdates = updates.map(update => ({
-							type: update.type,
-							subTaskId: update.subTaskId,
-							timestamp: new Date(update.timestamp).toISOString(),
-							...(update.result && {
-								result: {
-									status: update.result.status,
-									output: update.result.output?.substring(0, 500), // Truncate long output
-									error: update.result.error,
-								}
-							}),
-							...(update.error && { error: update.error }),
-							...(update.idleReason && { idleReason: update.idleReason }),
-							...(update.progress !== undefined && { progress: update.progress }),
-							...(update.progressReport && { progressReport: update.progressReport }),
-						}));
+						// Format updates for the agent with error classification
+						const formattedUpdates = updates.map(update => {
+							const errorMsg = update.error || update.result?.error;
+							const errorClassification = errorMsg ? classifyError(errorMsg) : undefined;
+
+							return {
+								type: update.type,
+								subTaskId: update.subTaskId,
+								timestamp: new Date(update.timestamp).toISOString(),
+								...(update.result && {
+									result: {
+										status: update.result.status,
+										output: update.result.output?.substring(0, 500), // Truncate long output
+										error: update.result.error,
+									}
+								}),
+								...(update.error && { error: update.error }),
+								// Include error classification for failed/error updates
+								...(errorClassification && {
+									errorType: errorClassification.errorType,
+									retryInfo: errorClassification.retryInfo,
+								}),
+								...(update.idleReason && { idleReason: update.idleReason }),
+								...(update.progress !== undefined && { progress: update.progress }),
+								...(update.progressReport && { progressReport: update.progressReport }),
+							};
+						});
 
 						return {
 							content: [{
