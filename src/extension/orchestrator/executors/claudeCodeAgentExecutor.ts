@@ -17,6 +17,7 @@ import {
 	ParsedAgentType,
 } from '../agentExecutor';
 import { IClaudeMigrationService } from '../claudeMigrationService';
+import { IUnifiedDefinitionService } from '../unifiedDefinitionService';
 
 /**
  * Maps Claude agent names to their corresponding slash commands
@@ -54,6 +55,7 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 		@IClaudeAgentManager private readonly _claudeAgentManager: IClaudeAgentManager,
 		@ILogService private readonly _logService: ILogService,
 		@IClaudeMigrationService private readonly _claudeMigrationService: IClaudeMigrationService,
+		@IUnifiedDefinitionService private readonly _unifiedDefinitionService: IUnifiedDefinitionService,
 	) { }
 
 	/**
@@ -141,8 +143,8 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 			});
 			this._logService.info(`[ClaudeExecutor:execute] Worker state tracked, total active workers: ${this._activeWorkers.size}`);
 
-			// Build prompt with slash command if specified
-			const fullPrompt = this._buildPrompt(prompt, agentType);
+			// Build prompt with custom instructions and slash command if specified
+			const fullPrompt = await this._buildPrompt(prompt, agentType);
 			this._logService.info(`[ClaudeExecutor:execute] Built fullPrompt: length=${fullPrompt.length}, starts with slash=${fullPrompt.startsWith('/')}`);
 			this._logService.info(`[ClaudeExecutor:execute] fullPrompt preview="${fullPrompt.slice(0, 300).replace(/\n/g, '\\n')}..."`);
 
@@ -322,20 +324,40 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 	}
 
 	/**
-	 * Builds the full prompt with optional slash command prefix.
+	 * Builds the full prompt with optional slash command prefix and custom instructions.
 	 */
-	private _buildPrompt(prompt: string, agentType: ParsedAgentType): string {
-		// Check if agent name maps to a slash command
-		const slashCommand = agentType.slashCommand ?? CLAUDE_SLASH_COMMAND_MAP[agentType.agentName];
+	private async _buildPrompt(prompt: string, agentType: ParsedAgentType): Promise<string> {
+		const parts: string[] = [];
 
-		if (slashCommand) {
-			// If prompt doesn't already start with a slash command, prepend it
-			if (!prompt.startsWith('/')) {
-				return `${slashCommand} ${prompt}`;
+		// 1. Add custom instructions wrapped in metadata tags
+		try {
+			const agentId = agentType.agentName || 'agent';
+			const composed = await this._unifiedDefinitionService.getInstructionsForAgent(agentId);
+
+			if (composed.instructions.length > 0) {
+				const instructionsContent = composed.instructions.join('\n\n');
+				parts.push(
+					`<custom-instructions source="repo" agent="${agentId}">`,
+					instructionsContent,
+					`</custom-instructions>`,
+					''
+				);
 			}
+		} catch (error) {
+			// Instructions not available, continue without them
+			this._logService.debug(`[ClaudeExecutor] Failed to load instructions for ${agentType.agentName}: ${error}`);
 		}
 
-		return prompt;
+		// 2. Add the prompt with optional slash command prefix
+		const slashCommand = agentType.slashCommand ?? CLAUDE_SLASH_COMMAND_MAP[agentType.agentName];
+
+		if (slashCommand && !prompt.startsWith('/')) {
+			parts.push(`${slashCommand} ${prompt}`);
+		} else {
+			parts.push(prompt);
+		}
+
+		return parts.join('\n');
 	}
 
 	/**
