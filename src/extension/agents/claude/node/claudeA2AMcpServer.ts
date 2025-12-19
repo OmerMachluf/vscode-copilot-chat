@@ -933,6 +933,13 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 						const tasks = orchestratorService.getTasks();
 						const task = tasks.find(t => t.workerId === worker.id);
 
+						// CRITICAL: Start monitoring so TaskMonitorService tracks this task
+						// Without this, parent never gets notified of completion!
+						if (task?.id) {
+							deps.taskMonitorService.startMonitoring(task.id, orchestratorWorkerId);
+							console.log(`[orchestrator_deploy_task] Started monitoring task ${task.id} for parent ${orchestratorWorkerId}`);
+						}
+
 						if (deps.onChildUpdate && orchestratorService) {
 							orchestratorService.registerStandaloneParentHandler(
 								orchestratorWorkerId,
