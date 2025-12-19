@@ -3,10 +3,10 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { SkillsService, formatSkillsForPrompt } from '../../skillsService';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AgentInstructionService } from '../../agentInstructionService';
-import { registerCustomAgents, clearCustomAgentSlashCommands, parseAgentType, getAllSlashCommands } from '../../agentTypeParser';
+import { clearCustomAgentSlashCommands, getAllSlashCommands, parseAgentType, registerCustomAgents } from '../../agentTypeParser';
+import { SkillsService, formatSkillsForPrompt } from '../../skillsService';
 
 /**
  * Integration tests for Skills, Architecture Access, and Custom Agent features.
