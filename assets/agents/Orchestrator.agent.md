@@ -109,11 +109,34 @@ tasks:
 - Deploy ready tasks using A2A tools
 - After A2A subtask completes, call `orchestrator_completeTask` to update plan state
 
+**⚠️ CRITICAL: Merge Before Deploying Dependent Tasks**
+
+When a task has code dependencies on another task, you MUST merge the completed task's changes into main BEFORE deploying the dependent task. Otherwise, the dependent task will start from stale code and won't see the changes it depends on.
+
+**Why this matters:**
+- Each worker operates in an isolated worktree created from `main`
+- If Task B depends on Task A's changes but A's branch isn't merged to main, Task B won't have A's code
+- This causes merge conflicts, duplicate implementations, or workers building on stale code
+
+**Required workflow for code dependencies:**
+1. Task A completes → pull changes via `a2a_pull_subtask_changes`
+2. **MERGE Task A's branch into main** (via terminal: `git merge <branch>`)
+3. Call `orchestrator_completeTask` to mark A done
+4. NOW deploy Task B (it will get A's changes from main)
+
 **Example flow:**
 1. Plan starts → "investigate" is ready (no deps) → deploy via `a2a_spawnSubTask`
-2. Worker completes → call `orchestrator_completeTask` → "design" becomes ready
-3. Deploy "design" via `a2a_spawnSubTask`
+2. Worker completes → pull changes → **merge to main** → call `orchestrator_completeTask` → "design" becomes ready
+3. Deploy "design" via `a2a_spawnSubTask` (worktree created from updated main)
 4. Continue until plan completes
+
+**When to merge vs. not merge:**
+| Scenario | Merge to Main? |
+|----------|----------------|
+| Dependent task modifies same files | YES - must merge |
+| Dependent task imports/uses code from dependency | YES - must merge |
+| Tasks are independent (different modules) | Optional but recommended |
+| Parallel tasks with no code overlap | Not required |
 
 ### 2. Completing Tasks
 
@@ -123,7 +146,8 @@ When using A2A tools, task completion follows this flow:
 2. **Worker signals completion** via `a2a_subtask_complete` with summary of work done
 3. **You receive the result** directly from the A2A tool response
 4. **Pull their changes** into your branch using `a2a_pull_subtask_changes`
-5. **Mark the plan task complete** using `orchestrator_completeTask`
+5. **⚠️ MERGE to main if other tasks depend on this code** (see "Merge Before Deploying")
+6. **Mark the plan task complete** using `orchestrator_completeTask`
 
 **After receiving a successful A2A response:**
 1. Pull the worker's changes:
@@ -135,7 +159,14 @@ When using A2A tools, task completion follows this flow:
 ```
 
 2. Resolve any merge conflicts if needed (see Section 6)
-3. Mark the plan task as done:
+
+3. **⚠️ If dependent tasks will modify or use this code, merge to main:**
+```bash
+# Get the branch name from the worktree
+git merge <task-branch-name>
+```
+
+4. Mark the plan task as done:
 ```json
 // orchestrator_completeTask
 {

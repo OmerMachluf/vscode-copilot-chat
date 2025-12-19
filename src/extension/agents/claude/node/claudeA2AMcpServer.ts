@@ -993,6 +993,12 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 							parentWorkerId: orchestratorWorkerId,
 						};
 						const worker = await orchestratorService.retryTask(args.taskId, options);
+
+						// CRITICAL: Start monitoring so TaskMonitorService tracks this task
+						// Without this, parent never gets notified of completion!
+						deps.taskMonitorService.startMonitoring(args.taskId, orchestratorWorkerId);
+						console.log(`[orchestrator_retry_task] Started monitoring task ${args.taskId} for parent ${orchestratorWorkerId}`);
+
 						return {
 							content: [{
 								type: 'text',
