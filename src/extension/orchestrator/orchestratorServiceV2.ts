@@ -674,6 +674,12 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 				this._logService.error(`[Orchestrator] Error handling progress check for ${event.workerId}: ${err}`);
 			});
 		}));
+		// Listen for worker errors (rate limits, network issues, etc.)
+		// Queue error updates immediately so parents are notified without waiting for retry exhaustion
+		this._register(this._healthMonitor.onWorkerError(event => {
+			this._orchLog('Received onWorkerError event', { workerId: event.workerId, error: event.error });
+			this._handleWorkerError(event.workerId, event.error);
+		}));
 		// Note: We do NOT immediately forward on onUpdatesAvailable - updates stay queued
 		// until the parent worker goes idle, then they're automatically injected
 		this._orchLog('OrchestratorService initialized');
@@ -886,6 +892,66 @@ Briefly describe what you're currently processing and we'll check back later.
 			// Top-level worker: just send the inquiry directly (no parent to notify)
 			worker.sendClarification(inquiryMessage);
 		}
+	}
+
+	/**
+	 * Handle a worker error by queueing an error update for its parent.
+	 * This enables immediate error propagation without waiting for retry exhaustion.
+	 * Only queues updates for child workers (those spawned by a parent worker).
+	 */
+	private _handleWorkerError(workerId: string, error: string): void {
+		this._orchLog('Handling worker error', { workerId, error });
+
+		const worker = this._workers.get(workerId);
+		if (!worker) {
+			this._orchLog('Worker not found for error handling', { workerId });
+			return;
+		}
+
+		// Find the task for this worker
+		const task = this._tasks.find(t => t.workerId === workerId);
+		if (!task) {
+			this._orchLog('Task not found for error handling', { workerId });
+			return;
+		}
+
+		// Check if this worker has a parent worker (vs orchestrator-deployed)
+		const toolSet = this._workerToolSets.get(workerId);
+		const ownerContext = toolSet?.workerContext?.owner;
+		const isChildWorker = ownerContext && ownerContext.ownerType === 'worker';
+		const parentWorkerId = isChildWorker ? ownerContext.ownerId : undefined;
+
+		this._orchLog('Checking worker parent context for error handling', {
+			workerId,
+			hasToolSet: !!toolSet,
+			hasOwnerContext: !!ownerContext,
+			ownerType: ownerContext?.ownerType ?? null,
+			ownerId: ownerContext?.ownerId ?? null,
+			isChildWorker,
+		});
+
+		// Only queue error updates for child workers (those with a parent)
+		// Orchestrator-deployed workers don't have a parent to notify via TaskMonitorService
+		if (!isChildWorker || !parentWorkerId) {
+			this._orchLog('Worker is not a child worker, skipping error update queue', { workerId });
+			return;
+		}
+
+		// Queue error update for parent via TaskMonitorService
+		this._orchLog('Queueing error update for parent', {
+			workerId,
+			parentWorkerId,
+			taskId: task.id,
+			error,
+		});
+
+		this._taskMonitorService.queueUpdate({
+			type: 'error',
+			subTaskId: task.id,
+			parentWorkerId,
+			error,
+			timestamp: Date.now(),
+		});
 	}
 
 	/**
@@ -4093,8 +4159,8 @@ Focus on your assigned task and provide a clear, actionable result.`;
 				}
 
 				if (!result.success && result.error) {
-					// Record failure
-					this._healthMonitor.recordActivity(worker.id, 'error');
+					// Record failure with error message for immediate parent notification
+					this._healthMonitor.recordActivity(worker.id, 'error', result.error);
 					circuitBreaker.recordFailure();
 
 					// Check if this was a cancellation from interrupt
@@ -4168,13 +4234,13 @@ Focus on your assigned task and provide a clear, actionable result.`;
 				worker.start();
 
 			} catch (error) {
-				// Record failure
-				this._healthMonitor.recordActivity(worker.id, 'error');
+				const errorMessage = String(error);
+				// Record failure with error message for immediate parent notification
+				this._healthMonitor.recordActivity(worker.id, 'error', errorMessage);
 				circuitBreaker.recordFailure();
 
 				// Check if this was an interrupt (user clicked interrupt button)
 				// We check worker status because interrupt() sets it to 'idle' and creates a fresh token
-				const errorMessage = String(error);
 				const isCancellation = errorMessage.includes('Canceled') ||
 					errorMessage.includes('cancelled') ||
 					errorMessage.includes('aborted') ||
@@ -4377,8 +4443,8 @@ Focus on your assigned task and provide a clear, actionable result.`;
 				}
 
 				if (result.status === 'failed' && result.error) {
-					// Record failure
-					this._healthMonitor.recordActivity(worker.id, 'error');
+					// Record failure with error message for immediate parent notification
+					this._healthMonitor.recordActivity(worker.id, 'error', result.error);
 					circuitBreaker.recordFailure();
 
 					// Check if this was a cancellation
@@ -4440,10 +4506,11 @@ Focus on your assigned task and provide a clear, actionable result.`;
 				worker.start();
 
 			} catch (error) {
-				this._healthMonitor.recordActivity(worker.id, 'error');
+				const errorMessage = String(error);
+				// Record failure with error message for immediate parent notification
+				this._healthMonitor.recordActivity(worker.id, 'error', errorMessage);
 				circuitBreaker.recordFailure();
 
-				const errorMessage = String(error);
 				const isCancellation = errorMessage.includes('Canceled') ||
 					errorMessage.includes('cancelled') ||
 					worker.status === 'idle';

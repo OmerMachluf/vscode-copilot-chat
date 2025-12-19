@@ -51,7 +51,7 @@ export type WorkerIdleReason = 'no_activity' | 'waiting' | 'unknown';
 export interface IWorkerHealthMonitor {
 	startMonitoring(workerId: string): void;
 	stopMonitoring(workerId: string): void;
-	recordActivity(workerId: string, type: 'tool_call' | 'message' | 'error' | 'success', toolName?: string): void;
+	recordActivity(workerId: string, type: 'tool_call' | 'message' | 'error' | 'success', toolNameOrError?: string): void;
 	getHealth(workerId: string): IWorkerHealthMetrics | undefined;
 	isStuck(workerId: string): boolean;
 	isLooping(workerId: string): boolean;
@@ -79,6 +79,8 @@ export interface IWorkerHealthMonitor {
 	onWorkerIdle: Event<{ workerId: string; reason: WorkerIdleReason }>;
 	/** Event fired when periodic progress check is due for a worker */
 	onProgressCheckDue: Event<{ workerId: string }>;
+	/** Event fired immediately when a worker encounters an error (rate limits, network issues, etc.) */
+	onWorkerError: Event<{ workerId: string; error: string }>;
 }
 
 /**
@@ -126,6 +128,9 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 
 	private readonly _onProgressCheckDue = this._register(new Emitter<{ workerId: string }>());
 	public readonly onProgressCheckDue: Event<{ workerId: string }> = this._onProgressCheckDue.event;
+
+	private readonly _onWorkerError = this._register(new Emitter<{ workerId: string; error: string }>());
+	public readonly onWorkerError: Event<{ workerId: string; error: string }> = this._onWorkerError.event;
 
 	constructor(config: Partial<HealthMonitorConfig> = {}, logService?: ILogService) {
 		super();
@@ -193,11 +198,14 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 
 	/**
 	 * Record worker activity
+	 * @param workerId - The worker ID
+	 * @param type - The type of activity
+	 * @param toolNameOrError - For 'tool_call': the tool name. For 'error': optional error message.
 	 */
-	public recordActivity(workerId: string, type: 'tool_call' | 'message' | 'error' | 'success', toolName?: string): void {
+	public recordActivity(workerId: string, type: 'tool_call' | 'message' | 'error' | 'success', toolNameOrError?: string): void {
 		const metrics = this._metrics.get(workerId);
 		if (!metrics) {
-			this._log('recordActivity called for unknown worker', { workerId, type, toolName });
+			this._log('recordActivity called for unknown worker', { workerId, type, toolNameOrError });
 			return;
 		}
 
@@ -217,7 +225,7 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 		this._log('Activity recorded', {
 			workerId,
 			type,
-			toolName: toolName ?? null,
+			toolNameOrError: toolNameOrError ?? null,
 			wasIdle,
 			wasStuck,
 			clearedPendingInquiry: hadPendingInquiry,
@@ -226,14 +234,17 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 		switch (type) {
 			case 'tool_call':
 				metrics.toolCallCount++;
-				if (toolName) {
-					this._recordToolCall(metrics, toolName);
+				if (toolNameOrError) {
+					this._recordToolCall(metrics, toolNameOrError);
 				}
 				break;
 
 			case 'error':
 				metrics.consecutiveFailures++;
 				this._log('Error recorded', { workerId, consecutiveFailures: metrics.consecutiveFailures, threshold: this._config.errorThreshold });
+				// Fire onWorkerError immediately for every error - enables immediate parent notification
+				this._log('FIRING onWorkerError event', { workerId, error: toolNameOrError ?? 'Unknown error' });
+				this._onWorkerError.fire({ workerId, error: toolNameOrError ?? 'Unknown error' });
 				if (metrics.consecutiveFailures >= this._config.errorThreshold) {
 					this._log('FIRING onWorkerUnhealthy event (high_error_rate)', { workerId });
 					this._onWorkerUnhealthy.fire({ workerId, reason: 'high_error_rate' });
