@@ -21,6 +21,12 @@ This document describes how skills, agents, instructions, and slash commands are
   - [Instruction Locations](#instruction-locations)
   - [Instruction Composition Order](#instruction-composition-order)
 - [Claude Code Sync Mechanism](#claude-code-sync-mechanism)
+- [Error Propagation System](#error-propagation-system)
+  - [Error Types](#error-types)
+  - [Worker Status States](#worker-status-states)
+  - [Error Notification Flow](#error-notification-flow)
+  - [Retry Behavior](#retry-behavior)
+  - [Handling Unhealthy Workers](#handling-unhealthy-workers)
 - [Key Services](#key-services)
 
 ---
@@ -557,6 +563,249 @@ The sync mechanism can still be run manually if needed via `ClaudeMigrationServi
 
 ---
 
+
+## Error Propagation System
+
+The orchestrator implements immediate error notification to ensure parent workers are promptly informed when child workers encounter errors, rather than waiting for timeouts or retry exhaustion.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Parent Worker (Orchestrator)                      │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │ a2a_poll_subtask_updates()                                     │  │
+│  │ Returns: { updates: [], errors: [...] }                        │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
+                              ▲
+                              │ Error notification flow
+                              │
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Child Worker                                      │
+│                                                                     │
+│  On Error:                                                          │
+│  1. WorkerHealthMonitor detects error                               │
+│  2. recordActivity(workerId, 'error') increments consecutiveFailures│
+│  3. If threshold exceeded: onWorkerUnhealthy fires                  │
+│  4. WorkerSession.error(message) sets status='error'                │
+│  5. Parent notified via poll_subtask_updates                        │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Error Types
+
+Workers can encounter several categories of errors, each with distinct handling:
+
+| Error Type | Description | Immediate Notification | Retry Behavior |
+|------------|-------------|----------------------|----------------|
+| **Rate Limit** | API provider throttling (429) | Yes | Auto-retry with backoff |
+| **Network Error** | Connection failures, timeouts | Yes | Auto-retry (3 attempts) |
+| **Fatal Error** | Unrecoverable failures | Yes | No retry, mark failed |
+| **Tool Error** | Individual tool invocation failure | Depends on severity | Tool-specific |
+| **Stuck/Looping** | Worker not making progress | Yes (via health monitor) | User intervention |
+
+### Worker Status States
+
+```typescript
+type WorkerStatus =
+  | 'idle'              // Waiting for input
+  | 'running'           // Actively processing
+  | 'waiting-approval'  // Needs user approval
+  | 'paused'            // Manually paused
+  | 'completed'         // Task done successfully
+  | 'error';            // Failed with error
+```
+
+### Error Notification Flow
+
+#### 1. Error Detection
+
+Errors are detected at multiple levels:
+
+```typescript
+// In WorkerHealthMonitor
+recordActivity(workerId: string, type: 'tool_call' | 'message' | 'error' | 'success') {
+    // ...
+    case 'error':
+        metrics.consecutiveFailures++;
+        if (metrics.consecutiveFailures >= this._config.errorThreshold) {
+            this._onWorkerUnhealthy.fire({ workerId, reason: 'high_error_rate' });
+        }
+        break;
+}
+```
+
+#### 2. Status Update
+
+When an error occurs, the worker status is updated immediately:
+
+```typescript
+// In WorkerSession
+public error(message: string): void {
+    this._status = 'error';
+    this._errorMessage = message;
+    this._onDidChange.fire();  // Triggers parent notification
+}
+```
+
+#### 3. Parent Notification via Polling
+
+Parents receive error updates when polling for subtask updates:
+
+```typescript
+// Parent calls a2a_poll_subtask_updates()
+// Response includes any worker errors:
+{
+    updates: [
+        {
+            workerId: "worker-123",
+            status: "error",
+            errorMessage: "Rate limit exceeded",
+            errorType: "rate_limit"
+        }
+    ]
+}
+```
+
+### Retry Behavior
+
+The orchestrator implements automatic retry for recoverable errors:
+
+| Scenario | Max Retries | Backoff Strategy | Parent Visibility |
+|----------|-------------|------------------|-------------------|
+| Rate limit (429) | 3 | Exponential (1s, 2s, 4s) | Notified on each retry |
+| Network error | 3 | Linear (2s intervals) | Notified on each retry |
+| Tool failure | 1 | Immediate | Notified on failure |
+| Fatal error | 0 | N/A | Immediate notification |
+
+During retries, the parent sees status updates like:
+
+```typescript
+{
+    workerId: "worker-123",
+    status: "running",
+    retryInfo: {
+        attempt: 2,
+        maxAttempts: 3,
+        reason: "rate_limit",
+        nextRetryAt: 1702987654321
+    }
+}
+```
+
+### Rate Limit Scenario Example
+
+When a worker encounters a rate limit:
+
+```
+Parent polls at T=0:
+{
+    updates: [{
+        workerId: "worker-123",
+        status: "running",
+        message: "Implementing feature..."
+    }]
+}
+
+Worker hits rate limit at T=1:
+
+Parent polls at T=2:
+{
+    updates: [{
+        workerId: "worker-123",
+        status: "running",
+        errorType: "rate_limit",
+        retryInfo: {
+            attempt: 1,
+            maxAttempts: 3,
+            reason: "rate_limit",
+            waitingUntil: "2025-01-15T10:00:05Z",
+            message: "Rate limited by API. Retrying in 3s..."
+        }
+    }]
+}
+
+Parent polls at T=5 (after successful retry):
+{
+    updates: [{
+        workerId: "worker-123",
+        status: "running",
+        message: "Continuing implementation..."
+    }]
+}
+
+--- OR if all retries exhausted ---
+
+Parent polls at T=10:
+{
+    updates: [{
+        workerId: "worker-123",
+        status: "error",
+        errorType: "rate_limit_exhausted",
+        errorMessage: "Rate limit exceeded after 3 retry attempts",
+        finalError: {
+            code: 429,
+            retryAfter: 60,
+            attempts: 3
+        }
+    }]
+}
+```
+
+### Handling Unhealthy Workers
+
+The `WorkerHealthMonitor` detects workers that are stuck or looping:
+
+```typescript
+// Configuration thresholds
+const healthConfig = {
+    errorThreshold: 5,           // Consecutive failures before unhealthy
+    stuckTimeoutMs: 120000,      // 2 minutes without progress
+    loopDetectionWindow: 10,     // Tool calls to check for loops
+};
+
+// Unhealthy reasons
+type UnhealthyReason = 'stuck' | 'looping' | 'high_error_rate';
+```
+
+When a worker becomes unhealthy:
+
+1. `onWorkerUnhealthy` event fires with reason
+2. Parent is notified immediately via next poll
+3. Orchestrator can intervene (send message, restart, or escalate to user)
+
+### Integration with SubTaskManager
+
+The `SubTaskManager` listens for worker state changes and resolves subtask promises accordingly:
+
+```typescript
+// On worker status change to error
+if (workerState.status === 'error') {
+    resolveOnce({
+        taskId,
+        status: 'failed',
+        output: workerState.messages?.map(m => m.content).join('\n') || '',
+        error: workerState.errorMessage || 'Worker error',
+    }, 'workerSession.onDidChange (status=error)');
+}
+```
+
+This ensures that blocking subtask calls return promptly when errors occur, rather than timing out.
+
+### Best Practices for Error Handling
+
+1. **Poll regularly**: Parents should poll for updates frequently enough to catch errors promptly (recommended: every 5-10 seconds)
+
+2. **Handle retry notifications**: Don't treat retry-in-progress as failures; show appropriate "waiting" UI
+
+3. **Distinguish error types**: Rate limits are recoverable, fatal errors are not
+
+4. **Provide context in errors**: When calling `WorkerSession.error()`, include actionable error messages
+
+5. **Use health monitoring**: Enable health monitoring for long-running workers to catch stuck/looping states
+
+---
 ## Key Services
 
 | Service | File | Purpose |
@@ -566,6 +815,8 @@ The sync mechanism can still be run manually if needed via `ClaudeMigrationServi
 | `AgentInstructionService` | `agentInstructionService.ts` | Composes instructions for agents |
 | `AgentDiscoveryService` | `agentDiscoveryService.ts` | Discovers available agents |
 | `ClaudeMigrationService` | `claudeMigrationService.ts` | Legacy sync to Claude Code format (disabled) |
+| `WorkerHealthMonitor` | `workerHealthMonitor.ts` | Monitors worker health and detects errors |
+| `SubTaskManager` | `subTaskManager.ts` | Manages subtask lifecycle and error propagation |
 
 ### Caching
 
