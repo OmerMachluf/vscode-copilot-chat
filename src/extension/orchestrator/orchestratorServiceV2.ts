@@ -4213,8 +4213,9 @@ Focus on your assigned task and provide a clear, actionable result.`;
 								error: result.error,
 								retryInfo: {
 									attempt: consecutiveFailures,
-									maxRetries: MAX_RETRIES,
-									retryAfterMs: delay,
+									maxAttempts: MAX_RETRIES,
+									nextRetryInMs: delay,
+									willRetry: true,
 								},
 								timestamp: Date.now(),
 							});
@@ -4310,8 +4311,9 @@ Focus on your assigned task and provide a clear, actionable result.`;
 							error: errorMessage,
 							retryInfo: {
 								attempt: consecutiveFailures,
-								maxRetries: MAX_RETRIES,
-								retryAfterMs: delay,
+								maxAttempts: MAX_RETRIES,
+								nextRetryInMs: delay,
+								willRetry: consecutiveFailures < MAX_RETRIES,
 							},
 							timestamp: Date.now(),
 						});
@@ -4524,8 +4526,9 @@ Focus on your assigned task and provide a clear, actionable result.`;
 								error: result.error,
 								retryInfo: {
 									attempt: consecutiveFailures,
-									maxRetries: MAX_RETRIES,
-									retryAfterMs: delay,
+									maxAttempts: MAX_RETRIES,
+									nextRetryInMs: delay,
+									willRetry: consecutiveFailures < MAX_RETRIES,
 								},
 								timestamp: Date.now(),
 							});
@@ -4590,8 +4593,9 @@ Focus on your assigned task and provide a clear, actionable result.`;
 							error: errorMessage,
 							retryInfo: {
 								attempt: consecutiveFailures,
-								maxRetries: MAX_RETRIES,
-								retryAfterMs: delay,
+								maxAttempts: MAX_RETRIES,
+								nextRetryInMs: delay,
+								willRetry: consecutiveFailures < MAX_RETRIES,
 							},
 							timestamp: Date.now(),
 						});

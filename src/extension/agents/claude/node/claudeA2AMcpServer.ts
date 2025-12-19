@@ -8,13 +8,13 @@ import * as vscode from 'vscode';
 import { z } from 'zod';
 import { ILanguageFeaturesService, isLocationLink } from '../../../../platform/languages/common/languageFeaturesService';
 import { CancellationToken } from '../../../../util/vs/base/common/cancellation';
+import { getCurrentBranch } from '../../../conversation/a2a/gitOperations';
 import { IAgentDiscoveryService } from '../../../orchestrator/agentDiscoveryService';
 import { ISubTaskCreateOptions, ISubTaskManager, ISubTaskResult } from '../../../orchestrator/orchestratorInterfaces';
 import { CreateTaskOptions, IOrchestratorService } from '../../../orchestrator/orchestratorServiceV2';
 import { ISafetyLimitsService, SpawnContext } from '../../../orchestrator/safetyLimits';
-import { ITaskMonitorService, ITaskUpdate, TaskErrorType } from '../../../orchestrator/taskMonitorService';
+import { ITaskMonitorService, ITaskUpdate, ErrorType } from '../../../orchestrator/taskMonitorService';
 import { IWorkerContext } from '../../../orchestrator/workerToolsService';
-import { getCurrentBranch } from '../../../conversation/a2a/gitOperations';
 
 /**
  * Dependencies required to create the A2A MCP server.
@@ -126,7 +126,7 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 	};
 
 	// Helper to get suggested action based on error type
-	const getErrorSuggestedAction = (errorType: TaskErrorType | undefined): string => {
+	const getErrorSuggestedAction = (errorType: ErrorType | undefined): string => {
 		switch (errorType) {
 			case 'rate_limit':
 				return 'Worker is waiting. Consider switching to claude:agent backend or wait.';
@@ -158,8 +158,9 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 
 		if (update.retryInfo) {
 			message += ` (attempt ${update.retryInfo.attempt}/${update.retryInfo.maxAttempts})`;
-			if (update.retryInfo.retryAfterSeconds !== undefined) {
-				message += `: Waiting ${update.retryInfo.retryAfterSeconds}s before retry`;
+			if (update.retryInfo.nextRetryInMs !== undefined) {
+				const retrySeconds = Math.ceil(update.retryInfo.nextRetryInMs / 1000);
+				message += `: Waiting ${retrySeconds}s before retry`;
 			}
 		}
 
@@ -1338,8 +1339,9 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 									retryInfo: {
 										attempt: update.retryInfo.attempt,
 										maxAttempts: update.retryInfo.maxAttempts,
-										...(update.retryInfo.retryAfterSeconds !== undefined && {
-											retryAfterSeconds: update.retryInfo.retryAfterSeconds
+										willRetry: update.retryInfo.willRetry,
+										...(update.retryInfo.nextRetryInMs !== undefined && {
+											nextRetryInMs: update.retryInfo.nextRetryInMs
 										})
 									}
 								}),
