@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CircuitBreaker } from '../circuitBreaker';
-import { WorkerHealthMonitor, WorkerUnhealthyReason } from '../workerHealthMonitor';
+import { IRetryInfo, WorkerErrorType, WorkerHealthMonitor, WorkerUnhealthyReason } from '../workerHealthMonitor';
 
 describe('WorkerHealthMonitor', () => {
 	let monitor: WorkerHealthMonitor;
@@ -64,6 +64,55 @@ describe('WorkerHealthMonitor', () => {
 		}
 
 		expect(unhealthyEvent).toEqual({ workerId, reason: 'high_error_rate' });
+	});
+
+	it('fires onWorkerError event via recordError', () => {
+		const workerId = 'worker-record-error';
+		monitor.startMonitoring(workerId);
+
+		let errorEvent: { workerId: string; errorType: WorkerErrorType; error: string; retryInfo?: IRetryInfo } | undefined;
+		monitor.onWorkerError((e) => { errorEvent = e; });
+
+		const retryInfo: IRetryInfo = {
+			canRetry: true,
+			attemptNumber: 1,
+			maxAttempts: 3,
+			retryDelayMs: 5000,
+		};
+
+		monitor.recordError(workerId, 'rate_limit', 'Rate limit exceeded', retryInfo);
+
+		expect(errorEvent).toBeDefined();
+		expect(errorEvent?.workerId).toBe(workerId);
+		expect(errorEvent?.errorType).toBe('rate_limit');
+		expect(errorEvent?.error).toBe('Rate limit exceeded');
+		expect(errorEvent?.retryInfo).toEqual(retryInfo);
+	});
+
+	it('fires onWorkerError event even for unmonitored workers', () => {
+		const workerId = 'unmonitored-worker';
+		// Note: startMonitoring is NOT called
+
+		let errorEvent: { workerId: string; errorType: WorkerErrorType; error: string; retryInfo?: IRetryInfo } | undefined;
+		monitor.onWorkerError((e) => { errorEvent = e; });
+
+		monitor.recordError(workerId, 'network', 'Connection refused');
+
+		expect(errorEvent).toBeDefined();
+		expect(errorEvent?.workerId).toBe(workerId);
+		expect(errorEvent?.errorType).toBe('network');
+		expect(errorEvent?.error).toBe('Connection refused');
+		expect(errorEvent?.retryInfo).toBeUndefined();
+	});
+
+	it('recordError also records activity for monitored workers', () => {
+		const workerId = 'worker-error-activity';
+		monitor.startMonitoring(workerId);
+
+		monitor.recordError(workerId, 'fatal', 'Fatal error occurred');
+
+		const health = monitor.getHealth(workerId);
+		expect(health?.consecutiveFailures).toBe(1);
 	});
 });
 
