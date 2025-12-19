@@ -93,6 +93,8 @@ export enum ToolName {
 	A2ASendMessageToWorker = 'a2a_send_message_to_worker',
 	// Specialist discovery
 	A2AListSpecialists = 'a2a_list_specialists',
+	// Skill loading
+	LoadSkill = 'load_skill',
 }
 
 export enum ContributedToolName {
@@ -159,6 +161,8 @@ export enum ContributedToolName {
 	A2APullSubTaskChanges = 'copilot_a2aPullSubTaskChanges',
 	A2ASendMessageToWorker = 'copilot_a2aSendMessageToWorker',
 	A2AListSpecialists = 'copilot_a2aListSpecialists',
+	// Skill loading
+	LoadSkill = 'copilot_loadSkill',
 }
 
 export const byokEditToolNamesToToolNames = {
@@ -293,6 +297,8 @@ export const toolCategories: Record<ToolName, ToolCategory> = {
 	[ToolName.A2APullSubTaskChanges]: ToolCategory.Core,
 	[ToolName.A2ASendMessageToWorker]: ToolCategory.Core,
 	[ToolName.A2AListSpecialists]: ToolCategory.Core,
+	// Skill loading
+	[ToolName.LoadSkill]: ToolCategory.Core,
 } as const;
 
 
