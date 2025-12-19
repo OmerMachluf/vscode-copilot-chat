@@ -212,6 +212,7 @@ describe('Orchestrator Communication', () => {
 			backendSelectionService,
 			taskMonitorService,
 			instantiationService,
+			{} as any, // claudeSessionManager
 			logService
 		);
 

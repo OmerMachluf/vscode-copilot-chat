@@ -303,6 +303,7 @@ describe('Orchestrator Permission Flow', () => {
 			backendSelectionService,
 			taskMonitorService,
 			instantiationService,
+			{} as any, // claudeSessionManager
 			createMockLogService() as any
 		);
 		disposables.add(orchestratorService);
