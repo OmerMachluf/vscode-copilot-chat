@@ -177,7 +177,7 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 				// Without a valid token, tool confirmations fail and the session completes immediately.
 				this._logService.info(`[ClaudeExecutor:execute] ========== INVOKING CLAUDE SESSION ==========`);
 				this._logService.info(`[ClaudeExecutor:execute] Calling session.session.invoke() with fullPrompt length=${fullPrompt.length}`);
-				this._logService.info(`[ClaudeExecutor:execute] toolInvocationToken.sessionId=${(toolInvocationToken as { sessionId: string })?.sessionId ?? '(no token)'}`);
+				this._logService.info(`[ClaudeExecutor:execute] toolInvocationToken.sessionId=${toolInvocationToken ? (toolInvocationToken as { sessionId: string })?.sessionId ?? '(no token)' : '(no token)'}`);
 				await session.session.invoke(
 					fullPrompt,
 					toolInvocationToken!,
