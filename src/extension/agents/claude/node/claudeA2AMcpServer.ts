@@ -12,7 +12,7 @@ import { IAgentDiscoveryService } from '../../../orchestrator/agentDiscoveryServ
 import { ISubTaskCreateOptions, ISubTaskManager, ISubTaskResult } from '../../../orchestrator/orchestratorInterfaces';
 import { CreateTaskOptions, IOrchestratorService } from '../../../orchestrator/orchestratorServiceV2';
 import { ISafetyLimitsService, SpawnContext } from '../../../orchestrator/safetyLimits';
-import { ITaskMonitorService } from '../../../orchestrator/taskMonitorService';
+import { ITaskMonitorService, ITaskUpdate, TaskErrorType } from '../../../orchestrator/taskMonitorService';
 import { IWorkerContext } from '../../../orchestrator/workerToolsService';
 import { getCurrentBranch } from '../../../conversation/a2a/gitOperations';
 
@@ -123,6 +123,51 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 				endColumn: loc.range.end.character + 1,
 			};
 		}
+	};
+
+	// Helper to get suggested action based on error type
+	const getErrorSuggestedAction = (errorType: TaskErrorType | undefined): string => {
+		switch (errorType) {
+			case 'rate_limit':
+				return 'Worker is waiting. Consider switching to claude:agent backend or wait.';
+			case 'network':
+				return 'Network issue detected. Worker will retry automatically.';
+			case 'auth':
+				return 'Authentication failed. Check credentials.';
+			case 'fatal':
+				return 'Unrecoverable error. Consider cancelling task.';
+			case 'unknown':
+			default:
+				return 'An error occurred. Check the error details.';
+		}
+	};
+
+	// Helper to format error update message with type and retry info
+	const formatErrorMessage = (update: ITaskUpdate): string => {
+		const emoji = update.errorType === 'rate_limit' ? '⏳' :
+			update.errorType === 'network' ? '🔌' :
+				update.errorType === 'auth' ? '🔐' :
+					update.errorType === 'fatal' ? '💀' : '⚠️';
+
+		const errorLabel = update.errorType === 'rate_limit' ? 'Rate Limited' :
+			update.errorType === 'network' ? 'Network Error' :
+				update.errorType === 'auth' ? 'Auth Failed' :
+					update.errorType === 'fatal' ? 'Fatal Error' : 'Error';
+
+		let message = `${emoji} ${errorLabel}`;
+
+		if (update.retryInfo) {
+			message += ` (attempt ${update.retryInfo.attempt}/${update.retryInfo.maxAttempts})`;
+			if (update.retryInfo.retryAfterSeconds !== undefined) {
+				message += `: Waiting ${update.retryInfo.retryAfterSeconds}s before retry`;
+			}
+		}
+
+		if (update.error) {
+			message += ` - ${update.error}`;
+		}
+
+		return message;
 	};
 
 	return createSdkMcpServer({
@@ -1258,22 +1303,43 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 						}
 
 						// Format updates for the agent
-						const formattedUpdates = updates.map(update => ({
-							type: update.type,
-							subTaskId: update.subTaskId,
-							timestamp: new Date(update.timestamp).toISOString(),
-							...(update.result && {
-								result: {
-									status: update.result.status,
-									output: update.result.output?.substring(0, 500), // Truncate long output
-									error: update.result.error,
-								}
-							}),
-							...(update.error && { error: update.error }),
-							...(update.idleReason && { idleReason: update.idleReason }),
-							...(update.progress !== undefined && { progress: update.progress }),
-							...(update.progressReport && { progressReport: update.progressReport }),
-						}));
+						const formattedUpdates = updates.map(update => {
+							const isErrorUpdate = update.type === 'error' || update.type === 'failed';
+							const hasErrorInfo = update.errorType || update.retryInfo;
+
+							return {
+								type: update.type,
+								subTaskId: update.subTaskId,
+								timestamp: new Date(update.timestamp).toISOString(),
+								...(update.result && {
+									result: {
+										status: update.result.status,
+										output: update.result.output?.substring(0, 500), // Truncate long output
+										error: update.result.error,
+									}
+								}),
+								...(update.error && { error: update.error }),
+								// Include errorType and retryInfo for error updates
+								...(update.errorType && { errorType: update.errorType }),
+								...(update.retryInfo && {
+									retryInfo: {
+										attempt: update.retryInfo.attempt,
+										maxAttempts: update.retryInfo.maxAttempts,
+										...(update.retryInfo.retryAfterSeconds !== undefined && {
+											retryAfterSeconds: update.retryInfo.retryAfterSeconds
+										})
+									}
+								}),
+								// Include formatted message and suggested action for error updates
+								...(isErrorUpdate && hasErrorInfo && {
+									formattedMessage: formatErrorMessage(update),
+									suggestedAction: getErrorSuggestedAction(update.errorType),
+								}),
+								...(update.idleReason && { idleReason: update.idleReason }),
+								...(update.progress !== undefined && { progress: update.progress }),
+								...(update.progressReport && { progressReport: update.progressReport }),
+							};
+						});
 
 						return {
 							content: [{

@@ -21,7 +21,7 @@ export type TaskUpdateType = 'completed' | 'failed' | 'idle' | 'progress' | 'idl
 /**
  * Types of errors that can occur during task execution
  */
-export type ErrorType = 'rate_limit' | 'network' | 'fatal' | 'timeout' | 'unknown';
+export type ErrorType = 'rate_limit' | 'network' | 'auth' | 'fatal' | 'timeout' | 'unknown';
 
 /**
  * Information about retry attempts for error reporting
