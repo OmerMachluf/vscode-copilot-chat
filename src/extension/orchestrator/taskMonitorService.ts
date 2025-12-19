@@ -19,24 +19,22 @@ import { ISubTask, ISubTaskManager, ISubTaskResult } from './orchestratorInterfa
 export type TaskUpdateType = 'completed' | 'failed' | 'idle' | 'progress' | 'idle_response' | 'error';
 
 /**
- * Error type classification for categorizing worker errors
- * - 'rate_limit': Rate limit or quota exceeded (recoverable with wait)
- * - 'network': Network connectivity issues (may recover)
- * - 'auth': Authentication/authorization failures
- * - 'fatal': Unrecoverable errors
+ * Types of errors that can occur during task execution
  */
-export type TaskErrorType = 'rate_limit' | 'network' | 'auth' | 'fatal';
+export type ErrorType = 'rate_limit' | 'network' | 'fatal' | 'timeout' | 'unknown';
 
 /**
- * Retry context information for error recovery
+ * Information about retry attempts for error reporting
  */
-export interface IRetryInfo {
+export interface RetryInfo {
 	/** Current retry attempt number (1-based) */
 	attempt: number;
-	/** Maximum number of retries allowed */
-	maxRetries: number;
-	/** Suggested wait time before retry in milliseconds (e.g., from Retry-After header) */
-	retryAfterMs?: number;
+	/** Maximum number of retry attempts */
+	maxAttempts: number;
+	/** Time in ms until the next retry (if applicable) */
+	nextRetryInMs?: number;
+	/** Whether the worker will continue retrying */
+	willRetry: boolean;
 }
 
 /**
@@ -53,10 +51,10 @@ export interface ITaskUpdate {
 	result?: ISubTaskResult;
 	/** Error details (for failed/error) */
 	error?: string;
-	/** Category of error for appropriate handling (for failed/error) */
-	errorType?: TaskErrorType;
-	/** Retry context when error is recoverable */
-	retryInfo?: IRetryInfo;
+	/** Type of error (for error updates) */
+	errorType?: ErrorType;
+	/** Retry information (for error updates) */
+	retryInfo?: RetryInfo;
 	/** Idle reason (for idle/idle_response) */
 	idleReason?: string;
 	/** Progress percentage (for progress) */
@@ -160,6 +158,24 @@ export interface ITaskMonitorService {
 	 * Used by other services to push updates (e.g., idle responses).
 	 */
 	queueUpdate(update: ITaskUpdate): void;
+
+	/**
+	 * Queue an error update immediately without waiting for task completion.
+	 * Called during retry loops to notify parents of transient errors.
+	 *
+	 * @param subTaskId - ID of the subtask that encountered the error
+	 * @param parentWorkerId - ID of the parent worker to notify
+	 * @param error - Error message describing what went wrong
+	 * @param errorType - Category of error (rate_limit, network, fatal, etc.)
+	 * @param retryInfo - Optional retry information if the worker will retry
+	 */
+	queueErrorUpdate(
+		subTaskId: string,
+		parentWorkerId: string,
+		error: string,
+		errorType: ErrorType,
+		retryInfo?: RetryInfo,
+	): void;
 
 	/**
 	 * Event fired when new updates are available for a parent.
@@ -309,6 +325,39 @@ export class TaskMonitorService extends Disposable implements ITaskMonitorServic
 			hasError: !!update.error,
 		});
 		this._pushUpdate(update.parentWorkerId, update);
+	}
+
+	public queueErrorUpdate(
+		subTaskId: string,
+		parentWorkerId: string,
+		error: string,
+		errorType: ErrorType,
+		retryInfo?: RetryInfo,
+	): void {
+		this._log('queueErrorUpdate called', {
+			subTaskId,
+			parentWorkerId,
+			error,
+			errorType,
+			retryInfo: retryInfo ? {
+				attempt: retryInfo.attempt,
+				maxAttempts: retryInfo.maxAttempts,
+				willRetry: retryInfo.willRetry,
+				nextRetryInMs: retryInfo.nextRetryInMs,
+			} : undefined,
+		});
+
+		const update: ITaskUpdate = {
+			type: 'error',
+			subTaskId,
+			parentWorkerId,
+			error,
+			errorType,
+			retryInfo,
+			timestamp: Date.now(),
+		};
+
+		this._pushUpdate(parentWorkerId, update);
 	}
 
 	public getStats(): { monitoredTasks: number; registeredParents: number; totalQueuedUpdates: number } {
