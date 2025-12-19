@@ -34,6 +34,7 @@ import { IConversationStore } from '../../conversationStore/node/conversationSto
 import { IIntentService } from '../../intents/node/intentService';
 import { UnknownIntent } from '../../intents/node/unknownIntent';
 import { ISubtaskProgressService } from '../../orchestrator/subtaskProgressService';
+import { IUnifiedDefinitionService } from '../../orchestrator/unifiedDefinitionService';
 import { ContributedToolName } from '../../tools/common/toolNames';
 import { ChatVariablesCollection } from '../common/chatVariablesCollection';
 import { Conversation, getGlobalContextCacheKey, GlobalContextMessageMetadata, ICopilotChatResult, ICopilotChatResultIn, normalizeSummariesOnRounds, RenderedUserMessageMetadata, Turn, TurnStatus } from '../common/conversation';
@@ -86,6 +87,7 @@ export class ChatParticipantRequestHandler {
 		@IAuthenticationService private readonly _authService: IAuthenticationService,
 		@IAuthenticationChatUpgradeService private readonly _authenticationUpgradeService: IAuthenticationChatUpgradeService,
 		@ISubtaskProgressService private readonly _subtaskProgressService: ISubtaskProgressService,
+		@IUnifiedDefinitionService private readonly _unifiedDefinitionService: IUnifiedDefinitionService,
 	) {
 		this.location = this.getLocation(request);
 
@@ -202,6 +204,49 @@ export class ChatParticipantRequestHandler {
 		return false;
 	}
 
+	/**
+	 * Attempts to handle a dynamic command from the user's prompt.
+	 * Dynamic commands are defined in .github/commands/*.command.md files.
+	 *
+	 * @returns The augmented prompt if a dynamic command was found, undefined otherwise
+	 */
+	private async _tryGetDynamicCommandPrompt(): Promise<string | undefined> {
+		// Check if prompt starts with a command pattern (e.g., /mycommand args)
+		const prompt = this.request.prompt;
+		const commandMatch = prompt.match(/^\/(\w+)(?:\s+(.*))?$/);
+
+		if (!commandMatch) {
+			return undefined;
+		}
+
+		const [, commandId, args] = commandMatch;
+
+		// Skip if this is a known VS Code command (already handled by static commands)
+		if (this.chatAgentArgs.intentId) {
+			return undefined;
+		}
+
+		try {
+			// Look up command in UnifiedDefinitionService
+			const command = await this._unifiedDefinitionService.getCommand(commandId);
+
+			if (!command) {
+				return undefined;
+			}
+
+			this._logService.info(`[ChatParticipantRequestHandler] Found dynamic command: ${commandId}`);
+
+			// Inject command content, replacing $ARGUMENTS placeholder with user input
+			const augmentedContent = command.content.replace(/\$ARGUMENTS/g, args?.trim() || '');
+
+			// Return the augmented prompt
+			return augmentedContent;
+		} catch (error) {
+			this._logService.debug(`[ChatParticipantRequestHandler] Failed to load dynamic command: ${error}`);
+			return undefined;
+		}
+	}
+
 	async getResult(): Promise<ICopilotChatResult> {
 		// Register the chat stream for A2A subtask progress bubbles
 		// This allows A2A tools (a2a_spawn_subtask, etc.) to show progress
@@ -228,6 +273,18 @@ export class ChatParticipantRequestHandler {
 				// sanitize the variables of all requests
 				// this is done here because all intents must honor ignored files
 				this.request = await this.sanitizeVariables();
+
+				// Check for dynamic commands from .github/commands/*.command.md files
+				// These are not registered in package.json but can be invoked with /commandname
+				const dynamicCommandPrompt = await this._tryGetDynamicCommandPrompt();
+				if (dynamicCommandPrompt) {
+					// Replace the prompt with the augmented command content
+					// This effectively injects the command template into the conversation
+					this.request = {
+						...this.request,
+						prompt: dynamicCommandPrompt,
+					};
+				}
 
 				const command = this.chatAgentArgs.intentId ?
 					this._commandService.getCommand(this.chatAgentArgs.intentId, this.location) :
