@@ -109,6 +109,7 @@ import { IOrchestratorService, OrchestratorService } from '../../orchestrator/or
 import { IParentCompletionService, ParentCompletionService } from '../../orchestrator/parentCompletionService';
 import { ISafetyLimitsService, SafetyLimitsService } from '../../orchestrator/safetyLimits';
 import { ISkillsService, SkillsService } from '../../orchestrator/skillsService';
+import { IUnifiedDefinitionService, UnifiedDefinitionService } from '../../orchestrator/unifiedDefinitionService';
 import { ISubTaskManager, SubTaskManager } from '../../orchestrator/subTaskManager';
 import { ISubtaskProgressService, SubtaskProgressService } from '../../orchestrator/subtaskProgressService';
 import { ITaskMonitorService, TaskMonitorService } from '../../orchestrator/taskMonitorService';
@@ -194,6 +195,7 @@ export function registerServices(builder: IInstantiationServiceBuilder, extensio
 	builder.define(IClaudeMigrationService, new SyncDescriptor(ClaudeMigrationService));
 	builder.define(IClaudeCommandService, new SyncDescriptor(ClaudeCommandService));
 	builder.define(ISkillsService, new SyncDescriptor(SkillsService));
+	builder.define(IUnifiedDefinitionService, new SyncDescriptor(UnifiedDefinitionService));
 	builder.define(IAgentRecommendationService, new SyncDescriptor(AgentRecommendationService));
 	builder.define(IAgentRunner, new SyncDescriptor(AgentRunnerService));
 	builder.define(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistry));
