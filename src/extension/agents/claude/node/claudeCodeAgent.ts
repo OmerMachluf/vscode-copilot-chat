@@ -22,6 +22,7 @@ import { IInstantiationService } from '../../../../util/vs/platform/instantiatio
 import { ICopilotCLIMCPHandler, MCPServerConfig } from '../../copilotcli/node/mcpHandler';
 import { GitHubMcpDefinitionProvider } from '../../../githubMcp/common/githubMcpDefinitionProvider';
 import { IAgentDiscoveryService } from '../../../orchestrator/agentDiscoveryService';
+import { IUnifiedDefinitionService } from '../../../orchestrator/unifiedDefinitionService';
 import { IClaudeCommandService } from '../../../orchestrator/claudeCommandService';
 import { ISubTaskManager } from '../../../orchestrator/orchestratorInterfaces';
 import { IOrchestratorService } from '../../../orchestrator/orchestratorServiceV2';
@@ -396,6 +397,7 @@ export class ClaudeCodeSession extends Disposable {
 		@ISafetyLimitsService private readonly safetyLimitsService: ISafetyLimitsService,
 		@ITaskMonitorService private readonly taskMonitorService: ITaskMonitorService,
 		@IAuthenticationService private readonly authenticationService: IAuthenticationService,
+		@IUnifiedDefinitionService private readonly unifiedDefinitionService: IUnifiedDefinitionService,
 	) {
 		super();
 	}
@@ -649,16 +651,24 @@ export class ClaudeCodeSession extends Disposable {
 			this.logService.info(`[ClaudeCodeSession] Loaded ${mcpServerCount} shared MCP servers: ${Object.keys(sharedMcpServers).join(', ')}`);
 		}
 
+		// Build agent definitions from unified definition service
+		// These are shared between Copilot and Claude SDK
+		const agents = await this.unifiedDefinitionService.buildClaudeSdkAgents();
+		const agentCount = Object.keys(agents).length;
+		if (agentCount > 0) {
+			this.logService.info(`[ClaudeCodeSession] Loaded ${agentCount} agents: ${Object.keys(agents).join(', ')}`);
+		}
+
 		const options: Options = {
 			cwd: workingDirectory,
 			abortController: this._abortController,
 			executable: process.execPath as 'node', // get it to fork the EH node process,
-			model: "claude-opus-4-5",
+			model: 'claude-opus-4-5',
 			env: {
 				...process.env,
 				// ANTHROPIC_BASE_URL: `http://localhost:${this.serverConfig.port}`,
 				// ANTHROPIC_API_KEY: this.serverConfig.nonce,
-				CLAUDE_CODE_OAUTH_TOKEN: "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",
+				CLAUDE_CODE_OAUTH_TOKEN: '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',
 				CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
 				USE_BUILTIN_RIPGREP: '0',
 				PATH: `${this.envService.appRoot}/node_modules/@vscode/ripgrep/bin${pathSep}${process.env.PATH}`
@@ -694,6 +704,8 @@ export class ClaudeCodeSession extends Disposable {
 				append: 'Your responses will be rendered as markdown, so please reply with properly formatted markdown when appropriate. When replying with code or the name of a symbol, wrap it in backticks.'
 			},
 			settingSources: ['user', 'project', 'local'],
+			// Inject agents from unified definition service
+			...(agentCount > 0 && { agents }),
 			...(isDebugEnabled && {
 				stderr: data => {
 					// this.logService.trace(`claude-agent-sdk stderr: ${data}`);
