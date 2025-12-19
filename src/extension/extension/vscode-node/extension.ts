@@ -53,8 +53,10 @@ export async function activate(context: ExtensionContext, forceActivation?: bool
 		// @ts-ignore - activationResult has instantiationService in non-test mode
 		const instantiationService = activationResult.instantiationService;
 		if (instantiationService) {
-			// Run Claude migration asynchronously (don't block activation)
-			runClaudeMigration(context, instantiationService).catch(() => { /* ignore errors */ });
+			// Migration disabled: The new UnifiedDefinitionService architecture
+			// loads definitions directly from .github/ and assets/ without syncing
+			// to .claude/ format. Migration can still be run manually if needed.
+			// runClaudeMigration(context, instantiationService).catch(() => { /* ignore errors */ });
 		}
 	}
 
