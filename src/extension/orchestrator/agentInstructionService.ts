@@ -10,6 +10,7 @@ import { FileType } from '../../platform/filesystem/common/fileTypes';
 import { URI } from '../../util/vs/base/common/uri';
 import { createDecorator } from '../../util/vs/platform/instantiation/common/instantiation';
 import { ISkillsService, formatSkillsForPrompt } from './skillsService';
+import { IUnifiedDefinitionService } from './unifiedDefinitionService';
 
 export const IAgentInstructionService = createDecorator<IAgentInstructionService>('agentInstructionService');
 
@@ -96,6 +97,13 @@ export interface IAgentInstructionService {
 	parseAgentDefinition(content: string, source: 'builtin' | 'repo'): AgentDefinition | undefined;
 
 	/**
+	 * Get a formatted skill catalog for inclusion in agent prompts.
+	 * This tells agents what skills are available to load via the loadSkill tool.
+	 * @returns Formatted markdown listing available skills with descriptions
+	 */
+	getSkillCatalog(): Promise<string>;
+
+	/**
 	 * Get architecture documents for an agent.
 	 * Only returns documents if the agent has hasArchitectureAccess: true.
 	 * @param agentId The agent ID
@@ -114,7 +122,8 @@ export class AgentInstructionService implements IAgentInstructionService {
 	constructor(
 		@IFileSystemService private readonly fileSystemService: IFileSystemService,
 		@IVSCodeExtensionContext private readonly extensionContext: IVSCodeExtensionContext,
-		@ISkillsService private readonly skillsService: ISkillsService
+		@ISkillsService private readonly skillsService: ISkillsService,
+		@IUnifiedDefinitionService private readonly unifiedDefinitionService: IUnifiedDefinitionService
 	) { }
 
 	async loadInstructions(agentId: string): Promise<ComposedInstructions> {
@@ -172,6 +181,13 @@ export class AgentInstructionService implements IAgentInstructionService {
 			const archResult = await this.getArchitectureDocs(agentId, true);
 			architectureDocs.push(...archResult.docs);
 			architectureFiles.push(...archResult.files);
+		}
+
+		// 7. Add skill catalog so agents know what skills are available to load
+		const skillCatalog = await this.getSkillCatalog();
+		if (skillCatalog) {
+			skillsContent.push(skillCatalog);
+			skillFiles.push('[skill-catalog]');
 		}
 
 		const result: ComposedInstructions = {
@@ -392,6 +408,39 @@ export class AgentInstructionService implements IAgentInstructionService {
 		}
 
 		return { docs, files };
+	}
+
+	/**
+	 * Get a formatted skill catalog for inclusion in agent prompts.
+	 * This lists all available skills that can be loaded via the loadSkill tool.
+	 */
+	async getSkillCatalog(): Promise<string> {
+		const skills = await this.unifiedDefinitionService.discoverSkills();
+
+		if (skills.length === 0) {
+			return '';
+		}
+
+		const lines: string[] = [
+			'## Available Skills',
+			'',
+			'Use the `loadSkill` tool to load domain-specific knowledge on-demand:',
+			'```',
+			'loadSkill({ skillId: "skill-name" })',
+			'```',
+			'',
+			'| Skill ID | Description |',
+			'|----------|-------------|',
+		];
+
+		for (const skill of skills) {
+			const description = skill.description || 'No description available';
+			lines.push(`| ${skill.id} | ${description} |`);
+		}
+
+		lines.push('');
+
+		return lines.join('\n');
 	}
 
 	/**
