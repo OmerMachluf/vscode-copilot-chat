@@ -41,6 +41,27 @@ export interface IWorkerHealthMetrics {
 export type WorkerUnhealthyReason = 'stuck' | 'looping' | 'high_error_rate';
 
 /**
+ * Types of errors that workers can encounter
+ */
+export type WorkerErrorType = 'rate_limit' | 'network' | 'fatal' | 'timeout' | 'cancelled' | 'unknown';
+
+/**
+ * Retry information for recoverable errors
+ */
+export interface IRetryInfo {
+	/** Whether the error is retryable */
+	canRetry: boolean;
+	/** Current retry attempt number (0 = initial attempt) */
+	attemptNumber: number;
+	/** Maximum number of retry attempts allowed */
+	maxAttempts: number;
+	/** Suggested delay before next retry in milliseconds */
+	retryDelayMs?: number;
+	/** Timestamp when retry will be attempted (if scheduled) */
+	nextRetryAt?: number;
+}
+
+/**
  * Reasons why a worker might be idle
  */
 export type WorkerIdleReason = 'no_activity' | 'waiting' | 'unknown';
@@ -79,6 +100,13 @@ export interface IWorkerHealthMonitor {
 	onWorkerIdle: Event<{ workerId: string; reason: WorkerIdleReason }>;
 	/** Event fired when periodic progress check is due for a worker */
 	onProgressCheckDue: Event<{ workerId: string }>;
+	/** Event fired when a worker encounters an error (rate limit, network, fatal, etc.) */
+	onWorkerError: Event<{ workerId: string; errorType: WorkerErrorType; error: string; retryInfo?: IRetryInfo }>;
+	/**
+	 * Record an error for a worker and fire the onWorkerError event.
+	 * This provides an alternative channel for error propagation through the health monitoring system.
+	 */
+	recordError(workerId: string, errorType: WorkerErrorType, error: string, retryInfo?: IRetryInfo): void;
 }
 
 /**
@@ -126,6 +154,9 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 
 	private readonly _onProgressCheckDue = this._register(new Emitter<{ workerId: string }>());
 	public readonly onProgressCheckDue: Event<{ workerId: string }> = this._onProgressCheckDue.event;
+
+	private readonly _onWorkerError = this._register(new Emitter<{ workerId: string; errorType: WorkerErrorType; error: string; retryInfo?: IRetryInfo }>());
+	public readonly onWorkerError: Event<{ workerId: string; errorType: WorkerErrorType; error: string; retryInfo?: IRetryInfo }> = this._onWorkerError.event;
 
 	constructor(config: Partial<HealthMonitorConfig> = {}, logService?: ILogService) {
 		super();
@@ -383,6 +414,38 @@ export class WorkerHealthMonitor extends Disposable implements IWorkerHealthMoni
 			metrics.isExecuting = false;
 			metrics.lastActivityTimestamp = Date.now(); // Reset activity timestamp
 			this._log('Marked execution end', { workerId });
+		}
+	}
+
+	/**
+	 * Record an error for a worker and fire the onWorkerError event.
+	 * This provides an alternative channel for error propagation through the health monitoring system.
+	 * @param workerId The worker ID
+	 * @param errorType The type of error (rate_limit, network, fatal, etc.)
+	 * @param error The error message
+	 * @param retryInfo Optional retry information for recoverable errors
+	 */
+	public recordError(workerId: string, errorType: WorkerErrorType, error: string, retryInfo?: IRetryInfo): void {
+		const metrics = this._metrics.get(workerId);
+
+		this._log('FIRING onWorkerError event', {
+			workerId,
+			errorType,
+			error: error.substring(0, 200), // Truncate for logging
+			canRetry: retryInfo?.canRetry ?? false,
+			attemptNumber: retryInfo?.attemptNumber ?? 0,
+			maxAttempts: retryInfo?.maxAttempts ?? 0,
+			workerExists: !!metrics,
+		});
+
+		// Fire the error event regardless of whether the worker is being monitored
+		// This allows error propagation even for workers that haven't called startMonitoring
+		this._onWorkerError.fire({ workerId, errorType, error, retryInfo });
+
+		// Also record as an error activity if the worker is being monitored
+		// This maintains consistency with the existing error tracking mechanism
+		if (metrics) {
+			this.recordActivity(workerId, 'error');
 		}
 	}
 
