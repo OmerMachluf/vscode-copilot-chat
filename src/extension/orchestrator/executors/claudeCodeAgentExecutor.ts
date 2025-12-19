@@ -16,6 +16,7 @@ import {
 	IAgentExecutor,
 	ParsedAgentType,
 } from '../agentExecutor';
+import { IAgentInstructionService } from '../agentInstructionService';
 import { IClaudeMigrationService } from '../claudeMigrationService';
 import { IUnifiedDefinitionService } from '../unifiedDefinitionService';
 
@@ -56,6 +57,7 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 		@ILogService private readonly _logService: ILogService,
 		@IClaudeMigrationService private readonly _claudeMigrationService: IClaudeMigrationService,
 		@IUnifiedDefinitionService private readonly _unifiedDefinitionService: IUnifiedDefinitionService,
+		@IAgentInstructionService private readonly _agentInstructionService: IAgentInstructionService,
 	) { }
 
 	/**
@@ -332,7 +334,7 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 		// 1. Add custom instructions wrapped in metadata tags
 		try {
 			const agentId = agentType.agentName || 'agent';
-			const composed = await this._unifiedDefinitionService.getInstructionsForAgent(agentId);
+			const composed = await this._agentInstructionService.loadInstructions(agentId);
 
 			if (composed.instructions.length > 0) {
 				const instructionsContent = composed.instructions.join('\n\n');

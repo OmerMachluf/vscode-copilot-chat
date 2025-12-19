@@ -9,7 +9,6 @@ import { IFileSystemService } from '../../platform/filesystem/common/fileSystemS
 import { FileType } from '../../platform/filesystem/common/fileTypes';
 import { URI } from '../../util/vs/base/common/uri';
 import { createDecorator } from '../../util/vs/platform/instantiation/common/instantiation';
-import { ComposedInstructions, IAgentInstructionService } from './agentInstructionService';
 import {
 	AgentDefinitionUnified,
 	AgentFrontmatter,
@@ -86,16 +85,6 @@ export interface IUnifiedDefinitionService {
 	 */
 	loadSkillContent(skillId: string): Promise<string | undefined>;
 
-	// =========================================================================
-	// Instructions (Delegation)
-	// =========================================================================
-
-	/**
-	 * Get composed instructions for an agent.
-	 * Delegates to AgentInstructionService.
-	 * @param agentId The agent ID
-	 */
-	getInstructionsForAgent(agentId: string): Promise<ComposedInstructions>;
 
 	// =========================================================================
 	// Claude SDK Integration
@@ -135,8 +124,7 @@ export class UnifiedDefinitionService implements IUnifiedDefinitionService {
 
 	constructor(
 		@IFileSystemService private readonly fileSystemService: IFileSystemService,
-		@IVSCodeExtensionContext private readonly extensionContext: IVSCodeExtensionContext,
-		@IAgentInstructionService private readonly agentInstructionService: IAgentInstructionService
+		@IVSCodeExtensionContext private readonly extensionContext: IVSCodeExtensionContext
 	) { }
 
 	// =========================================================================
@@ -683,14 +671,6 @@ export class UnifiedDefinitionService implements IUnifiedDefinitionService {
 			source,
 			path,
 		};
-	}
-
-	// =========================================================================
-	// Instructions (Delegation)
-	// =========================================================================
-
-	async getInstructionsForAgent(agentId: string): Promise<ComposedInstructions> {
-		return this.agentInstructionService.loadInstructions(agentId);
 	}
 
 	// =========================================================================
