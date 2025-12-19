@@ -417,6 +417,22 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 				]);
 			} else {
 				this._logService.info(`[A2ASpawnSubTaskTool] ========== INVOKE COMPLETED (FAILED) ==========`);
+
+				// Classify the error and provide retry guidance
+				const { errorType, retryInfo } = classifyError(result.error);
+
+				const errorDetails = [
+					`- **Error Type:** ${errorType}`,
+					`- **Retriable:** ${retryInfo.retriable ? 'Yes' : 'No'}`,
+				];
+				if (retryInfo.retriable && retryInfo.suggestedDelayMs !== undefined) {
+					errorDetails.push(`- **Suggested Delay:** ${retryInfo.suggestedDelayMs}ms`);
+				}
+				if (retryInfo.maxRetries !== undefined) {
+					errorDetails.push(`- **Max Retries:** ${retryInfo.maxRetries}`);
+				}
+				errorDetails.push(`- **Suggestion:** ${retryInfo.suggestion}`);
+
 				return new LanguageModelToolResult([
 					new LanguageModelTextPart(
 						`Sub-task failed.\n\n` +
@@ -424,6 +440,7 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 						`**Agent:** ${agentType}\n` +
 						`**Status:** ${result.status}\n` +
 						`**Error:** ${result.error ?? 'Unknown error'}\n\n` +
+						`**Error Classification:**\n${errorDetails.join('\n')}\n\n` +
 						`**Partial Output:**\n${result.output || '(none)'}${worktreeInfo}${mergedFilesSummary}${mergeError}${messagesSummary}`
 					),
 				]);
@@ -821,7 +838,19 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 				if (result.status === 'success') {
 					resultLines.push(`- **Output:**\n${result.output}\n`);
 				} else {
+					// Classify the error and provide retry guidance
+					const { errorType, retryInfo } = classifyError(result.error);
+
 					resultLines.push(`- **Error:** ${result.error ?? 'Unknown'}`);
+					resultLines.push(`- **Error Type:** ${errorType}`);
+					resultLines.push(`- **Retriable:** ${retryInfo.retriable ? 'Yes' : 'No'}`);
+					if (retryInfo.retriable && retryInfo.suggestedDelayMs !== undefined) {
+						resultLines.push(`- **Suggested Delay:** ${retryInfo.suggestedDelayMs}ms`);
+					}
+					if (retryInfo.maxRetries !== undefined) {
+						resultLines.push(`- **Max Retries:** ${retryInfo.maxRetries}`);
+					}
+					resultLines.push(`- **Suggestion:** ${retryInfo.suggestion}`);
 					if (result.output) {
 						resultLines.push(`- **Partial Output:**\n${result.output}\n`);
 					}
@@ -844,6 +873,44 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 					for (const msg of taskMessages) {
 						resultLines.push(`  - [${msg.type}] ${typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)}`);
 					}
+				}
+				resultLines.push('');
+			}
+
+			// Collect error information for summary
+			const failedResults: Array<{ taskId: string; errorType: SubtaskErrorType; retryInfo: RetryInfo }> = [];
+			for (let i = 0; i < results.length; i++) {
+				const result = results[i];
+				if (result.status !== 'success') {
+					const { errorType, retryInfo } = classifyError(result.error);
+					failedResults.push({ taskId: createdTasks[i].id, errorType, retryInfo });
+				}
+			}
+
+			// Add error summary if there were failures
+			if (failedResults.length > 0) {
+				resultLines.push('---');
+				resultLines.push('## Error Summary\n');
+				resultLines.push(`**Failed Tasks:** ${failedResults.length}/${results.length}`);
+
+				// Group by error type
+				const byErrorType = new Map<SubtaskErrorType, string[]>();
+				for (const ft of failedResults) {
+					if (!byErrorType.has(ft.errorType)) {
+						byErrorType.set(ft.errorType, []);
+					}
+					byErrorType.get(ft.errorType)!.push(ft.taskId);
+				}
+
+				resultLines.push('\n**By Error Type:**');
+				for (const [errorType, taskIds] of byErrorType) {
+					resultLines.push(`- ${errorType}: ${taskIds.length} task(s)`);
+				}
+
+				// Check if any are retriable
+				const retriable = failedResults.filter(ft => ft.retryInfo.retriable);
+				if (retriable.length > 0) {
+					resultLines.push(`\n**Retriable Tasks:** ${retriable.map(ft => ft.taskId).join(', ')}`);
 				}
 				resultLines.push('');
 			}
@@ -1094,13 +1161,16 @@ export class A2AAwaitSubTasksTool implements ICopilotTool<AwaitSubTasksParams> {
 			// Check for timeout
 			const timedOut = Date.now() - startTime >= timeout;
 
-			// Format results
+			// Format results with error classification
 			const resultLines: string[] = [];
 			resultLines.push(`## Sub-Task Await Results\n`);
 
 			if (timedOut) {
 				resultLines.push(`**WARNING:** Timeout reached. Some tasks may still be running.\n`);
 			}
+
+			// Track failed tasks for summary
+			const failedTasks: Array<{ taskId: string; errorType: SubtaskErrorType; retryInfo: RetryInfo }> = [];
 
 			for (const taskId of subTaskIds) {
 				const result = results.get(taskId);
@@ -1112,10 +1182,29 @@ export class A2AAwaitSubTasksTool implements ICopilotTool<AwaitSubTasksParams> {
 
 				if (result?.status === 'success') {
 					resultLines.push(`- **Output:**\n${result.output}\n`);
-				} else if (result?.error) {
-					resultLines.push(`- **Error:** ${result.error}`);
+				} else if (result?.error || result?.status === 'failed' || result?.status === 'timeout') {
+					// Classify the error and provide retry guidance
+					const { errorType, retryInfo } = classifyError(result?.error);
+					failedTasks.push({ taskId, errorType, retryInfo });
+
+					resultLines.push(`- **Error:** ${result.error ?? 'Unknown error'}`);
+					resultLines.push(`- **Error Type:** ${errorType}`);
+					resultLines.push(`- **Retriable:** ${retryInfo.retriable ? 'Yes' : 'No'}`);
+					if (retryInfo.retriable && retryInfo.suggestedDelayMs !== undefined) {
+						resultLines.push(`- **Suggested Delay:** ${retryInfo.suggestedDelayMs}ms`);
+					}
+					if (retryInfo.maxRetries !== undefined) {
+						resultLines.push(`- **Max Retries:** ${retryInfo.maxRetries}`);
+					}
+					resultLines.push(`- **Suggestion:** ${retryInfo.suggestion}`);
 				} else if (!result && task?.status === 'running') {
 					resultLines.push(`- **Note:** Still running (timeout exceeded)`);
+					// Timeout is also an error condition
+					const { errorType, retryInfo } = classifyError('timeout exceeded');
+					failedTasks.push({ taskId, errorType, retryInfo });
+					resultLines.push(`- **Error Type:** ${errorType}`);
+					resultLines.push(`- **Retriable:** ${retryInfo.retriable ? 'Yes' : 'No'}`);
+					resultLines.push(`- **Suggestion:** ${retryInfo.suggestion}`);
 				}
 
 				// Include collected messages for this task
@@ -1126,6 +1215,33 @@ export class A2AAwaitSubTasksTool implements ICopilotTool<AwaitSubTasksParams> {
 					}
 				}
 				resultLines.push('');
+			}
+
+			// Add error summary if there were failures
+			if (failedTasks.length > 0) {
+				resultLines.push('---');
+				resultLines.push('## Error Summary\n');
+				resultLines.push(`**Failed Tasks:** ${failedTasks.length}/${subTaskIds.length}`);
+
+				// Group by error type
+				const byErrorType = new Map<SubtaskErrorType, string[]>();
+				for (const ft of failedTasks) {
+					if (!byErrorType.has(ft.errorType)) {
+						byErrorType.set(ft.errorType, []);
+					}
+					byErrorType.get(ft.errorType)!.push(ft.taskId);
+				}
+
+				resultLines.push('\n**By Error Type:**');
+				for (const [errorType, taskIds] of byErrorType) {
+					resultLines.push(`- ${errorType}: ${taskIds.length} task(s)`);
+				}
+
+				// Check if any are retriable
+				const retriable = failedTasks.filter(ft => ft.retryInfo.retriable);
+				if (retriable.length > 0) {
+					resultLines.push(`\n**Retriable Tasks:** ${retriable.map(ft => ft.taskId).join(', ')}`);
+				}
 			}
 
 			return new LanguageModelToolResult([
@@ -1708,6 +1824,208 @@ export class A2AListSpecialistsTool implements ICopilotTool<Record<string, never
 			new LanguageModelTextPart(lines.join('\n')),
 		]);
 	}
+}
+
+// ============================================================================
+// Error Classification Utilities
+// ============================================================================
+
+/**
+ * Error type categories for subtask failures.
+ * Used to help parent agents understand what went wrong and how to respond.
+ */
+export type SubtaskErrorType =
+	| 'rate_limit'        // API rate limit exceeded
+	| 'network'           // Network connectivity issues
+	| 'timeout'           // Task took too long
+	| 'permission'        // Permission denied
+	| 'missing_dependency' // File or module not found
+	| 'compilation'       // Build/compile errors
+	| 'merge_conflict'    // Git merge conflicts
+	| 'cancelled'         // Task was cancelled
+	| 'fatal'             // Unrecoverable error
+	| 'unknown';          // Unclassified error
+
+/**
+ * Retry information for failed subtasks.
+ */
+export interface RetryInfo {
+	/** Whether the error is likely retriable */
+	retriable: boolean;
+	/** Suggested delay before retrying (ms), if retriable */
+	suggestedDelayMs?: number;
+	/** Maximum recommended retry attempts */
+	maxRetries?: number;
+	/** Human-readable suggestion for the parent agent */
+	suggestion: string;
+}
+
+/**
+ * Classify an error message into a typed category and provide retry guidance.
+ * This helps parent agents understand how to respond to subtask failures.
+ */
+export function classifyError(errorMsg: string | undefined): { errorType: SubtaskErrorType; retryInfo: RetryInfo } {
+	if (!errorMsg) {
+		return {
+			errorType: 'unknown',
+			retryInfo: {
+				retriable: false,
+				suggestion: 'No error details available. Review subtask logs for more information.',
+			},
+		};
+	}
+
+	const errorLower = errorMsg.toLowerCase();
+
+	// Rate limit errors
+	if (errorLower.includes('rate limit') ||
+		errorLower.includes('ratelimit') ||
+		errorLower.includes('too many requests') ||
+		errorLower.includes('429') ||
+		errorLower.includes('quota exceeded')) {
+		return {
+			errorType: 'rate_limit',
+			retryInfo: {
+				retriable: true,
+				suggestedDelayMs: 60000, // 1 minute
+				maxRetries: 3,
+				suggestion: 'Rate limit hit. Wait before retrying. Consider using a different model or reducing parallel requests.',
+			},
+		};
+	}
+
+	// Network errors
+	if (errorLower.includes('network') ||
+		errorLower.includes('connection') ||
+		errorLower.includes('enotfound') ||
+		errorLower.includes('econnrefused') ||
+		errorLower.includes('econnreset') ||
+		errorLower.includes('etimedout') ||
+		errorLower.includes('socket hang up')) {
+		return {
+			errorType: 'network',
+			retryInfo: {
+				retriable: true,
+				suggestedDelayMs: 5000, // 5 seconds
+				maxRetries: 3,
+				suggestion: 'Network issue detected. Retry after a brief delay.',
+			},
+		};
+	}
+
+	// Timeout errors
+	if (errorLower.includes('timeout') ||
+		errorLower.includes('timed out') ||
+		errorLower.includes('deadline exceeded')) {
+		return {
+			errorType: 'timeout',
+			retryInfo: {
+				retriable: true,
+				suggestedDelayMs: 0,
+				maxRetries: 2,
+				suggestion: 'Task timed out. Consider breaking into smaller subtasks or increasing timeout.',
+			},
+		};
+	}
+
+	// Permission errors
+	if (errorLower.includes('permission') ||
+		errorLower.includes('access denied') ||
+		errorLower.includes('unauthorized') ||
+		errorLower.includes('forbidden') ||
+		errorLower.includes('eacces')) {
+		return {
+			errorType: 'permission',
+			retryInfo: {
+				retriable: false,
+				suggestion: 'Permission denied. User intervention may be required to grant access.',
+			},
+		};
+	}
+
+	// Missing dependency errors
+	if (errorLower.includes('cannot find module') ||
+		errorLower.includes('module not found') ||
+		errorLower.includes('no such file') ||
+		errorLower.includes('does not exist') ||
+		errorLower.includes('missing dependency') ||
+		(errorLower.includes('import') && errorLower.includes('not found'))) {
+		return {
+			errorType: 'missing_dependency',
+			retryInfo: {
+				retriable: false,
+				suggestion: 'Required file or module not found. Check if earlier tasks completed successfully. May need to pull changes from other subtasks first.',
+			},
+		};
+	}
+
+	// Compilation/build errors
+	if (errorLower.includes('compile') ||
+		errorLower.includes('typescript') ||
+		errorLower.includes('syntax error') ||
+		errorLower.includes('type error') ||
+		errorLower.includes('build failed') ||
+		errorLower.includes('parse error')) {
+		return {
+			errorType: 'compilation',
+			retryInfo: {
+				retriable: false,
+				suggestion: 'Compilation error. Fix the code issue before retrying.',
+			},
+		};
+	}
+
+	// Git/merge conflicts
+	if (errorLower.includes('merge conflict') ||
+		errorLower.includes('conflict') ||
+		(errorLower.includes('git') && errorLower.includes('failed'))) {
+		return {
+			errorType: 'merge_conflict',
+			retryInfo: {
+				retriable: false,
+				suggestion: 'Git conflict detected. Use a2a_pull_subtask_changes to manually review and resolve.',
+			},
+		};
+	}
+
+	// Cancelled tasks
+	if (errorLower.includes('cancelled') ||
+		errorLower.includes('canceled') ||
+		errorLower.includes('aborted')) {
+		return {
+			errorType: 'cancelled',
+			retryInfo: {
+				retriable: true,
+				suggestedDelayMs: 0,
+				maxRetries: 1,
+				suggestion: 'Task was cancelled. Can be restarted if needed.',
+			},
+		};
+	}
+
+	// Fatal/unrecoverable errors
+	if (errorLower.includes('fatal') ||
+		errorLower.includes('unrecoverable') ||
+		errorLower.includes('critical')) {
+		return {
+			errorType: 'fatal',
+			retryInfo: {
+				retriable: false,
+				suggestion: 'Fatal error occurred. Review logs and fix underlying issue before retrying.',
+			},
+		};
+	}
+
+	// Default: unknown error
+	return {
+		errorType: 'unknown',
+		retryInfo: {
+			retriable: true,
+			suggestedDelayMs: 1000,
+			maxRetries: 1,
+			suggestion: 'Unexpected error. Review error details before deciding whether to retry.',
+		},
+	};
 }
 
 // Register the tools
