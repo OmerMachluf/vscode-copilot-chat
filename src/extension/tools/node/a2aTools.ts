@@ -24,6 +24,7 @@ import { ITaskMonitorService } from '../../orchestrator/taskMonitorService';
 import { IWorkerContext } from '../../orchestrator/workerToolsService';
 import { ToolName } from '../common/toolNames';
 import { ICopilotTool, ToolRegistry } from '../common/toolsRegistry';
+import { getCurrentBranch } from '../../conversation/a2a/gitOperations';
 
 /**
  * Parameters for spawning a single sub-task.
@@ -217,6 +218,18 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 
 		this._logService.info(`[A2ASpawnSubTaskTool] Spawning subtask: agentType=${agentType} (backend=${parsedAgentType.backend}), blocking=${blocking}, depth=${currentDepth + 1}`);
 
+		// Detect parent's current branch to ensure child worktrees are created from the correct branch
+		// This is critical for nested spawning (sub-agent → sub-sub-agent)
+		let parentBranch: string | undefined;
+		try {
+			if (worktreePath) {
+				parentBranch = await getCurrentBranch(worktreePath);
+				this._logService.info(`[A2ASpawnSubTaskTool] Detected parent branch: ${parentBranch} from worktree ${worktreePath}`);
+			}
+		} catch (error) {
+			this._logService.warn(`[A2ASpawnSubTaskTool] Failed to detect parent branch from worktree ${worktreePath}: ${error instanceof Error ? error.message : String(error)}`);
+		}
+
 		// Create sub-task options with inherited spawn context
 		// Use the raw agent type string - subTaskManager handles normalization
 		const createOptions: ISubTaskCreateOptions = {
@@ -224,6 +237,7 @@ export class A2ASpawnSubTaskTool implements ICopilotTool<SpawnSubTaskParams> {
 			parentTaskId: taskId,
 			planId: planId,
 			worktreePath: worktreePath,
+			baseBranch: parentBranch,
 			agentType,
 			prompt,
 			expectedOutput,
@@ -569,6 +583,18 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 
 		const waitForAll = options.input.waitForAll !== false; // Default to true (blocking)
 
+		// Detect parent's current branch to ensure child worktrees are created from the correct branch
+		// This is critical for nested spawning (sub-agent → sub-sub-agent)
+		let parentBranch: string | undefined;
+		try {
+			if (worktreePath) {
+				parentBranch = await getCurrentBranch(worktreePath);
+				this._logService.info(`[A2ASpawnParallelSubTasksTool] Detected parent branch: ${parentBranch} from worktree ${worktreePath}`);
+			}
+		} catch (error) {
+			this._logService.warn(`[A2ASpawnParallelSubTasksTool] Failed to detect parent branch from worktree ${worktreePath}: ${error instanceof Error ? error.message : String(error)}`);
+		}
+
 		// Create all sub-tasks first with inherited spawn context
 		const createdTasks: ISubTask[] = [];
 		for (const taskConfig of subtasks) {
@@ -577,6 +603,7 @@ export class A2ASpawnParallelSubTasksTool implements ICopilotTool<SpawnParallelS
 				parentTaskId: taskId,
 				planId: planId,
 				worktreePath: worktreePath,
+				baseBranch: parentBranch,
 				agentType: taskConfig.agentType,
 				prompt: taskConfig.prompt,
 				expectedOutput: taskConfig.expectedOutput,

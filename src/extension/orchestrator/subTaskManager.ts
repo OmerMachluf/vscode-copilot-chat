@@ -271,6 +271,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			parentTaskId: options.parentTaskId,
 			planId: options.planId,
 			worktreePath: options.worktreePath,
+			baseBranch: options.baseBranch,
 			agentType: options.agentType,
 			parsedAgentType,
 			prompt: options.prompt,
@@ -523,7 +524,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 		// Create an orchestrator task for this subtask with full context
 		const taskName = `[SubTask] ${subTask.agentType} (${subTask.id.slice(-6)})`;
 
-		this._logService.debug(`[SubTaskManager] Creating orchestrator task: name="${taskName}", parentWorkerId=${subTask.parentWorkerId}, spawnContext=${inheritedSpawnContext}, agentType=${subTask.agentType}, parsedAgentType.backend=${subTask.parsedAgentType?.backend}`);
+		this._logService.debug(`[SubTaskManager] Creating orchestrator task: name="${taskName}", parentWorkerId=${subTask.parentWorkerId}, spawnContext=${inheritedSpawnContext}, agentType=${subTask.agentType}, parsedAgentType.backend=${subTask.parsedAgentType?.backend}, baseBranch=${subTask.baseBranch || '(undefined - will use default)'}`);
 		const orchestratorTask = orchestratorService.addTask(taskDescription, {
 			name: taskName,
 			planId: subTask.planId,
@@ -533,8 +534,9 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			// CRITICAL: Pass the pre-parsed agent type to preserve backend specification
 			// This ensures subtasks like 'claude:agent' stay on the claude backend
 			parsedAgentType: subTask.parsedAgentType,
-			// Don't create a new worktree - reuse parent's worktree
-			baseBranch: undefined,
+			// Use parent's branch to ensure child worktrees are created from the correct branch
+			// This is critical for nested spawning (sub-agent → sub-sub-agent on feature branches)
+			baseBranch: subTask.baseBranch,
 			targetFiles: subTask.targetFiles,
 			// CRITICAL: Set parentWorkerId so messages from this subtask route to parent
 			// This enables the parent worker to receive notifications via registerOwnerHandler

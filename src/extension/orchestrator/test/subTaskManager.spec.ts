@@ -184,6 +184,7 @@ describe('SubTaskManager', () => {
 				prompt: 'Review code',
 				expectedOutput: 'Review feedback',
 				currentDepth: 1, // Already at depth 1
+				spawnContext: 'orchestrator', // Need orchestrator context to allow depth 2
 			};
 
 			const subTask = subTaskManager.createSubTask(options);
@@ -255,6 +256,40 @@ describe('SubTaskManager', () => {
 
 			const subTask = subTaskManager.createSubTask(options);
 			expect(subTask.targetFiles).toEqual(['src/file1.ts', 'src/file2.ts']);
+		});
+
+		it('should inherit baseBranch from parent when provided', () => {
+			const options: ISubTaskCreateOptions = {
+				parentWorkerId: 'worker-1',
+				parentTaskId: 'task-1',
+				planId: 'plan-1',
+				worktreePath: '/test/worktree',
+				baseBranch: 'dev/feature-x',
+				agentType: '@agent',
+				prompt: 'Do work on feature branch',
+				expectedOutput: 'Work completed',
+				currentDepth: 0,
+			};
+
+			const subTask = subTaskManager.createSubTask(options);
+			expect(subTask.baseBranch).toBe('dev/feature-x');
+		});
+
+		it('should allow undefined baseBranch (falls back to default)', () => {
+			const options: ISubTaskCreateOptions = {
+				parentWorkerId: 'worker-1',
+				parentTaskId: 'task-1',
+				planId: 'plan-1',
+				worktreePath: '/test/worktree',
+				agentType: '@agent',
+				prompt: 'Do work',
+				expectedOutput: 'Work completed',
+				currentDepth: 0,
+				// baseBranch not provided
+			};
+
+			const subTask = subTaskManager.createSubTask(options);
+			expect(subTask.baseBranch).toBeUndefined();
 		});
 	});
 
@@ -543,6 +578,7 @@ describe('SubTaskManager', () => {
 				prompt: 'Task',
 				expectedOutput: 'Output',
 				currentDepth: 1,
+				spawnContext: 'orchestrator', // Need orchestrator context to allow depth 2
 			});
 
 			const depth = subTaskManager.getTaskDepth(subTask.id);

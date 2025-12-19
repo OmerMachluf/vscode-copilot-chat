@@ -148,6 +148,8 @@ export interface ISubTask {
 	planId: string;
 	/** Path to the worktree (inherited from parent) */
 	worktreePath: string;
+	/** Base branch (inherited from parent's current branch) */
+	baseBranch?: string;
 	/** Agent type to use (e.g., '@architect', '@reviewer') */
 	agentType: string;
 	/** Parsed agent type with backend routing information */
@@ -206,6 +208,8 @@ export interface ISubTaskCreateOptions {
 	planId: string;
 	/** Worktree path (inherited from parent) */
 	worktreePath: string;
+	/** Base branch (inherited from parent's current branch) */
+	baseBranch?: string;
 	/** Agent type to execute the sub-task */
 	agentType: string;
 	/** The prompt/instruction */

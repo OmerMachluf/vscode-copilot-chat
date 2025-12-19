@@ -14,6 +14,7 @@ import { CreateTaskOptions, IOrchestratorService } from '../../../orchestrator/o
 import { ISafetyLimitsService, SpawnContext } from '../../../orchestrator/safetyLimits';
 import { ITaskMonitorService } from '../../../orchestrator/taskMonitorService';
 import { IWorkerContext } from '../../../orchestrator/workerToolsService';
+import { getCurrentBranch } from '../../../conversation/a2a/gitOperations';
 
 /**
  * Dependencies required to create the A2A MCP server.
@@ -206,11 +207,22 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 							? 'agent' as const
 							: workerContext.spawnContext as 'orchestrator' | 'agent';
 
+						// Detect parent's current branch to ensure child worktrees are created from the correct branch
+						let parentBranch: string | undefined;
+						try {
+							if (workerContext.worktreePath) {
+								parentBranch = await getCurrentBranch(workerContext.worktreePath);
+							}
+						} catch (error) {
+							// Branch detection is best-effort, fallback to default if it fails
+						}
+
 						const options: ISubTaskCreateOptions = {
 							parentWorkerId: workerContext.workerId,
 							parentTaskId: workerContext.taskId ?? workerContext.workerId,
 							planId: workerContext.planId ?? 'claude-session',
 							worktreePath: workerContext.worktreePath,
+							baseBranch: parentBranch,
 							agentType: args.agentType,
 							prompt: args.prompt,
 							expectedOutput: args.expectedOutput,
@@ -462,6 +474,16 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 							? 'agent' as const
 							: workerContext.spawnContext as 'orchestrator' | 'agent';
 
+						// Detect parent's current branch to ensure child worktrees are created from the correct branch
+						let parentBranch: string | undefined;
+						try {
+							if (workerContext.worktreePath) {
+								parentBranch = await getCurrentBranch(workerContext.worktreePath);
+							}
+						} catch (error) {
+							// Branch detection is best-effort, fallback to default if it fails
+						}
+
 						// Create all subtasks
 						const subtasks = args.subtasks.map(st => {
 							const options: ISubTaskCreateOptions = {
@@ -469,6 +491,7 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 								parentTaskId: workerContext.taskId ?? workerContext.workerId,
 								planId: workerContext.planId ?? 'claude-session',
 								worktreePath: workerContext.worktreePath,
+								baseBranch: parentBranch,
 								agentType: st.agentType,
 								prompt: st.prompt,
 								expectedOutput: st.expectedOutput,
