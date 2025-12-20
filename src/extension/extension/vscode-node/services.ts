@@ -112,6 +112,7 @@ import { ISubTaskManager, SubTaskManager } from '../../orchestrator/subTaskManag
 import { ISubtaskProgressService, SubtaskProgressService } from '../../orchestrator/subtaskProgressService';
 import { ITaskMonitorService, TaskMonitorService } from '../../orchestrator/taskMonitorService';
 import { IUnifiedDefinitionService, UnifiedDefinitionService } from '../../orchestrator/unifiedDefinitionService';
+import { IPluginGenerationService, PluginGenerationService } from '../../orchestrator/pluginGenerationService';
 import { GlobalWorkerContext, IWorkerContext, IWorkerToolsService, WorkerToolsService } from '../../orchestrator/workerToolsService';
 import { ChatMLFetcherImpl } from '../../prompt/node/chatMLFetcher';
 import { IFeedbackReporter } from '../../prompt/node/feedbackReporter';
@@ -195,6 +196,7 @@ export function registerServices(builder: IInstantiationServiceBuilder, extensio
 	builder.define(IClaudeCommandService, new SyncDescriptor(ClaudeCommandService));
 	builder.define(ISkillsService, new SyncDescriptor(SkillsService));
 	builder.define(IUnifiedDefinitionService, new SyncDescriptor(UnifiedDefinitionService));
+	builder.define(IPluginGenerationService, new SyncDescriptor(PluginGenerationService));
 	builder.define(IAgentRunner, new SyncDescriptor(AgentRunnerService));
 	builder.define(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistry));
 	builder.define(IClaudeAgentManager, new SyncDescriptor(ClaudeAgentManager));

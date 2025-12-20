@@ -28,6 +28,7 @@ import { IPromptVariablesService } from '../../../prompt/node/promptVariablesSer
 import { ToolName } from '../../../tools/common/toolNames';
 import { TodoListContextPrompt } from '../../../tools/node/todoListContextPrompt';
 import { IPromptEndpoint, renderPromptElement } from '../base/promptRenderer';
+import { IAgentDiscoveryService } from '../../../orchestrator/agentDiscoveryService';
 import { Tag } from '../base/tag';
 import { TerminalStatePromptElement } from '../base/terminalState';
 import { ChatVariables } from '../panel/chatVariables';
@@ -79,6 +80,8 @@ export class AgentPrompt extends PromptElement<AgentPromptProps> {
 		@IExperimentationService private readonly experimentationService: IExperimentationService,
 		@IPromptVariablesService private readonly promptVariablesService: IPromptVariablesService,
 		@IPromptEndpoint private readonly promptEndpoint: IPromptEndpoint,
+		@IAgentDiscoveryService private readonly agentDiscoveryService: IAgentDiscoveryService,
+		@ILogService private readonly logService: ILogService,
 	) {
 		super(props);
 	}
@@ -147,11 +150,21 @@ export class AgentPrompt extends PromptElement<AgentPromptProps> {
 	private async getSystemPrompt(customizations: AgentPromptCustomizations) {
 		const modelFamily = this.props.endpoint.family ?? 'unknown';
 
+		// Fetch available skills for injection into system prompt
+		const skills = await this.agentDiscoveryService.getAvailableSkills();
+
+		if (skills.length > 0) {
+			this.logService.info(`[AgentPrompt] Injecting ${skills.length} skills into ${modelFamily} prompt: ${skills.map(s => s.id).join(', ')}`);
+		} else {
+			this.logService.info(`[AgentPrompt] No skills available to inject into ${modelFamily} prompt`);
+		}
+
 		if (this.props.endpoint.family.startsWith('gpt-') && this.configurationService.getExperimentBasedConfig(ConfigKey.EnableAlternateGptPrompt, this.experimentationService)) {
 			return <AlternateGPTPrompt
 				availableTools={this.props.promptContext.tools?.availableTools}
 				modelFamily={this.props.endpoint.family}
 				codesearchMode={this.props.codesearchMode}
+				availableSkills={skills}
 			/>;
 		}
 
@@ -160,6 +173,7 @@ export class AgentPrompt extends PromptElement<AgentPromptProps> {
 			availableTools={this.props.promptContext.tools?.availableTools}
 			modelFamily={modelFamily}
 			codesearchMode={this.props.codesearchMode}
+			availableSkills={skills}
 		/>;
 	}
 

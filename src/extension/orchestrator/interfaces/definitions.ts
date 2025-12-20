@@ -19,8 +19,8 @@ export type DefinitionSource = 'builtin' | 'repo' | 'package';
  * Command Definition - Represents a slash command.
  *
  * Commands can be defined as:
- * - Built-in: `assets/commands/*.command.md`
- * - Repository: `.github/commands/*.command.md`
+ * - Built-in: `assets/commands/*.prompt.md`
+ * - Repository: `.github/commands/*.prompt.md`
  * - Package: Defined in `package.json` (legacy, read-only)
  *
  * The command content is injected as a prompt when the command is invoked.
@@ -67,7 +67,7 @@ export interface CommandDefinition {
 }
 
 /**
- * YAML frontmatter schema for .command.md files.
+ * YAML frontmatter schema for .prompt.md files (slash commands).
  */
 export interface CommandFrontmatter {
 	/** Required: Human-readable name */

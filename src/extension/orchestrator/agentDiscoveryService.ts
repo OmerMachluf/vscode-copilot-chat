@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
+import { ILogService } from '../../platform/log/common/logService';
 import { IVSCodeExtensionContext } from '../../platform/extContext/common/extensionContext';
 import { IFileSystemService } from '../../platform/filesystem/common/fileSystemService';
 import { FileType } from '../../platform/filesystem/common/fileTypes';
@@ -11,6 +12,7 @@ import { URI } from '../../util/vs/base/common/uri';
 import { createDecorator } from '../../util/vs/platform/instantiation/common/instantiation';
 import { AgentDefinition, IAgentInstructionService } from './agentInstructionService';
 import { registerCustomAgents } from './agentTypeParser';
+import { IUnifiedDefinitionService } from './unifiedDefinitionService';
 
 export const IAgentDiscoveryService = createDecorator<IAgentDiscoveryService>('agentDiscoveryService');
 
@@ -42,6 +44,19 @@ export interface AgentInfo {
 	claudeSlashCommand?: string;
 }
 
+export interface SkillInfo {
+	/** Skill ID (e.g., 'design-patterns', 'api-design') */
+	id: string;
+	/** Human-readable name */
+	name: string;
+	/** Skill description */
+	description: string;
+	/** Source of the skill definition */
+	source: 'builtin' | 'repo';
+	/** Path to skill file */
+	path?: string;
+}
+
 export interface IAgentDiscoveryService {
 	readonly _serviceBrand: undefined;
 
@@ -67,7 +82,13 @@ export interface IAgentDiscoveryService {
 	getRepoAgents(): Promise<AgentInfo[]>;
 
 	/**
-	 * Clear the cached agent list.
+	 * Get all available skills (built-in + repo-defined).
+	 * Results are cached until clearCache() is called.
+	 */
+	getAvailableSkills(): Promise<SkillInfo[]>;
+
+	/**
+	 * Clear the cached agent and skill lists.
 	 * Call this when workspace folders change.
 	 */
 	clearCache(): void;
@@ -107,33 +128,62 @@ export class AgentDiscoveryService implements IAgentDiscoveryService {
 	declare readonly _serviceBrand: undefined;
 
 	private _cachedAgents: AgentInfo[] | undefined;
+	private _cachedSkills: SkillInfo[] | undefined;
 	private _cacheTimestamp = 0;
 	private readonly _cacheTtlMs = 30000; // 30 seconds
 
 	constructor(
 		@IFileSystemService private readonly fileSystemService: IFileSystemService,
 		@IAgentInstructionService private readonly agentInstructionService: IAgentInstructionService,
-		@IVSCodeExtensionContext private readonly extensionContext: IVSCodeExtensionContext
-	) { }
+		@IVSCodeExtensionContext private readonly extensionContext: IVSCodeExtensionContext,
+		@IUnifiedDefinitionService private readonly unifiedDefinitionService: IUnifiedDefinitionService,
+		@ILogService private readonly logService: ILogService
+	) {
+		this.logService.info('[AgentDiscoveryService] Service instantiated - preloading agents and skills...');
+
+		// Eagerly preload agents and skills to populate cache BEFORE ChatAgentService.register() is called
+		Promise.all([
+			this.getAvailableAgents(),
+			this.getAvailableSkills()
+		]).then(() => {
+			this.logService.info('[AgentDiscoveryService] Preload complete - agents and skills cached and ready');
+		}).catch(err => {
+			this.logService.error('[AgentDiscoveryService] Failed to preload agents/skills:', err);
+		});
+	}
 
 	async getAvailableAgents(): Promise<AgentInfo[]> {
+		this.logService.info('[AgentDiscoveryService] getAvailableAgents() called');
+
 		// Check cache
 		const now = Date.now();
-		if (this._cachedAgents && (now - this._cacheTimestamp) < this._cacheTtlMs) {
+		/*if (this._cachedAgents && (now - this._cacheTimestamp) < this._cacheTtlMs) {
+			this.logService.info(`[AgentDiscoveryService] Returning ${this._cachedAgents.length} cached agents`);
 			return this._cachedAgents;
-		}
+		}*/
 
-		const agents: AgentInfo[] = [];
+		// Use UnifiedDefinitionService to discover all agents
+		this.logService.info('[AgentDiscoveryService] Delegating to UnifiedDefinitionService...');
+		const unifiedAgents = await this.unifiedDefinitionService.discoverAgents();
 
-		// Get built-in agents
-		const builtinAgents = await this.getBuiltinAgents();
-		agents.push(...builtinAgents);
+		// Convert UnifiedDefinitionService format to AgentInfo format
+		const agents: AgentInfo[] = [
+			...BUILTIN_AGENTS, // Include hardcoded built-in agents
+			...unifiedAgents.map(ua => ({
+				id: ua.id,
+				name: ua.name,
+				description: ua.description,
+				tools: ua.tools || [],
+				source: ua.source,
+				path: ua.path,
+				hasArchitectureAccess: ua.hasArchitectureAccess,
+				useSkills: ua.useSkills,
+				backend: ua.backend,
+				claudeSlashCommand: ua.claudeSlashCommand,
+			}))
+		];
 
-		// Get repo agents
-		const repoAgents = await this.getRepoAgents();
-		agents.push(...repoAgents);
-
-		// Deduplicate by ID (repo agents override built-in)
+		// Deduplicate by ID (discovered agents override built-in)
 		const deduped = new Map<string, AgentInfo>();
 		for (const agent of agents) {
 			const existing = deduped.get(agent.id);
@@ -145,6 +195,8 @@ export class AgentDiscoveryService implements IAgentDiscoveryService {
 		this._cachedAgents = Array.from(deduped.values());
 		this._cacheTimestamp = now;
 
+		this.logService.info(`[AgentDiscoveryService] ✅ Returning ${this._cachedAgents.length} total agents: ${this._cachedAgents.map(a => a.id).join(', ')}`);
+
 		// Register custom agents with agentTypeParser for Claude slash command support
 		// Only register repo agents (custom agents defined in .github/agents/)
 		const customAgentsToRegister = this._cachedAgents
@@ -155,6 +207,7 @@ export class AgentDiscoveryService implements IAgentDiscoveryService {
 			}));
 
 		if (customAgentsToRegister.length > 0) {
+			this.logService.info(`[AgentDiscoveryService] Registering ${customAgentsToRegister.length} custom agents for Claude`);
 			registerCustomAgents(customAgentsToRegister, true);
 		}
 
@@ -317,8 +370,37 @@ export class AgentDiscoveryService implements IAgentDiscoveryService {
 		};
 	}
 
+	async getAvailableSkills(): Promise<SkillInfo[]> {
+		this.logService.info('[AgentDiscoveryService] getAvailableSkills() called');
+
+		// Check cache
+		if (this._cachedSkills) {
+			this.logService.info(`[AgentDiscoveryService] Returning ${this._cachedSkills.length} cached skills`);
+			return this._cachedSkills;
+		}
+
+		// Use UnifiedDefinitionService to discover all skills
+		this.logService.info('[AgentDiscoveryService] Delegating to UnifiedDefinitionService...');
+		const skillMetadata = await this.unifiedDefinitionService.discoverSkills();
+
+		// Convert to SkillInfo format
+		const skills: SkillInfo[] = skillMetadata.map(skill => ({
+			id: skill.id,
+			name: skill.name,
+			description: skill.description,
+			source: skill.source,
+			path: skill.path,
+		}));
+
+		this._cachedSkills = skills;
+		this.logService.info(`[AgentDiscoveryService] ✅ Returning ${skills.length} total skills: ${skills.map(s => s.id).join(', ')}`);
+
+		return skills;
+	}
+
 	clearCache(): void {
 		this._cachedAgents = undefined;
+		this._cachedSkills = undefined;
 		this._cacheTimestamp = 0;
 	}
 

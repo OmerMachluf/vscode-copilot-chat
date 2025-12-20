@@ -206,7 +206,7 @@ export class ChatParticipantRequestHandler {
 
 	/**
 	 * Attempts to handle a dynamic command from the user's prompt.
-	 * Dynamic commands are defined in .github/commands/*.command.md files.
+	 * Dynamic commands are defined in .github/prompts/*.prompt.md files.
 	 *
 	 * @returns The augmented prompt if a dynamic command was found, undefined otherwise
 	 */
@@ -274,7 +274,7 @@ export class ChatParticipantRequestHandler {
 				// this is done here because all intents must honor ignored files
 				this.request = await this.sanitizeVariables();
 
-				// Check for dynamic commands from .github/commands/*.command.md files
+				// Check for dynamic commands from .github/prompts/*.prompt.md files
 				// These are not registered in package.json but can be invoked with /commandname
 				const dynamicCommandPrompt = await this._tryGetDynamicCommandPrompt();
 				if (dynamicCommandPrompt) {

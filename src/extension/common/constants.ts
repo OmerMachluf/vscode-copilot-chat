@@ -38,7 +38,8 @@ export const enum Intent {
 	WorkflowPlanner = 'workflowPlanner',
 	StepPlanner = 'stepplanner',
 	Architect = 'architect',
-	Reviewer = 'reviewer'
+	Reviewer = 'reviewer',
+	TestOmer = "tesetomer"
 }
 
 export const GITHUB_PLATFORM_AGENT = 'github.copilot-dynamic.platform';

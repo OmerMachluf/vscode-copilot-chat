@@ -158,6 +158,14 @@ class DefaultGpt5AgentPrompt extends PromptElement<DefaultAgentPromptProps> {
 				The messages you send before tool calls should describe what is immediately about to be done next in very concise language. If there was previous work done, this preamble message should also include a note about the work done so far to bring the user along.<br />
 			</Tag>
 			{this.props.availableTools && <McpToolInstructions tools={this.props.availableTools} />}
+			{this.props.availableSkills && this.props.availableSkills.length > 0 && (
+				<Tag name='skillsAvailable'>
+					You have access to specialized skill modules that provide domain-specific knowledge and capabilities. Available skills:<br />
+					{this.props.availableSkills.map(skill => `- **${skill.name}** (${skill.id}): ${skill.description}`).join('\n')}<br />
+					<br />
+					To use a skill, call the loadSkill tool with the skill ID. The skill will be loaded into your context and provide specialized instructions, examples, and capabilities for that domain.
+				</Tag>
+			)}
 			{tools[ToolName.ApplyPatch] && <ApplyPatchInstructions {...this.props} tools={tools} />}
 			<Tag name='final_answer_formatting'>
 				## Presenting your work and final message<br />

@@ -169,6 +169,14 @@ class VSCModelPromptA extends PromptElement<DefaultAgentPromptProps> {
 				Note that all preamble instructions should be in the commentary channel only with text displaying to the user. Do not use these instructions in the final channel.<br />
 			</Tag>
 			{this.props.availableTools && <McpToolInstructions tools={this.props.availableTools} />}
+			{this.props.availableSkills && this.props.availableSkills.length > 0 && (
+				<Tag name='skillsAvailable'>
+					You have access to specialized skill modules that provide domain-specific knowledge and capabilities. Available skills:<br />
+					{this.props.availableSkills.map(skill => `- **${skill.name}** (${skill.id}): ${skill.description}`).join('\n')}<br />
+					<br />
+					To use a skill, call the loadSkill tool with the skill ID. The skill will be loaded into your context and provide specialized instructions, examples, and capabilities for that domain.
+				</Tag>
+			)}
 			<NotebookInstructions {...this.props} />
 			<ResponseTranslationRules />
 		</InstructionMessage>;
@@ -307,6 +315,14 @@ class VSCModelPromptB extends PromptElement<DefaultAgentPromptProps> {
 				</Tag>
 			</Tag>
 			{this.props.availableTools && <McpToolInstructions tools={this.props.availableTools} />}
+			{this.props.availableSkills && this.props.availableSkills.length > 0 && (
+				<Tag name='skillsAvailable'>
+					You have access to specialized skill modules that provide domain-specific knowledge and capabilities. Available skills:<br />
+					{this.props.availableSkills.map(skill => `- **${skill.name}** (${skill.id}): ${skill.description}`).join('\n')}<br />
+					<br />
+					To use a skill, call the loadSkill tool with the skill ID. The skill will be loaded into your context and provide specialized instructions, examples, and capabilities for that domain.
+				</Tag>
+			)}
 			{tools[ToolName.ApplyPatch] && <ApplyPatchInstructions {...this.props} tools={tools} />}
 			{tools[ToolName.EditFile] && !tools[ToolName.ApplyPatch] && <Tag name='editFileInstructions'>
 				{tools[ToolName.ReplaceString] ?

@@ -41,6 +41,15 @@ class CodexStyleGpt5CodexPrompt extends PromptElement<DefaultAgentPromptProps> {
 				- When you made a todo, update it after having performed one of the sub-tasks that you shared on the todo list.<br />
 				<br />
 			</>}
+			{this.props.availableSkills && this.props.availableSkills.length > 0 && (<>
+				<br />
+				## Specialized skill modules<br />
+				<br />
+				You have access to specialized skill modules that provide domain-specific knowledge and capabilities. Available skills:<br />
+				{this.props.availableSkills.map(skill => `- **${skill.name}** (${skill.id}): ${skill.description}`).join('\n')}<br />
+				<br />
+				To use a skill, call the loadSkill tool with the skill ID. The skill will be loaded into your context and provide specialized instructions, examples, and capabilities for that domain.<br />
+			</>)}
 			<br />
 			## Special user requests<br />
 			<br />

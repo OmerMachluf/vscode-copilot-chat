@@ -6,7 +6,7 @@ dist/
 .copilot-orchestrator-queue.json
 # created by simulation
 .simulation
-
+.plugins
 # stores wasm and other build files
 .build
 

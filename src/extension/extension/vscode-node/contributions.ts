@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { OrganizationAndEnterpriseAgentContribution } from '../../agents/vscode-node/organizationAndEnterpriseAgentContrib';
+import { RepositoryAgentContribution } from '../../agents/vscode-node/repositoryAgentContrib';
 import { AuthenticationContrib } from '../../authentication/vscode-node/authentication.contribution';
 import { BYOKContrib } from '../../byok/vscode-node/byokContribution';
 import { ChatQuotaContribution } from '../../chat/vscode-node/chatQuota.contribution';
@@ -117,5 +118,6 @@ export const vscodeNodeChatContributions: IExtensionContributionFactory[] = [
 	asContributionFactory(McpSetupCommands),
 	asContributionFactory(LanguageModelProxyContrib),
 	asContributionFactory(OrganizationAndEnterpriseAgentContribution),
+	asContributionFactory(RepositoryAgentContribution),
 	newWorkspaceContribution,
 ];

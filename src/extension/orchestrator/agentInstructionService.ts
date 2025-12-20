@@ -198,12 +198,21 @@ export class AgentInstructionService implements IAgentInstructionService {
 			architectureFiles: architectureFiles.length > 0 ? architectureFiles : undefined,
 		};
 
+		// Log what was loaded for this agent
+		console.log(`[AgentInstructionService] Loaded instructions for agent '${agentId}':`);
+		console.log(`  - Base instructions: ${instructions.length} pieces`);
+		console.log(`  - Skills requested: ${agentDef?.useSkills?.join(', ') || 'none'}`);
+		console.log(`  - Skills loaded: ${skillFiles.filter(f => !f.includes('skill-catalog')).length}`);
+		console.log(`  - Skill catalog: ${skillCatalog ? 'included' : 'not included'}`);
+		console.log(`  - Architecture docs: ${architectureDocs.length > 0 ? `${architectureDocs.length} docs` : 'none'}`);
+		console.log(`  - Total instruction files: ${result.files.length}`);
+
 		this._instructionCache.set(agentId, result);
 		return result;
 	}
 
 	/**
-	 * Get agent definition, checking both builtin and repo sources
+	 * Get agent definition, checking both builtin and repo sources via UnifiedDefinitionService
 	 */
 	private async _getAgentDefinition(agentId: string): Promise<AgentDefinition | undefined> {
 		// Check cache
@@ -212,30 +221,24 @@ export class AgentInstructionService implements IAgentInstructionService {
 			return cached;
 		}
 
-		// Try builtin first
-		const builtinContent = await this.getBuiltinAgentInstructions(agentId);
-		if (builtinContent) {
-			const parsed = this.parseAgentDefinition(builtinContent, 'builtin');
-			if (parsed) {
-				this._agentDefinitionCache.set(agentId, parsed);
-				return parsed;
-			}
-		}
-
-		// Try repo agents
-		const workspaceFolders = vscode.workspace.workspaceFolders;
-		if (workspaceFolders?.length) {
-			for (const folder of workspaceFolders) {
-				const agentFile = URI.joinPath(folder.uri, '.github', 'agents', agentId, `${agentId}.agent.md`);
-				const content = await this._readFileAsString(agentFile);
-				if (content) {
-					const parsed = this.parseAgentDefinition(content, 'repo');
-					if (parsed) {
-						this._agentDefinitionCache.set(agentId, parsed);
-						return parsed;
-					}
-				}
-			}
+		// Use UnifiedDefinitionService to discover the agent
+		const unifiedAgent = await this.unifiedDefinitionService.getAgent(agentId);
+		if (unifiedAgent) {
+			// Convert UnifiedAgent to AgentDefinition format
+			const agentDef: AgentDefinition = {
+				id: unifiedAgent.id,
+				name: unifiedAgent.name,
+				description: unifiedAgent.description,
+				tools: unifiedAgent.tools || [],
+				source: unifiedAgent.source,
+				content: unifiedAgent.prompt,
+				hasArchitectureAccess: unifiedAgent.hasArchitectureAccess,
+				useSkills: unifiedAgent.useSkills,
+				backend: unifiedAgent.backend,
+				claudeSlashCommand: unifiedAgent.claudeSlashCommand,
+			};
+			this._agentDefinitionCache.set(agentId, agentDef);
+			return agentDef;
 		}
 
 		return undefined;

@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
+import { ILogService } from '../../platform/log/common/logService';
 import { IVSCodeExtensionContext } from '../../platform/extContext/common/extensionContext';
 import { IFileSystemService } from '../../platform/filesystem/common/fileSystemService';
 import { FileType } from '../../platform/filesystem/common/fileTypes';
@@ -124,32 +125,45 @@ export class UnifiedDefinitionService implements IUnifiedDefinitionService {
 
 	constructor(
 		@IFileSystemService private readonly fileSystemService: IFileSystemService,
-		@IVSCodeExtensionContext private readonly extensionContext: IVSCodeExtensionContext
-	) { }
+		@IVSCodeExtensionContext private readonly extensionContext: IVSCodeExtensionContext,
+		@ILogService private readonly logService: ILogService
+	) {
+		this.logService.info('[UnifiedDefinitionService] Service instantiated');
+	}
 
 	// =========================================================================
 	// Commands
 	// =========================================================================
 
 	async discoverCommands(): Promise<CommandDefinition[]> {
+		this.logService.info('[UnifiedDefinitionService] discoverCommands() called');
+
 		// Check cache
 		if (this._isCacheValid() && this._commandCache) {
+			this.logService.info(`[UnifiedDefinitionService] Returning ${this._commandCache.length} cached commands`);
 			return this._commandCache;
 		}
 
 		const commands: CommandDefinition[] = [];
 
 		// 1. Discover built-in commands
+		this.logService.info('[UnifiedDefinitionService] Discovering built-in commands...');
 		const builtinCommands = await this._discoverBuiltinCommands();
+		this.logService.info(`[UnifiedDefinitionService] Found ${builtinCommands.length} built-in commands`);
 		commands.push(...builtinCommands);
 
 		// 2. Discover repo commands (higher priority, can override built-in)
+		this.logService.info('[UnifiedDefinitionService] Discovering repo commands...');
 		const repoCommands = await this._discoverRepoCommands();
+		this.logService.info(`[UnifiedDefinitionService] Found ${repoCommands.length} repo commands`);
 		commands.push(...repoCommands);
 
 		// Deduplicate by ID (repo overrides built-in)
 		this._commandCache = this._deduplicateById(commands);
 		this._updateCacheTimestamp();
+
+		// Log discovery results
+		this.logService.info(`[UnifiedDefinitionService] ✅ Discovered ${this._commandCache.length} total commands: ${this._commandCache.map(c => c.id).join(', ')}`);
 
 		return this._commandCache;
 	}
@@ -167,7 +181,7 @@ export class UnifiedDefinitionService implements IUnifiedDefinitionService {
 			const entries = await this.fileSystemService.readDirectory(commandsDir);
 
 			for (const [name, type] of entries) {
-				if (type === FileType.File && name.endsWith('.command.md')) {
+				if (type === FileType.File && name.endsWith('.prompt.md')) {
 					const fileUri = URI.joinPath(commandsDir, name);
 					const content = await this._readFileAsString(fileUri);
 					if (content) {
@@ -195,7 +209,7 @@ export class UnifiedDefinitionService implements IUnifiedDefinitionService {
 
 		for (const folder of workspaceFolders) {
 			try {
-				const commandsDir = URI.joinPath(folder.uri, '.github', 'commands');
+				const commandsDir = URI.joinPath(folder.uri, '.github', 'prompts');
 				const stat = await this.fileSystemService.stat(commandsDir);
 				if (stat.type !== FileType.Directory) {
 					continue;
@@ -204,7 +218,7 @@ export class UnifiedDefinitionService implements IUnifiedDefinitionService {
 				const entries = await this.fileSystemService.readDirectory(commandsDir);
 
 				for (const [name, type] of entries) {
-					if (type === FileType.File && name.endsWith('.command.md')) {
+					if (type === FileType.File && name.endsWith('.prompt.md')) {
 						const fileUri = URI.joinPath(commandsDir, name);
 						const content = await this._readFileAsString(fileUri);
 						if (content) {
@@ -240,7 +254,7 @@ export class UnifiedDefinitionService implements IUnifiedDefinitionService {
 		}
 
 		// Derive command ID from filename
-		const id = this._deriveIdFromPath(path, '.command.md');
+		const id = this._deriveIdFromPath(path, '.prompt.md');
 
 		return {
 			id,
@@ -289,24 +303,34 @@ export class UnifiedDefinitionService implements IUnifiedDefinitionService {
 	// =========================================================================
 
 	async discoverAgents(): Promise<AgentDefinitionUnified[]> {
+		this.logService.info('[UnifiedDefinitionService] discoverAgents() called');
+
 		// Check cache
-		if (this._isCacheValid() && this._agentCache) {
+		/*if (this._isCacheValid() && this._agentCache) {
+			this.logService.info(`[UnifiedDefinitionService] Returning ${this._agentCache.length} cached agents`);
 			return this._agentCache;
-		}
+		}*/
 
 		const agents: AgentDefinitionUnified[] = [];
 
 		// 1. Discover built-in agents
+		this.logService.info('[UnifiedDefinitionService] Discovering built-in agents...');
 		const builtinAgents = await this._discoverBuiltinAgents();
+		this.logService.info(`[UnifiedDefinitionService] Found ${builtinAgents.length} built-in agents`);
 		agents.push(...builtinAgents);
 
 		// 2. Discover repo agents (higher priority, can override built-in)
+		this.logService.info('[UnifiedDefinitionService] Discovering repo agents...');
 		const repoAgents = await this._discoverRepoAgents();
+		this.logService.info(`[UnifiedDefinitionService] Found ${repoAgents.length} repo agents`);
 		agents.push(...repoAgents);
 
 		// Deduplicate by ID (repo overrides built-in)
 		this._agentCache = this._deduplicateById(agents);
 		this._updateCacheTimestamp();
+
+		// Log discovery results
+		this.logService.info(`[UnifiedDefinitionService] ✅ Discovered ${this._agentCache.length} total agents: ${this._agentCache.map(a => a.id).join(', ')}`);
 
 		return this._agentCache;
 	}
@@ -343,56 +367,109 @@ export class UnifiedDefinitionService implements IUnifiedDefinitionService {
 	}
 
 	private async _discoverRepoAgents(): Promise<AgentDefinitionUnified[]> {
+		this.logService.info('[UnifiedDefinitionService] _discoverRepoAgents() called');
 		const agents: AgentDefinitionUnified[] = [];
 		const workspaceFolders = vscode.workspace.workspaceFolders;
 
 		if (!workspaceFolders?.length) {
+			this.logService.info('[UnifiedDefinitionService] No workspace folders found');
 			return agents;
 		}
+
+		this.logService.info(`[UnifiedDefinitionService] Found ${workspaceFolders.length} workspace folder(s)`);
 
 		for (const folder of workspaceFolders) {
 			// Scan .github/agents/ directory
 			const agentsDir = URI.joinPath(folder.uri, '.github', 'agents');
+			this.logService.info(`[UnifiedDefinitionService] Scanning agents directory: ${agentsDir.fsPath}`);
 			await this._scanAgentsDirectory(agentsDir, agents);
 		}
 
+		this.logService.info(`[UnifiedDefinitionService] _discoverRepoAgents() returning ${agents.length} agents: ${agents.map(a => a.id).join(', ')}`);
 		return agents;
 	}
 
 	private async _scanAgentsDirectory(agentsDir: URI, agents: AgentDefinitionUnified[]): Promise<void> {
+		this.logService.info(`[UnifiedDefinitionService] _scanAgentsDirectory() called for: ${agentsDir.fsPath}`);
 		try {
 			const stat = await this.fileSystemService.stat(agentsDir);
+			this.logService.info(`[UnifiedDefinitionService] Directory stat type: ${stat.type}`);
+
 			if (stat.type !== FileType.Directory) {
+				this.logService.info(`[UnifiedDefinitionService] Not a directory, skipping`);
 				return;
 			}
 
 			const entries = await this.fileSystemService.readDirectory(agentsDir);
+			this.logService.info(`[UnifiedDefinitionService] Found ${entries.length} entries in directory`);
 
 			for (const [name, type] of entries) {
+				this.logService.info(`[UnifiedDefinitionService] Processing entry: ${name} (type: ${type})`);
+
 				if (type === FileType.Directory) {
-					// Legacy format: .github/agents/{name}/{name}.agent.md
-					const agentFile = URI.joinPath(agentsDir, name, `${name}.agent.md`);
-					const content = await this._readFileAsString(agentFile);
-					if (content) {
-						const agent = this._parseAgentFile(content, 'repo', agentFile.toString());
-						if (agent) {
-							agents.push(agent);
-						}
-					}
+					// Recursively scan subdirectory for *.agent.md files
+					const subdir = URI.joinPath(agentsDir, name);
+					this.logService.info(`[UnifiedDefinitionService] Scanning subdirectory: ${subdir.fsPath}`);
+					await this._scanAgentSubdirectory(subdir, agents);
 				} else if (type === FileType.File && name.endsWith('.agent.md')) {
-					// New format: .github/agents/*.agent.md
+					// Direct file: .github/agents/*.agent.md
+					this.logService.info(`[UnifiedDefinitionService] Found direct agent file: ${name}`);
 					const fileUri = URI.joinPath(agentsDir, name);
 					const content = await this._readFileAsString(fileUri);
+
 					if (content) {
+						this.logService.info(`[UnifiedDefinitionService] Read ${content.length} chars from ${name}`);
 						const agent = this._parseAgentFile(content, 'repo', fileUri.toString());
 						if (agent) {
+							this.logService.info(`[UnifiedDefinitionService] ✅ Successfully parsed agent: ${agent.id}`);
 							agents.push(agent);
+						} else {
+							this.logService.warn(`[UnifiedDefinitionService] ⚠️  Failed to parse agent from ${name}`);
 						}
+					} else {
+						this.logService.warn(`[UnifiedDefinitionService] ⚠️  Failed to read content from ${name}`);
 					}
 				}
 			}
-		} catch {
-			// .github/agents folder doesn't exist
+
+			this.logService.info(`[UnifiedDefinitionService] _scanAgentsDirectory() complete, total agents: ${agents.length}`);
+		} catch (error) {
+			this.logService.error(`[UnifiedDefinitionService] ❌ Error scanning agents directory ${agentsDir.fsPath}:`, error);
+		}
+	}
+
+	private async _scanAgentSubdirectory(subdir: URI, agents: AgentDefinitionUnified[]): Promise<void> {
+		this.logService.info(`[UnifiedDefinitionService] _scanAgentSubdirectory() called for: ${subdir.fsPath}`);
+		try {
+			const entries = await this.fileSystemService.readDirectory(subdir);
+			this.logService.info(`[UnifiedDefinitionService] Found ${entries.length} entries in subdirectory`);
+
+			for (const [name, type] of entries) {
+				this.logService.info(`[UnifiedDefinitionService] Subdirectory entry: ${name} (type: ${type})`);
+
+				if (type === FileType.File && name.endsWith('.agent.md')) {
+					this.logService.info(`[UnifiedDefinitionService] Found agent file in subdirectory: ${name}`);
+					const fileUri = URI.joinPath(subdir, name);
+					const content = await this._readFileAsString(fileUri);
+
+					if (content) {
+						this.logService.info(`[UnifiedDefinitionService] Read ${content.length} chars from ${name}`);
+						const agent = this._parseAgentFile(content, 'repo', fileUri.toString());
+						if (agent) {
+							this.logService.info(`[UnifiedDefinitionService] ✅ Successfully parsed agent from subdirectory: ${agent.id}`);
+							agents.push(agent);
+						} else {
+							this.logService.warn(`[UnifiedDefinitionService] ⚠️  Failed to parse agent from ${name}`);
+						}
+					} else {
+						this.logService.warn(`[UnifiedDefinitionService] ⚠️  Failed to read content from ${name}`);
+					}
+				}
+			}
+
+			this.logService.info(`[UnifiedDefinitionService] _scanAgentSubdirectory() complete for ${subdir.fsPath}`);
+		} catch (error) {
+			this.logService.error(`[UnifiedDefinitionService] ❌ Error scanning subdirectory ${subdir.fsPath}:`, error);
 		}
 	}
 
@@ -497,24 +574,34 @@ export class UnifiedDefinitionService implements IUnifiedDefinitionService {
 	// =========================================================================
 
 	async discoverSkills(): Promise<SkillMetadata[]> {
+		this.logService.info('[UnifiedDefinitionService] discoverSkills() called');
+
 		// Check cache
 		if (this._isCacheValid() && this._skillMetadataCache) {
+			this.logService.info(`[UnifiedDefinitionService] Returning ${this._skillMetadataCache.length} cached skills`);
 			return this._skillMetadataCache;
 		}
 
 		const skills: SkillMetadata[] = [];
 
 		// 1. Discover built-in skills
+		this.logService.info('[UnifiedDefinitionService] Discovering built-in skills...');
 		const builtinSkills = await this._discoverBuiltinSkills();
+		this.logService.info(`[UnifiedDefinitionService] Found ${builtinSkills.length} built-in skills`);
 		skills.push(...builtinSkills);
 
 		// 2. Discover repo skills (higher priority, can override built-in)
+		this.logService.info('[UnifiedDefinitionService] Discovering repo skills...');
 		const repoSkills = await this._discoverRepoSkills();
+		this.logService.info(`[UnifiedDefinitionService] Found ${repoSkills.length} repo skills`);
 		skills.push(...repoSkills);
 
 		// Deduplicate by ID (repo overrides built-in)
 		this._skillMetadataCache = this._deduplicateById(skills);
 		this._updateCacheTimestamp();
+
+		// Log discovery results
+		this.logService.info(`[UnifiedDefinitionService] ✅ Discovered ${this._skillMetadataCache.length} total skills: ${this._skillMetadataCache.map(s => s.id).join(', ')}`);
 
 		return this._skillMetadataCache;
 	}
@@ -599,10 +686,21 @@ export class UnifiedDefinitionService implements IUnifiedDefinitionService {
 
 			for (const [name, type] of entries) {
 				if (type === FileType.File && name.endsWith('.skill.md')) {
+					// Legacy format: *.skill.md files directly in skills directory
 					const fileUri = URI.joinPath(skillsDir, name);
 					const content = await this._readFileAsString(fileUri);
 					if (content) {
 						const skill = this._parseSkillMetadata(content, source, fileUri.toString());
+						if (skill) {
+							skills.push(skill);
+						}
+					}
+				} else if (type === FileType.Directory) {
+					// New format: skills/{skill-name}/SKILL.md
+					const skillFile = URI.joinPath(skillsDir, name, 'SKILL.md');
+					const content = await this._readFileAsString(skillFile);
+					if (content) {
+						const skill = this._parseSkillMetadata(content, source, skillFile.toString());
 						if (skill) {
 							skills.push(skill);
 						}
@@ -660,8 +758,9 @@ export class UnifiedDefinitionService implements IUnifiedDefinitionService {
 			return undefined;
 		}
 
-		// Derive skill ID from filename
-		const id = this._deriveIdFromPath(path, '.skill.md');
+		// Use the name from frontmatter as the skill ID
+		// The filename can be anything (SKILL.md, {name}.skill.md, etc.)
+		const id = name.toLowerCase();
 
 		return {
 			id,
@@ -732,6 +831,11 @@ export class UnifiedDefinitionService implements IUnifiedDefinitionService {
 		const parts = path.replace(/\\/g, '/').split('/');
 		const filename = parts.pop() || '';
 		return filename.replace(suffix, '').toLowerCase();
+	}
+
+	// Alias for backward compatibility
+	private _deriveCommandIdFromPath(path: string): string {
+		return this._deriveIdFromPath(path, '.prompt.md');
 	}
 
 	private _stripQuotes(value: string): string {

@@ -1787,6 +1787,25 @@
 					"properties": {},
 					"required": []
 				}
+			},
+			{
+				"name": "copilot_loadSkill",
+				"toolReferenceName": "load_skill",
+				"displayName": "Load Skill",
+				"modelDescription": "Load domain-specific skill content to gain specialized knowledge and capabilities for a particular domain (e.g., 'typescript-patterns', 'rails-conventions'). Skills provide detailed instructions, best practices, and examples for specific technologies or methodologies.",
+				"userDescription": "Load a skill module for domain-specific knowledge",
+				"icon": "$(book)",
+				"tags": [],
+				"inputSchema": {
+					"type": "object",
+					"properties": {
+						"skillId": {
+							"type": "string",
+							"description": "The ID of the skill to load (e.g., 'typescript-patterns', 'dhh-rails-style')"
+						}
+					},
+					"required": ["skillId"]
+				}
 			}
 		],
 		"languageModelToolSets": [
@@ -1818,7 +1837,8 @@
 					"getNotebookSummary",
 					"problems",
 					"readFile",
-					"readNotebookCellOutput"
+					"readNotebookCellOutput",
+					"load_skill"
 				]
 			},
 			{

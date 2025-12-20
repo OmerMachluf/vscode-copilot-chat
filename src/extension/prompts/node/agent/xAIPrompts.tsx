@@ -102,6 +102,14 @@ class DefaultGrokCodeFastAgentPrompt extends PromptElement<DefaultAgentPromptPro
 				].join('\n')}
 			</Tag>}
 			{this.props.availableTools && <McpToolInstructions tools={this.props.availableTools} />}
+			{this.props.availableSkills && this.props.availableSkills.length > 0 && (
+				<Tag name='skillsAvailable'>
+					You have access to specialized skill modules that provide domain-specific knowledge and capabilities. Available skills:<br />
+					{this.props.availableSkills.map(skill => `- **${skill.name}** (${skill.id}): ${skill.description}`).join('\n')}<br />
+					<br />
+					To use a skill, call the loadSkill tool with the skill ID. The skill will be loaded into your context and provide specialized instructions, examples, and capabilities for that domain.
+				</Tag>
+			)}
 			<NotebookInstructions {...this.props} />
 			<Tag name='outputFormatting'>
 				Use proper Markdown formatting. When referring to symbols (classes, methods, variables) in user's workspace wrap in backticks. For file paths and line number rules, see fileLinkification section below<br />

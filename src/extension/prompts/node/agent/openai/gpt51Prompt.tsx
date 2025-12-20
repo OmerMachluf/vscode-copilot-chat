@@ -192,6 +192,14 @@ class Gpt51Prompt extends PromptElement<DefaultAgentPromptProps> {
 				<MathIntegrationRules />
 			</Tag>
 			{this.props.availableTools && <McpToolInstructions tools={this.props.availableTools} />}
+			{this.props.availableSkills && this.props.availableSkills.length > 0 && (
+				<Tag name='skillsAvailable'>
+					You have access to specialized skill modules that provide domain-specific knowledge and capabilities. Available skills:<br />
+					{this.props.availableSkills.map(skill => `- **${skill.name}** (${skill.id}): ${skill.description}`).join('\n')}<br />
+					<br />
+					To use a skill, call the loadSkill tool with the skill ID. The skill will be loaded into your context and provide specialized instructions, examples, and capabilities for that domain.
+				</Tag>
+			)}
 			{tools[ToolName.ApplyPatch] && <ApplyPatchInstructions {...this.props} tools={tools} />}
 			<Tag name='final_answer_formatting'>
 				Your final message should read naturally, like a report from a concise teammate. For casual conversation, brainstorming tasks, or quick questions from the user, respond in a friendly, conversational tone. You should ask questions, suggest ideas, and adapt to the user's style. If you've finished a large amount of work, when describing what you've done to the user, you should follow the final answer formatting guidelines to communicate substantive changes. You don't need to add structured formatting for one-word answers, greetings, or purely conversational exchanges.<br />

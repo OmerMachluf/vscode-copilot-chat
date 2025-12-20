@@ -24,6 +24,7 @@ import { GitHubMcpDefinitionProvider } from '../../../githubMcp/common/githubMcp
 import { IAgentDiscoveryService } from '../../../orchestrator/agentDiscoveryService';
 import { IUnifiedDefinitionService } from '../../../orchestrator/unifiedDefinitionService';
 import { IClaudeCommandService } from '../../../orchestrator/claudeCommandService';
+import { IPluginGenerationService } from '../../../orchestrator/pluginGenerationService';
 import { ISubTaskManager } from '../../../orchestrator/orchestratorInterfaces';
 import { IOrchestratorService } from '../../../orchestrator/orchestratorServiceV2';
 import { ISafetyLimitsService } from '../../../orchestrator/safetyLimits';
@@ -128,10 +129,21 @@ export class ClaudeAgentManager extends Disposable implements IClaudeAgentManage
 		@ILogService private readonly logService: ILogService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IClaudeCommandService private readonly claudeCommandService: IClaudeCommandService,
+		@IPluginGenerationService private readonly pluginGenerationService: IPluginGenerationService,
 	) {
 		super();
 		// Initialize the command service for watching .claude/commands/
 		this.claudeCommandService.initialize();
+		// Generate plugin on initialization
+		this.pluginGenerationService.generatePlugin().then(result => {
+			if (result.success) {
+				this.logService.info(`[ClaudeAgentManager] Plugin generated successfully at ${result.pluginPath}`);
+			} else {
+				this.logService.error(`[ClaudeAgentManager] Plugin generation failed: ${result.error}`);
+			}
+		}).catch(err => {
+			this.logService.error(`[ClaudeAgentManager] Plugin generation error: ${err instanceof Error ? err.message : String(err)}`);
+		});
 	}
 
 	/**
@@ -302,8 +314,13 @@ export class ClaudeAgentManager extends Disposable implements IClaudeAgentManage
 				// Prepend the command instructions to the prompt
 				// this.logService.trace(`[ClaudeAgentManager] Resolved custom command: /${commandName}`);
 				prompt = `<command-instructions name="${commandName}">\n${commandContent}\n</command-instructions>\n\n${args || ''}`;
+			} else {
+				// Not found as custom command - prefix with plugin name for Claude SDK
+				// Commands in the plugin need to be invoked as /copilot-unified:command-name
+				const pluginPrefix = 'copilot-unified';
+				prompt = `/${pluginPrefix}:${commandName}${args ? ' ' + args : ''}`;
+				// this.logService.trace(`[ClaudeAgentManager] Prefixed command with plugin name: ${prompt}`);
 			}
-			// If not found as custom command, pass through as-is (Claude CLI handles built-in commands)
 			return prompt;
 		}
 
@@ -398,6 +415,7 @@ export class ClaudeCodeSession extends Disposable {
 		@ITaskMonitorService private readonly taskMonitorService: ITaskMonitorService,
 		@IAuthenticationService private readonly authenticationService: IAuthenticationService,
 		@IUnifiedDefinitionService private readonly unifiedDefinitionService: IUnifiedDefinitionService,
+		@IPluginGenerationService private readonly pluginGenerationService: IPluginGenerationService,
 	) {
 		super();
 	}
@@ -703,7 +721,17 @@ export class ClaudeCodeSession extends Disposable {
 				preset: 'claude_code',
 				append: 'Your responses will be rendered as markdown, so please reply with properly formatted markdown when appropriate. When replying with code or the name of a symbol, wrap it in backticks.'
 			},
+
 			settingSources: ['user', 'project', 'local'],
+			// Inject plugin with agents, commands, and skills from unified definition service
+			plugins: (() => {
+				const pluginPath = this.pluginGenerationService.getPluginPath();
+				if (pluginPath) {
+					this.logService.info(`[ClaudeCodeSession] Loading plugin from: ${pluginPath}`);
+					return [{ type: 'local' as const, path: pluginPath }];
+				}
+				return undefined;
+			})(),
 			// Inject agents from unified definition service
 			...(agentCount > 0 && { agents }),
 			...(isDebugEnabled && {

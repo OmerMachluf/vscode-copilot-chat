@@ -96,6 +96,14 @@ class DefaultAnthropicAgentPrompt extends PromptElement<DefaultAgentPromptProps>
 			</Tag>}
 			{this.props.availableTools && <McpToolInstructions tools={this.props.availableTools} />}
 			<NotebookInstructions {...this.props} />
+			{this.props.availableSkills && this.props.availableSkills.length > 0 && (
+				<Tag name='skillsAvailable'>
+					You have access to specialized skill modules that provide domain-specific knowledge and capabilities. Available skills:<br />
+					{this.props.availableSkills.map(skill => `- **${skill.name}** (${skill.id}): ${skill.description}`).join('\n')}<br />
+					<br />
+					To use a skill, call the loadSkill tool with the skill ID. The skill will be loaded into your context and provide specialized instructions, examples, and capabilities for that domain.
+				</Tag>
+			)}
 			<Tag name='outputFormatting'>
 				Use proper Markdown formatting. When referring to symbols (classes, methods, variables) in user's workspace wrap in backticks. For file paths and line number rules, see fileLinkification section<br />
 				<FileLinkificationInstructions />
@@ -188,6 +196,14 @@ class Claude45DefaultPrompt extends PromptElement<DefaultAgentPromptProps> {
 			</Tag>
 			{this.props.availableTools && <McpToolInstructions tools={this.props.availableTools} />}
 			<NotebookInstructions {...this.props} />
+			{this.props.availableSkills && this.props.availableSkills.length > 0 && (
+				<Tag name='skillsAvailable'>
+					You have access to specialized skill modules that provide domain-specific knowledge and capabilities. Available skills:<br />
+					{this.props.availableSkills.map(skill => `- **${skill.name}** (${skill.id}): ${skill.description}`).join('\n')}<br />
+					<br />
+					To use a skill, call the loadSkill tool with the skill ID. The skill will be loaded into your context and provide specialized instructions, examples, and capabilities for that domain.
+				</Tag>
+			)}
 			<Tag name='outputFormatting'>
 				Use proper Markdown formatting:
 				- Wrap symbol names (classes, methods, variables) in backticks: `MyClass`, `handleClick()`<br />

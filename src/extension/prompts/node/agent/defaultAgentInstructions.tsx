@@ -42,6 +42,7 @@ export interface DefaultAgentPromptProps extends BasePromptElementProps {
 	readonly availableTools: readonly LanguageModelToolInformation[] | undefined;
 	readonly modelFamily: string | undefined;
 	readonly codesearchMode: boolean | undefined;
+	readonly availableSkills?: readonly { id: string; name: string; description: string }[];
 }
 
 export interface ToolReferencesHintProps extends BasePromptElementProps {
@@ -126,6 +127,14 @@ export class DefaultAgentPrompt extends PromptElement<DefaultAgentPromptProps> {
 				{tools[ToolName.CoreRunInTerminal] && <>NEVER print out a codeblock with a terminal command to run unless the user asked for it. Use the {ToolName.CoreRunInTerminal} tool instead.<br /></>}
 				You don't need to read a file if it's already provided in context.
 			</Tag>
+			{this.props.availableSkills && this.props.availableSkills.length > 0 && (
+				<Tag name='skillsAvailable'>
+					You have access to specialized skill modules that provide domain-specific knowledge and capabilities. Available skills:<br />
+					{this.props.availableSkills.map(skill => `- **${skill.name}** (${skill.id}): ${skill.description}`).join('\n')}<br />
+					<br />
+					To use a skill, call the loadSkill tool with the skill ID. The skill will be loaded into your context and provide specialized instructions, examples, and capabilities for that domain.
+				</Tag>
+			)}
 			<Tag name='toolUseInstructions'>
 				If the user is requesting a code sample, you can answer it directly without using any tools.<br />
 				When using a tool, follow the JSON schema very carefully and make sure to include ALL required properties.<br />
@@ -360,6 +369,14 @@ export class AlternateGPTPrompt extends PromptElement<DefaultAgentPromptProps> {
 						When sharing setup or run steps for the user to execute, render commands in fenced code blocks with an appropriate language tag (`bash`, `sh`, `powershell`, `python`, etc.). Keep one command per line; avoid prose-only representations of commands.<br />
 					</>}
 					Keep responses conversational and fun—use a brief, friendly preamble that acknowledges the goal and states what you're about to do next. Avoid literal scaffold labels like "Plan:", "Task receipt:", or "Actions:"; instead, use short paragraphs and, when helpful, concise bullet lists. Do not start with filler acknowledgements (e.g., "Sounds good", "Great", "Okay, I will…"). For multi-step tasks, maintain a lightweight checklist implicitly and weave progress into your narration.<br />
+					{this.props.availableSkills && this.props.availableSkills.length > 0 && (
+						<Tag name='skillsAvailable'>
+							You have access to specialized skill modules that provide domain-specific knowledge and capabilities. Available skills:<br />
+							{this.props.availableSkills.map(skill => `- **${skill.name}** (${skill.id}): ${skill.description}`).join('\n')}<br />
+							<br />
+							To use a skill, call the loadSkill tool with the skill ID. The skill will be loaded into your context and provide specialized instructions, examples, and capabilities for that domain.
+						</Tag>
+					)}
 					For section headers in your response, use level-2 Markdown headings (`##`) for top-level sections and level-3 (`###`) for subsections. Choose titles dynamically to match the task and content. Do not hard-code fixed section names; create only the sections that make sense and only when they have non-empty content. Keep headings short and descriptive (e.g., "actions taken", "files changed", "how to run", "performance", "notes"), and order them naturally (actions &gt; artifacts &gt; how to run &gt; performance &gt; notes) when applicable. You may add a tasteful emoji to a heading when it improves scannability; keep it minimal and professional. Headings must start at the beginning of the line with `## ` or `### `, have a blank line before and after, and must not be inside lists, block quotes, or code fences.<br />
 					When listing files created/edited, include a one-line purpose for each file when helpful. In performance sections, base any metrics on actual runs from this session; note the hardware/OS context and mark estimates clearly—never fabricate numbers. In "Try it" sections, keep commands copyable; comments starting with `#` are okay, but put each command on its own line.<br />
 					If platform-specific acceleration applies, include an optional speed-up fenced block with commands. Close with a concise completion summary describing what changed and how it was verified (build/tests/linters), plus any follow-ups.<br />

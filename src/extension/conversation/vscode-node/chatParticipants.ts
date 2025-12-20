@@ -11,6 +11,7 @@ import { ConfigKey, IConfigurationService } from '../../../platform/configuratio
 import { IEndpointProvider } from '../../../platform/endpoint/common/endpointProvider';
 import { IVSCodeExtensionContext } from '../../../platform/extContext/common/extensionContext';
 import { IOctoKitService } from '../../../platform/github/common/githubService';
+import { ILogService } from '../../../platform/log/common/logService';
 import { IExperimentationService } from '../../../platform/telemetry/common/nullExperimentationService';
 import { Event, Relay } from '../../../util/vs/base/common/event';
 import { DisposableStore, IDisposable } from '../../../util/vs/base/common/lifecycle';
@@ -19,6 +20,7 @@ import { URI } from '../../../util/vs/base/common/uri';
 import { IInstantiationService } from '../../../util/vs/platform/instantiation/common/instantiation';
 import { ChatRequest } from '../../../vscodeTypes';
 import { Intent, agentsToCommands } from '../../common/constants';
+import { IAgentDiscoveryService } from '../../orchestrator/agentDiscoveryService';
 import { WorkerDashboardProviderV2 } from '../../orchestrator/dashboard/WorkerDashboardV2';
 import { IOrchestratorService } from '../../orchestrator/orchestratorServiceV2';
 import { ChatParticipantRequestHandler } from '../../prompt/node/chatParticipantRequestHandler';
@@ -35,14 +37,30 @@ export class ChatAgentService implements IChatAgentService {
 
 	constructor(
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@IAgentDiscoveryService private readonly agentDiscoveryService: IAgentDiscoveryService,
+		@ILogService private readonly logService: ILogService,
 	) { }
 	public debugGetCurrentChatAgents(): ChatAgents | undefined {
 		return this._lastChatAgents;
 	}
 
 	register(): IDisposable {
+		this.logService.info('[ChatAgentService] Starting registration process...');
+
 		const chatAgents = this.instantiationService.createInstance(ChatAgents);
-		chatAgents.register();
+
+		// Wait for agents to be preloaded, THEN register
+		// AgentDiscoveryService preloads agents in constructor, so this should resolve quickly
+		this.agentDiscoveryService.getAvailableAgents().then(async () => {
+			this.logService.info('[ChatAgentService] Agents ready - registering all participants now');
+			await chatAgents.register();
+			this.logService.info('[ChatAgentService] ✅ All agents registered and ready');
+		}).catch(async err => {
+			this.logService.error('[ChatAgentService] Failed to load agents:', err);
+			// Register anyway with whatever we have
+			await chatAgents.register();
+		});
+
 		this._lastChatAgents = chatAgents;
 		return {
 			dispose: () => {
@@ -71,14 +89,22 @@ class ChatAgents implements IDisposable {
 		@IExperimentationService private readonly experimentationService: IExperimentationService,
 		@IOrchestratorService private readonly orchestratorService: IOrchestratorService,
 		@IVSCodeExtensionContext private readonly extensionContext: IVSCodeExtensionContext,
+		@IAgentDiscoveryService private readonly agentDiscoveryService: IAgentDiscoveryService,
+		@ILogService private readonly logService: ILogService,
 	) { }
 
 	dispose() {
 		this._disposables.dispose();
 	}
 	// OMERM TODO2 : what the fuck is editor default agent mayube root of issues
-	register(): void {
+	async register(): Promise<void> {
 		this.additionalWelcomeMessage = this.instantiationService.invokeFunction(getAdditionalWelcomeMessage);
+
+		// CRITICAL: Register discovered agents FIRST, before any other agents
+		// This ensures all agents are available when VS Code builds the @ participant list
+		await this.registerDiscoveredAgentsSync();
+
+		// Now register all built-in agents
 		this._disposables.add(this.registerDefaultAgent());
 		this._disposables.add(this.registerEditingAgent());
 		this._disposables.add(this.registerEditingAgent2());
@@ -96,6 +122,43 @@ class ChatAgents implements IDisposable {
 		this._disposables.add(this.registerVSCodeAgent());
 		this._disposables.add(this.registerTerminalAgent());
 		this._disposables.add(this.registerTerminalPanelAgent());
+
+		this.logService.info('[ChatAgents] All agents registered successfully');
+	}
+
+	private async registerDiscoveredAgentsSync(): Promise<void> {
+		this.logService.info('[ChatAgents] Registering dynamically discovered agents...');
+
+		try {
+			// Get agents - should be cached by now since ChatAgentService preloaded them
+			const agents = await this.agentDiscoveryService.getAvailableAgents();
+			const customAgents = agents.filter(a => a.source === 'repo');
+			this.logService.info(`[ChatAgents] Found ${customAgents.length} custom agents to register: ${customAgents.map(a => a.id).join(', ')}`);
+
+			for (const agentInfo of customAgents) {
+				try {
+					this.logService.info(`[ChatAgents] Registering agent: ${agentInfo.id} (id: github.copilot.${agentInfo.id})`);
+
+					// Create the agent with the discovered name
+					// Use Intent.Agent (generic agent intent) for dynamically discovered agents
+					const agent = this.createAgent(agentInfo.id, Intent.Agent);
+					agent.iconPath = new vscode.ThemeIcon('symbol-method');
+
+					if (agentInfo.description) {
+						agent.description = agentInfo.description;
+					}
+
+					this._disposables.add(agent);
+					this.logService.info(`[ChatAgents] ✅ Successfully registered: @${agentInfo.id}`);
+				} catch (error) {
+					this.logService.error(`[ChatAgents] ❌ Failed to register ${agentInfo.id}:`, error);
+				}
+			}
+
+			this.logService.info(`[ChatAgents] Registration complete. Total custom agents: ${customAgents.length}`);
+		} catch (error) {
+			this.logService.error('[ChatAgents] Failed to discover agents:', error);
+		}
 	}
 
 	private createAgent(name: string, defaultIntentIdOrGetter: IntentOrGetter, options?: { id?: string }): vscode.ChatParticipant {
