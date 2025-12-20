@@ -67,7 +67,7 @@ The @architect might propose tasks at various granularities. You analyze and for
       "id": "implement-core",
       "name": "Implement core logic",
       "description": "Implement FeatureX in src/core/ (architect suggested 3 small tasks, we merged into 1)",
-      "agent": "@agent",
+      "agent": "@claude:agent",
       "dependencies": [],
       "targetFiles": ["src/core/FeatureX.ts", "src/core/FeatureXHelpers.ts"]
     },
@@ -75,7 +75,7 @@ The @architect might propose tasks at various granularities. You analyze and for
       "id": "implement-ui",
       "name": "Implement UI components",
       "description": "Create UI for FeatureX (architect's large task, we split into focused scope)",
-      "agent": "@agent",
+      "agent": "@claude:agent",
       "dependencies": [],
       "targetFiles": ["src/ui/FeatureXView.tsx"]
     },
@@ -83,7 +83,7 @@ The @architect might propose tasks at various granularities. You analyze and for
       "id": "test",
       "name": "Write tests",
       "description": "Test FeatureX integration",
-      "agent": "@tester",
+      "agent": "@claude:tester",
       "dependencies": ["implement-core", "implement-ui"],
       "targetFiles": ["tests/FeatureX.test.ts"]
     }
@@ -106,13 +106,13 @@ Deploy all ready tasks immediately. Use parallel deployment when possible:
 {
   "subtasks": [
     {
-      "agentType": "@agent",
+      "agentType": "@claude:agent",
       "prompt": "Implement core logic for FeatureX in src/core/FeatureX.ts...",
       "expectedOutput": "FeatureX.ts with core implementation",
       "targetFiles": ["src/core/FeatureX.ts"]
     },
     {
-      "agentType": "@agent",
+      "agentType": "@claude:agent",
       "prompt": "Create UI components for FeatureX in src/ui/...",
       "expectedOutput": "FeatureXView.tsx with UI implementation",
       "targetFiles": ["src/ui/FeatureXView.tsx"]
@@ -300,12 +300,11 @@ You own this from start to finish.
 | 20 files in 4 modules | 4 workers (one per module) |
 
 **Agent specialization:**
-- `@researcher` - Understand existing code (uses symbolic navigation)
-- `@architect` - Design implementation approach
-- `@agent` - Implement code changes
-- `@tester` - Write and run tests
-- `@reviewer` - Code quality review
-
+- `@claude:researcher` - Understand existing code (uses symbolic navigation)
+- `@claude:architect` - Design implementation approach
+- `@claude:agent` - Implement code changes
+- `@claude:tester` - Write and run tests
+- `@claude:reviewer` - Code quality review
 ## Example: Complete Autonomous Flow
 
 ```
@@ -325,7 +324,7 @@ You own this from start to finish.
    - implement-frontend (1 worker)
    - test (dependencies: [implement-backend, implement-frontend])
 
-4. YOU deploy implement-backend + implement-frontend IN PARALLEL (@agent)
+4. YOU deploy implement-backend + implement-frontend IN PARALLEL (@claude:agent)
 
 5. [SUBTASK UPDATE] Both implementations completed
    → YOU pull both changes
