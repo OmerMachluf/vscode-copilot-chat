@@ -682,6 +682,11 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 		}));
 		// Note: We do NOT immediately forward on onUpdatesAvailable - updates stay queued
 		// until the parent worker goes idle, then they're automatically injected
+
+		// CRITICAL FIX: Start periodic check for idle orchestrators (every 10 minutes)
+		// If all tasks in a plan are idle/completed and no task is running, wake up the orchestrator
+		this._startOrchestratorIdleCheck();
+
 		this._orchLog('OrchestratorService initialized');
 	}
 
@@ -692,6 +697,109 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 	private _orchLog(message: string, data?: Record<string, unknown>): void {
 		const dataStr = data ? ` | ${JSON.stringify(data)}` : '';
 		this._logService.info(`[ORCH-DEBUG][Orchestrator] ${message}${dataStr}`);
+	}
+
+	/**
+	 * CRITICAL FIX: Start periodic check for idle orchestrators.
+	 * Every 10 minutes, check if any plan has all tasks idle/completed with no running tasks.
+	 * If so, wake up the orchestrator worker to understand what's going on.
+	 */
+	private _startOrchestratorIdleCheck(): void {
+		const CHECK_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+
+		const intervalId = setInterval(() => {
+			this._checkIdleOrchestrators();
+		}, CHECK_INTERVAL_MS);
+
+		// Register for cleanup on dispose
+		this._register({
+			dispose: () => {
+				clearInterval(intervalId);
+			}
+		});
+
+		this._orchLog('Started orchestrator idle check', { intervalMs: CHECK_INTERVAL_MS });
+	}
+
+	/**
+	 * Check all plans for idle state (all tasks completed/idle, no active workers).
+	 * Wake up any orchestrator workers that might be stuck waiting.
+	 */
+	private _checkIdleOrchestrators(): void {
+		this._orchLog('Running periodic orchestrator idle check');
+
+		for (const plan of this._plans) {
+			// Only check active plans
+			if (plan.status !== 'active') {
+				continue;
+			}
+
+			const planTasks = this._tasks.filter(t => t.planId === plan.id);
+			if (planTasks.length === 0) {
+				continue;
+			}
+
+			// Check if all tasks are in terminal/idle state
+			const hasRunningTask = planTasks.some(t => t.status === 'running' || t.status === 'queued');
+			const allTasksSettled = planTasks.every(t =>
+				t.status === 'completed' || t.status === 'failed' || t.status === 'blocked'
+			);
+
+			if (!hasRunningTask && allTasksSettled) {
+				this._orchLog('DETECTED IDLE PLAN - All tasks settled but plan still active', {
+					planId: plan.id,
+					planName: plan.name,
+					taskCount: planTasks.length,
+					taskStatuses: planTasks.map(t => ({ id: t.id, status: t.status })),
+				});
+
+				// Find orchestrator worker for this plan (if any)
+				const orchestratorWorker = Array.from(this._workers.values()).find(w => {
+					const task = this._tasks.find(t => t.workerId === w.id);
+					return task?.planId === plan.id;
+				});
+
+				if (orchestratorWorker) {
+					this._orchLog('Waking up idle orchestrator worker', {
+						planId: plan.id,
+						workerId: orchestratorWorker.id,
+					});
+
+					// Wake up the orchestrator by sending a clarification
+					const wakeUpMessage = `
+## Orchestrator Wake-Up: Plan Status Check
+
+**All tasks in your plan have reached a terminal state.** This is a periodic health check to ensure you're aware.
+
+**Current Plan Status:**
+- Plan: ${plan.name}
+- Total Tasks: ${planTasks.length}
+- Completed: ${planTasks.filter(t => t.status === 'completed').length}
+- Failed: ${planTasks.filter(t => t.status === 'failed').length}
+- Blocked: ${planTasks.filter(t => t.status === 'blocked').length}
+
+**What to do next:**
+1. Review the status of all tasks
+2. If all work is complete, consider closing the plan
+3. If there are remaining tasks, check why they're not executing
+4. If subtasks completed but you weren't notified, check for pending updates
+
+**This is an automatic health check that runs every 10 minutes when all tasks are idle/completed.**
+`;
+
+					orchestratorWorker.sendClarification(wakeUpMessage);
+
+					this._orchLog('Sent wake-up clarification to orchestrator', {
+						planId: plan.id,
+						workerId: orchestratorWorker.id,
+					});
+				} else {
+					this._orchLog('No orchestrator worker found for idle plan', {
+						planId: plan.id,
+					});
+				}
+			}
+		}
 	}
 
 	/**

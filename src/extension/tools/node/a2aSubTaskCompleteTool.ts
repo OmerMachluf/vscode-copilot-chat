@@ -9,6 +9,7 @@ import { ILogService } from '../../../platform/log/common/logService';
 import { generateUuid } from '../../../util/vs/base/common/uuid';
 import { IOrchestratorQueueService } from '../../orchestrator/orchestratorQueue';
 import { ISubTaskManager, ISubTaskResult } from '../../orchestrator/subTaskManager';
+import { ITaskMonitorService } from '../../orchestrator/taskMonitorService';
 import { IWorkerContext } from '../../orchestrator/workerToolsService';
 import { ToolName } from '../common/toolNames';
 import { ICopilotTool, ToolRegistry } from '../common/toolsRegistry';
@@ -49,6 +50,7 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 	constructor(
 		@ISubTaskManager private readonly _subTaskManager: ISubTaskManager,
 		@IOrchestratorQueueService private readonly _queueService: IOrchestratorQueueService,
+		@ITaskMonitorService private readonly _taskMonitorService: ITaskMonitorService,
 		@IWorkerContext private readonly _workerContext: IWorkerContext,
 		@ILogService private readonly _logService: ILogService,
 	) { }
@@ -180,6 +182,8 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 				planId: this._workerContext.planId ?? 'standalone',
 			});
 
+			// CRITICAL FIX: Queue completion message for orchestrator task status update
+			// This marks the task as completed in the plan
 			this._queueService.enqueueMessage({
 				id: messageId,
 				timestamp: Date.now(),
@@ -195,6 +199,43 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 			});
 
 			this._log('Completion message enqueued successfully', { subTaskId, messageId, targetDescription });
+
+			// CRITICAL FIX: Also notify parent via TaskMonitorService (like progress checks do)
+			// This ensures the parent worker gets woken up immediately with completion notification
+			const ownerContext = this._workerContext.owner;
+			const isChildWorker = ownerContext && ownerContext.ownerType === 'worker';
+			const parentWorkerId = isChildWorker ? ownerContext.ownerId : undefined;
+
+			if (parentWorkerId) {
+				this._log('NOTIFYING PARENT via TaskMonitorService', {
+					subTaskId,
+					parentWorkerId,
+					status: status === 'success' ? 'completed' : 'failed',
+				});
+
+				// Queue the completion update (same pattern as progress checks)
+				this._taskMonitorService.queueUpdate({
+					type: status === 'success' ? 'completed' : 'failed',
+					subTaskId: subTaskId,
+					parentWorkerId: parentWorkerId,
+					result: result,
+					timestamp: Date.now(),
+				});
+
+				this._log('*** COMPLETION UPDATE QUEUED FOR PARENT (via TaskMonitorService) ***', {
+					subTaskId,
+					parentWorkerId,
+					status: status === 'success' ? 'completed' : 'failed',
+				});
+
+				// NOTE: The orchestrator will deliver this update to the parent when:
+				// 1. Parent goes idle (via _handleIdleWorker)
+				// 2. Parent gets a progress check (via _handleProgressCheck)
+				// 3. Parent completes and checks for pending updates
+				// This ensures parent is notified reliably, matching progress check behavior.
+			} else {
+				this._log('No parent worker (orchestrator-deployed task)', { subTaskId });
+			}
 
 			return new LanguageModelToolResult([
 				new LanguageModelTextPart(`Sub-task completion recorded and ${targetDescription} notified.`),
