@@ -1,5 +1,6 @@
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, memo } from 'react';
 import { ChatMessage } from '@/api';
+import { MarkdownRenderer } from './MarkdownRenderer';
 
 export interface MessageListProps {
   /** Messages to display */
@@ -15,8 +16,9 @@ interface MessageBubbleProps {
   isStreaming?: boolean;
 }
 
-function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
+const MessageBubble = memo(function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
   const isUser = message.role === 'user';
+  const isError = message.content.startsWith('Error:');
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -24,12 +26,27 @@ function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
         className={`max-w-3xl px-4 py-3 rounded-lg ${
           isUser
             ? 'bg-primary-600 text-white'
-            : 'bg-white text-gray-900 shadow-sm border border-gray-100'
+            : isError
+              ? 'bg-red-50 text-red-900 shadow-sm border border-red-200'
+              : 'bg-white text-gray-900 shadow-sm border border-gray-100'
         }`}
       >
         {!isUser && (
-          <div className="flex items-center mb-1">
-            <span className="text-xs font-medium text-primary-600">
+          <div className="flex items-center mb-2">
+            <div className={`w-6 h-6 rounded-full flex items-center justify-center ${
+              isError ? 'bg-red-100' : 'bg-primary-100'
+            }`}>
+              {isError ? (
+                <svg className="w-4 h-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+              )}
+            </div>
+            <span className={`ml-2 text-xs font-medium ${isError ? 'text-red-600' : 'text-primary-600'}`}>
               Copilot
             </span>
             {isStreaming && (
@@ -39,32 +56,45 @@ function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
             )}
           </div>
         )}
-        <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
-          {message.content}
-        </pre>
+        {isUser ? (
+          <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
+            {message.content}
+          </pre>
+        ) : (
+          <MarkdownRenderer content={message.content} />
+        )}
+        {message.timestamp && (
+          <div className={`mt-2 text-xs ${isUser ? 'text-primary-200' : 'text-gray-400'}`}>
+            {new Date(message.timestamp).toLocaleTimeString()}
+          </div>
+        )}
       </div>
     </div>
   );
-}
+});
 
-function StreamingMessage({ content }: { content: string }) {
+const StreamingMessage = memo(function StreamingMessage({ content }: { content: string }) {
   return (
     <div className="flex justify-start">
       <div className="max-w-3xl px-4 py-3 rounded-lg bg-white text-gray-900 shadow-sm border border-gray-100">
-        <div className="flex items-center mb-1">
-          <span className="text-xs font-medium text-primary-600">Copilot</span>
-          <span className="ml-2 flex items-center">
+        <div className="flex items-center mb-2">
+          <div className="w-6 h-6 rounded-full bg-primary-100 flex items-center justify-center">
+            <svg className="w-4 h-4 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+          </div>
+          <span className="ml-2 text-xs font-medium text-primary-600">Copilot</span>
+          <span className="ml-2 flex items-center gap-1">
             <span className="w-1.5 h-1.5 bg-primary-500 rounded-full animate-pulse" />
+            <span className="text-xs text-gray-400">Streaming...</span>
           </span>
         </div>
-        <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
-          {content}
-          <span className="inline-block w-2 h-4 bg-gray-400 animate-pulse ml-0.5" />
-        </pre>
+        <MarkdownRenderer content={content} />
+        <span className="inline-block w-2 h-4 bg-primary-400 animate-pulse ml-0.5 rounded-sm" />
       </div>
     </div>
   );
-}
+});
 
 function LoadingIndicator() {
   return (

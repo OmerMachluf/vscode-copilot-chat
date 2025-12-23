@@ -7,3 +7,9 @@ export type { UseChatOptions, UseChatResult } from './useChat';
 
 export { useConnectionStatus } from './useConnectionStatus';
 export type { UseConnectionStatusResult } from './useConnectionStatus';
+
+export { useWebSocket } from './useWebSocket';
+export type { UseWebSocketOptions, UseWebSocketResult, EventChannel, WebSocketStatus } from './useWebSocket';
+
+export { useSessions } from './useSessions';
+export type { UseSessionsResult, ChatSession } from './useSessions';
