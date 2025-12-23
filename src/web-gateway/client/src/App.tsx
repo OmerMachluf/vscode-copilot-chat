@@ -1,6 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Layout, ProtectedRoute } from '@/components';
-import { LoginPage, ChatPage, StatusPage, OrchestratorPage } from '@/pages';
+import { LoginPage, ChatPage, StatusPage, OrchestratorPage, SettingsPage } from '@/pages';
 import { useAuth } from '@/hooks';
 
 function AppRoutes() {
@@ -40,6 +40,16 @@ function AppRoutes() {
 					<ProtectedRoute>
 						<Layout>
 							<OrchestratorPage />
+						</Layout>
+					</ProtectedRoute>
+				}
+			/>
+			<Route
+				path="/settings"
+				element={
+					<ProtectedRoute>
+						<Layout>
+							<SettingsPage />
 						</Layout>
 					</ProtectedRoute>
 				}
