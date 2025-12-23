@@ -169,6 +169,35 @@ export class HttpResponseStreamAdapter implements vscode.ChatResponseStream {
 	}
 
 	/**
+	 * Send a completion event with the final response
+	 */
+	complete(response?: string): void {
+		if (this._isClosed) {
+			return;
+		}
+		this._sendEvent({
+			type: 'close',
+			message: response
+		});
+		this._isClosed = true;
+		this._response.end();
+		this._onClose?.();
+	}
+
+	/**
+	 * Send an error event and close the stream
+	 */
+	sendError(message: string): void {
+		if (this._isClosed) {
+			return;
+		}
+		this._sendEvent({ type: 'error', message });
+		this._isClosed = true;
+		this._response.end();
+		this._onClose?.();
+	}
+
+	/**
 	 * Send an SSE event to the client
 	 */
 	private _sendEvent(event: HttpStreamEvent): void {

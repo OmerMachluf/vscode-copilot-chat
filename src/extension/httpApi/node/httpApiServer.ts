@@ -10,9 +10,10 @@ import { createServiceIdentifier } from '../../../util/common/services';
 import { Disposable } from '../../../util/vs/base/common/lifecycle';
 import { IAgentRunner } from '../../orchestrator/orchestratorInterfaces';
 import { IOrchestratorService } from '../../orchestrator/orchestratorServiceV2';
-import { handleChatRequest } from './routes/chatRoute';
+import { handleChatRequest, ModelSelector } from './routes/chatRoute';
 import { OrchestratorRoute } from '../routes/orchestratorRoute';
 import { WorkspacesRouteService } from '../routes/workspacesRoute';
+import { createDefaultModelSelector } from '../routes/modelSelector';
 
 const HTTP_API_PORT = 19847;
 
@@ -56,6 +57,7 @@ export class HttpApiServer extends Disposable implements IHttpApiServer {
 	private readonly config: IHttpApiServerConfig;
 	private readonly orchestratorRoute: OrchestratorRoute;
 	private readonly workspacesService: WorkspacesRouteService;
+	private readonly modelSelector: ModelSelector;
 
 	constructor(
 		@ILogService private readonly logService: ILogService,
@@ -72,6 +74,9 @@ export class HttpApiServer extends Disposable implements IHttpApiServer {
 		// Initialize route handlers
 		this.orchestratorRoute = this._register(new OrchestratorRoute(orchestratorService, logService));
 		this.workspacesService = new WorkspacesRouteService();
+
+		// Create model selector function (imported from routes/modelSelector.ts to avoid vscode imports in node/)
+		this.modelSelector = createDefaultModelSelector();
 
 		this.setupMiddleware();
 		this.setupRoutes();
@@ -147,7 +152,7 @@ export class HttpApiServer extends Disposable implements IHttpApiServer {
 		// Chat endpoint with SSE streaming
 		this.app.post('/api/chat', (req: Request, res: Response) => {
 			// Convert Express req/res to Node.js IncomingMessage/ServerResponse for the handler
-			handleChatRequest(req, res, this.agentRunner, this.logService).catch(error => {
+			handleChatRequest(req, res, this.agentRunner, this.logService, this.modelSelector).catch(error => {
 				this.logService.error(`[HttpApiServer] Chat request error: ${error.message}`);
 				if (!res.headersSent) {
 					res.status(500).json({ error: 'Internal server error' });

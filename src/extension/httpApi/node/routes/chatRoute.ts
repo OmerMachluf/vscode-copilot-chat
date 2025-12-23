@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type * as vscode from 'vscode';
+import type { LanguageModelChat } from 'vscode';
 import { CancellationTokenSource } from '../../../../util/vs/base/common/cancellation';
 import { IAgentRunner } from '../../../orchestrator/orchestratorInterfaces';
 import { HttpResponseStreamAdapter } from '../httpResponseStreamAdapter';
@@ -23,6 +23,12 @@ export interface ChatRequestBody {
 }
 
 /**
+ * Function type for selecting a language model.
+ * Injected as a dependency to avoid direct vscode imports in node/ directory.
+ */
+export type ModelSelector = (agentType: string) => Promise<LanguageModelChat | undefined>;
+
+/**
  * Handles POST /api/chat requests.
  * Streams agent responses back to the client using SSE.
  */
@@ -31,6 +37,7 @@ export async function handleChatRequest(
 	res: ServerResponse,
 	agentRunner: IAgentRunner,
 	logService: ILogService,
+	selectModel: ModelSelector,
 ): Promise<void> {
 	// Only accept POST requests
 	if (req.method !== 'POST') {
@@ -133,32 +140,15 @@ async function parseRequestBody(req: IncomingMessage): Promise<ChatRequestBody> 
 }
 
 /**
- * Select an appropriate language model for the agent.
- * Tries copilot models first, then falls back to any available model.
- */
-async function selectModel(_agentType: string): Promise<vscode.LanguageModelChat | undefined> {
-	// Try to get copilot models first (preferred)
-	let models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
-
-	// Try specific model families based on agent type
-	if (models.length === 0) {
-		models = await vscode.lm.selectChatModels({ family: 'gpt-4' });
-	}
-
-	// Fall back to any available model
-	if (models.length === 0) {
-		models = await vscode.lm.selectChatModels();
-	}
-
-	return models[0];
-}
-
-/**
  * Creates a route handler function bound to the given services.
+ * @param agentRunner The agent runner service
+ * @param logService The logging service
+ * @param modelSelector Function to select a language model for a given agent type
  */
 export function createChatRoute(
 	agentRunner: IAgentRunner,
 	logService: ILogService,
+	modelSelector: ModelSelector,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
-	return (req, res) => handleChatRequest(req, res, agentRunner, logService);
+	return (req, res) => handleChatRequest(req, res, agentRunner, logService, modelSelector);
 }
