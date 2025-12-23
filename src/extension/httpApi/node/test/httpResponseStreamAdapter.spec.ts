@@ -125,6 +125,98 @@ describe('HttpResponseStreamAdapter', () => {
 		});
 	});
 
+	describe('sendError()', () => {
+		it('should send error event and end response', () => {
+			adapter.sendError('Something went wrong');
+
+			const events = mockResponse.getEventsOfType('error');
+			expect(events).toHaveLength(1);
+			expect(events[0].message).toBe('Something went wrong');
+			expect(mockResponse.ended).toBe(true);
+			expect(adapter.isClosed).toBe(true);
+		});
+
+		it('should be idempotent', () => {
+			adapter.sendError('Error 1');
+			adapter.sendError('Error 2');
+
+			const events = mockResponse.getEventsOfType('error');
+			expect(events).toHaveLength(1);
+			expect(events[0].message).toBe('Error 1');
+		});
+
+		it('should call onClose callback', () => {
+			const onClose = vi.fn();
+			const adapterWithCallback = new HttpResponseStreamAdapter(
+				mockResponse as unknown as http.ServerResponse,
+				{ onClose }
+			);
+
+			adapterWithCallback.sendError('Error');
+
+			expect(onClose).toHaveBeenCalledTimes(1);
+		});
+
+		it('should not write after sendError', () => {
+			adapter.sendError('Error');
+			adapter.markdown('test');
+
+			const markdownEvents = mockResponse.getEventsOfType('part');
+			expect(markdownEvents).toHaveLength(0);
+		});
+	});
+
+	describe('complete()', () => {
+		it('should send close event with completion part and end response', () => {
+			adapter.complete('Task completed successfully');
+
+			const events = mockResponse.getEventsOfType('close');
+			expect(events).toHaveLength(1);
+			expect(events[0].part?.type).toBe('complete');
+			expect(events[0].part?.content).toBe('Task completed successfully');
+			expect(mockResponse.ended).toBe(true);
+			expect(adapter.isClosed).toBe(true);
+		});
+
+		it('should send close event without part when no response provided', () => {
+			adapter.complete();
+
+			const events = mockResponse.getEventsOfType('close');
+			expect(events).toHaveLength(1);
+			expect(events[0].part).toBeUndefined();
+			expect(mockResponse.ended).toBe(true);
+		});
+
+		it('should be idempotent', () => {
+			adapter.complete('First');
+			adapter.complete('Second');
+
+			const events = mockResponse.getEventsOfType('close');
+			expect(events).toHaveLength(1);
+			expect(events[0].part?.content).toBe('First');
+		});
+
+		it('should call onClose callback', () => {
+			const onClose = vi.fn();
+			const adapterWithCallback = new HttpResponseStreamAdapter(
+				mockResponse as unknown as http.ServerResponse,
+				{ onClose }
+			);
+
+			adapterWithCallback.complete('Done');
+
+			expect(onClose).toHaveBeenCalledTimes(1);
+		});
+
+		it('should not write after complete', () => {
+			adapter.complete('Done');
+			adapter.markdown('test');
+
+			const markdownEvents = mockResponse.getEventsOfType('part');
+			expect(markdownEvents).toHaveLength(0);
+		});
+	});
+
 	describe('client disconnect handling', () => {
 		it('should set isClosed on client disconnect', () => {
 			mockResponse.simulateClose();

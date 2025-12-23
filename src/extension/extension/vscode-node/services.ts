@@ -135,6 +135,8 @@ import { LanguageContextServiceImpl } from '../../typescriptContext/vscode-node/
 import { IWorkspaceListenerService } from '../../workspaceRecorder/common/workspaceListenerService';
 import { WorkspacListenerService } from '../../workspaceRecorder/vscode-node/workspaceListenerService';
 import { HttpApiServer, IHttpApiServer } from '../../httpApi/node/httpApiServer';
+import { IModelSelector } from '../../httpApi/common/modelSelector';
+import { VsCodeModelSelector } from '../../httpApi/vscode-node/modelSelector';
 import { registerServices as registerCommonServices } from '../vscode/services';
 
 // ###########################################################################################
@@ -259,6 +261,7 @@ export function registerServices(builder: IInstantiationServiceBuilder, extensio
 	builder.define(IInlineEditsModelService, new SyncDescriptor(InlineEditsModelService));
 	builder.define(IUndesiredModelsManager, new SyncDescriptor(UndesiredModels.Manager));
 	builder.define(ICopilotInlineCompletionItemProviderService, new SyncDescriptor(CopilotInlineCompletionItemProviderService));
+	builder.define(IModelSelector, new SyncDescriptor(VsCodeModelSelector));
 	builder.define(IHttpApiServer, new SyncDescriptor(HttpApiServer));
 }
 

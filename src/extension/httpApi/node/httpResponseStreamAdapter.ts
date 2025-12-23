@@ -169,22 +169,6 @@ export class HttpResponseStreamAdapter implements vscode.ChatResponseStream {
 	}
 
 	/**
-	 * Send a completion event with the final response
-	 */
-	complete(response?: string): void {
-		if (this._isClosed) {
-			return;
-		}
-		this._sendEvent({
-			type: 'close',
-			message: response
-		});
-		this._isClosed = true;
-		this._response.end();
-		this._onClose?.();
-	}
-
-	/**
 	 * Send an error event and close the stream
 	 */
 	sendError(message: string): void {
@@ -192,6 +176,22 @@ export class HttpResponseStreamAdapter implements vscode.ChatResponseStream {
 			return;
 		}
 		this._sendEvent({ type: 'error', message });
+		this._isClosed = true;
+		this._response.end();
+		this._onClose?.();
+	}
+
+	/**
+	 * Send a completion event with the final response and close the stream
+	 */
+	complete(response?: string): void {
+		if (this._isClosed) {
+			return;
+		}
+		this._sendEvent({
+			type: 'close',
+			part: response ? { type: 'complete', content: response } : undefined
+		});
 		this._isClosed = true;
 		this._response.end();
 		this._onClose?.();
