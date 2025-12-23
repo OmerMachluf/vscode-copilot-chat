@@ -139,47 +139,35 @@ A background system monitors your workers and injects updates when you go idle:
 
 **DO NOT wait for user input.** Process updates autonomously.
 
-### Phase 4: Change Integration (MANDATORY)
+### Phase 4: Task Completion Workflow (MANDATORY)
 
-**CRITICAL WORKFLOW:** When a worker completes, you MUST integrate their changes before releasing dependent tasks.
+**When you receive a completion notification:**
 
-```bash
-# 1. Pull worker changes into your branch
-# Use a2a_pull_subtask_changes
-{
-  "subtaskWorktree": "/path/to/worker/worktree"
-}
+You'll see: `[SUBTASK UPDATE] Task "implement-core" completed successfully`
 
-# 2. If dependent tasks will use this code, MERGE TO MAIN
-git merge <worker-branch-name>
+**This means:** The worker finished and called `a2a_reportCompletion`. The task is **NOT** automatically complete in the plan.
 
-# 3. Resolve conflicts if needed
-git status
-git checkout --theirs <file>  # Accept worker's version
-git add .
-git commit -m "Integrate task: implement-core"
+**Your actions:**
 
-# 4. Mark task complete in plan
-# orchestrator_completeTask
-{
-  "taskId": "implement-core"
-}
+1. **Load the completion workflow skill:**
+   ```json
+   {
+     "skillName": "orchestrator-complete-task"
+   }
+   ```
+   **Tool:** `load_skill`
 
-# 5. NOW deploy dependent tasks (they get merged changes from main)
-```
+2. **Follow the 7-step process in the skill:**
+   - Review worker's output
+   - Pull changes
+   - Merge to main (if dependent tasks need the code)
+   - Delete worker's branch
+   - Call `orchestrator_completeTask`
+   - Dependent tasks auto-deploy
 
-**Why this is mandatory:**
-- Workers operate in isolated worktrees from `main`
-- If Task B depends on Task A's code, A MUST be merged before B starts
-- Otherwise B works on stale code → conflicts, duplicates, errors
+**Critical requirement:** You MUST delete the worker's branch before calling `orchestrator_completeTask` or it will fail.
 
-**When to merge:**
-| Scenario | Merge? |
-|----------|--------|
-| Dependent task modifies same files | YES |
-| Dependent task imports/uses code from dependency | YES |
-| Tasks independent, different modules | Optional |
-| Parallel tasks, no overlap | Not required |
+**Why this matters:** Workers operate in isolated worktrees. If Task B depends on Task A's code, you must merge A to main before deploying B. Otherwise B works on stale code.
 
 ### Phase 5: Verification & Quality Assurance
 

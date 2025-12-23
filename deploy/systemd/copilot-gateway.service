@@ -1,0 +1,55 @@
+[Unit]
+Description=VS Code Copilot Web Gateway
+Documentation=https://github.com/microsoft/vscode-copilot
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=copilot-gateway
+Group=copilot-gateway
+WorkingDirectory=/opt/copilot-gateway
+
+# Environment configuration
+EnvironmentFile=/etc/copilot-gateway/gateway.env
+
+# Node.js binary and application
+ExecStart=/usr/bin/node /opt/copilot-gateway/dist/server.js
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitInterval=60
+StartLimitBurst=3
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+
+# Resource limits
+LimitNOFILE=65535
+LimitNPROC=4096
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=copilot-gateway
+
+# Timeouts
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
