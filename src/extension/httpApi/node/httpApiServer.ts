@@ -10,9 +10,16 @@ import { createServiceIdentifier } from '../../../util/common/services';
 import { Disposable } from '../../../util/vs/base/common/lifecycle';
 import { IAgentRunner } from '../../orchestrator/orchestratorInterfaces';
 import { IOrchestratorService } from '../../orchestrator/orchestratorServiceV2';
-import { handleChatRequest } from './routes/chatRoute';
+import {
+	handleChatRequest,
+	getActiveSessions,
+	getSession,
+	deleteSession,
+	createSession,
+} from './routes/chatRoute';
 import { OrchestratorRoute } from '../routes/orchestratorRoute';
 import { WorkspacesRouteService } from '../routes/workspacesRoute';
+import { IModelSelector } from '../common/modelSelector';
 
 const HTTP_API_PORT = 19847;
 
@@ -56,11 +63,13 @@ export class HttpApiServer extends Disposable implements IHttpApiServer {
 	private readonly config: IHttpApiServerConfig;
 	private readonly orchestratorRoute: OrchestratorRoute;
 	private readonly workspacesService: WorkspacesRouteService;
+	private readonly modelSelector: IModelSelector;
 
 	constructor(
 		@ILogService private readonly logService: ILogService,
 		@IAgentRunner private readonly agentRunner: IAgentRunner,
 		@IOrchestratorService private readonly orchestratorService: IOrchestratorService,
+		@IModelSelector modelSelector: IModelSelector,
 	) {
 		super();
 		this.config = {
@@ -68,6 +77,7 @@ export class HttpApiServer extends Disposable implements IHttpApiServer {
 			host: '0.0.0.0' // Bind to all interfaces to allow WSL/Docker access
 		};
 		this.app = express();
+		this.modelSelector = modelSelector;
 
 		// Initialize route handlers
 		this.orchestratorRoute = this._register(new OrchestratorRoute(orchestratorService, logService));
@@ -147,12 +157,63 @@ export class HttpApiServer extends Disposable implements IHttpApiServer {
 		// Chat endpoint with SSE streaming
 		this.app.post('/api/chat', (req: Request, res: Response) => {
 			// Convert Express req/res to Node.js IncomingMessage/ServerResponse for the handler
-			handleChatRequest(req, res, this.agentRunner, this.logService).catch(error => {
+			handleChatRequest(req, res, this.agentRunner, this.logService, this.modelSelector).catch(error => {
 				this.logService.error(`[HttpApiServer] Chat request error: ${error.message}`);
 				if (!res.headersSent) {
 					res.status(500).json({ error: 'Internal server error' });
 				}
 			});
+		});
+
+		// Session management endpoints
+		this.app.get('/api/chat/sessions', (_req: Request, res: Response) => {
+			try {
+				const sessions = getActiveSessions();
+				res.json({ success: true, data: sessions });
+			} catch (error) {
+				this.logService.error(`[HttpApiServer] List sessions error: ${error}`);
+				res.status(500).json({ success: false, error: 'Failed to list sessions' });
+			}
+		});
+
+		this.app.post('/api/chat/sessions', (_req: Request, res: Response) => {
+			try {
+				const sessionId = createSession();
+				res.status(201).json({ success: true, data: { sessionId } });
+			} catch (error) {
+				this.logService.error(`[HttpApiServer] Create session error: ${error}`);
+				res.status(500).json({ success: false, error: 'Failed to create session' });
+			}
+		});
+
+		this.app.get('/api/chat/sessions/:id', (req: Request, res: Response) => {
+			try {
+				const sessionId = req.params.id;
+				const session = getSession(sessionId);
+				if (!session) {
+					res.status(404).json({ success: false, error: `Session not found: ${sessionId}` });
+					return;
+				}
+				res.json({ success: true, data: session });
+			} catch (error) {
+				this.logService.error(`[HttpApiServer] Get session error: ${error}`);
+				res.status(500).json({ success: false, error: 'Failed to get session' });
+			}
+		});
+
+		this.app.delete('/api/chat/sessions/:id', (req: Request, res: Response) => {
+			try {
+				const sessionId = req.params.id;
+				const deleted = deleteSession(sessionId);
+				if (!deleted) {
+					res.status(404).json({ success: false, error: `Session not found: ${sessionId}` });
+					return;
+				}
+				res.json({ success: true, data: { message: 'Session deleted' } });
+			} catch (error) {
+				this.logService.error(`[HttpApiServer] Delete session error: ${error}`);
+				res.status(500).json({ success: false, error: 'Failed to delete session' });
+			}
 		});
 
 		// Orchestrator routes - delegate to OrchestratorRoute handler
