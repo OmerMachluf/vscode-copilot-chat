@@ -1,0 +1,27 @@
+# =============================================================================
+# VS Code Copilot Web Gateway - Development Docker Compose Override
+# =============================================================================
+#
+# Development-specific configuration with hot reloading and debugging support.
+#
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# =============================================================================
+
+services:
+  gateway:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.dev
+    volumes:
+      # Mount source code for hot reloading
+      - ../../src/web-gateway/src:/app/src:ro
+      - ../../src/web-gateway/client/src:/app/client/src:ro
+    environment:
+      - NODE_ENV=development
+      - ENABLE_LOGGING=true
+    # Expose Node.js debugger port
+    ports:
+      - "3000:3000"
+      - "9229:9229"

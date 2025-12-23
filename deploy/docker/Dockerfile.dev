@@ -1,0 +1,42 @@
+# =============================================================================
+# VS Code Copilot Web Gateway - Development Dockerfile
+# =============================================================================
+#
+# Development image with hot reloading support.
+#
+# Build:
+#   docker build -t copilot-gateway:dev -f deploy/docker/Dockerfile.dev .
+#
+# =============================================================================
+
+FROM node:20-alpine
+
+# Install build dependencies
+RUN apk add --no-cache python3 make g++ curl
+
+WORKDIR /app
+
+# Install backend dependencies
+COPY src/web-gateway/package*.json ./
+RUN npm ci
+
+# Install frontend dependencies
+COPY src/web-gateway/client/package*.json ./client/
+RUN cd client && npm ci
+
+# Copy configuration files
+COPY src/web-gateway/tsconfig.json ./
+COPY src/web-gateway/client/tsconfig*.json ./client/
+COPY src/web-gateway/client/vite.config.ts ./client/
+COPY src/web-gateway/client/postcss.config.js ./client/
+COPY src/web-gateway/client/tailwind.config.js ./client/
+COPY src/web-gateway/client/index.html ./client/
+
+# Copy source code (will be overwritten by volume mount)
+COPY src/web-gateway/src ./src
+COPY src/web-gateway/client/src ./client/src
+
+EXPOSE 3000 9229
+
+# Start development server with debugger
+CMD ["npm", "run", "dev"]
