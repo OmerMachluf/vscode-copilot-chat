@@ -11,6 +11,7 @@ import { activateWorker } from '../../orchestrator/workerMain';
 import { baseActivate } from '../vscode/extension';
 import { vscodeNodeContributions } from './contributions';
 import { registerServices } from './services';
+import { IHttpApiServer } from '../../httpApi/node/httpApiServer';
 
 // ###############################################################################################
 // ###                                                                                         ###
@@ -57,10 +58,30 @@ export async function activate(context: ExtensionContext, forceActivation?: bool
 			// loads definitions directly from .github/ and assets/ without syncing
 			// to .claude/ format. Migration can still be run manually if needed.
 			// runClaudeMigration(context, instantiationService).catch(() => { /* ignore errors */ });
+
+			// Start the HTTP API server for web gateway access
+			startHttpApiServer(instantiationService).catch(error => {
+				console.error('[Extension] Failed to start HTTP API server:', error);
+			});
 		}
 	}
 
 	return activationResult;
+}
+
+/**
+ * Start the HTTP API server for web gateway access.
+ * The server runs on localhost:19847 and provides REST/SSE endpoints.
+ */
+async function startHttpApiServer(instantiationService: any): Promise<void> {
+	try {
+		const httpApiServer = instantiationService.invokeFunction((accessor: any) => accessor.get(IHttpApiServer));
+		await httpApiServer.start();
+		console.log('[Extension] HTTP API server started successfully');
+	} catch (error) {
+		console.error('[Extension] Error starting HTTP API server:', error);
+		throw error;
+	}
 }
 
 /**
