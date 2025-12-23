@@ -33,12 +33,6 @@ export interface IA2AMcpServerDependencies {
 	/** Optional workspace root for resolving file paths */
 	workspaceRoot?: string;
 	/**
-	 * Persistent session ID from VS Code chat conversation.
-	 * When provided, this ID is used as the worker identity, allowing
-	 * orchestration to persist across VS Code restarts.
-	 */
-	sessionId?: string;
-	/**
 	 * Callback for receiving updates from child subtasks.
 	 * Used by standalone sessions to receive pushed updates from orchestrator.
 	 */
@@ -55,22 +49,16 @@ export interface IA2AMcpServerDependencies {
  * not the actual workspace. This was causing tasks to fail immediately.
  *
  * @param workspaceRoot The workspace root directory
- * @param sessionId The persistent session ID from VS Code chat. This ID survives
- *                  restarts and allows orchestration to resume with the same identity.
  */
-function getDefaultWorkerContext(workspaceRoot: string | undefined, sessionId: string | undefined): IWorkerContext {
+function getDefaultWorkerContext(workspaceRoot: string | undefined): IWorkerContext {
 	// CRITICAL: If no workspaceRoot is available, we should NOT use process.cwd()
 	// as it returns VS Code's installation directory in the extension host.
 	// Instead, leave it undefined and let the caller handle the validation.
 	const effectiveWorktreePath = workspaceRoot || undefined;
 
-	// Use sessionId as workerId for persistent identity across restarts
-	// If no sessionId provided, fall back to timestamp-based ID (for backward compat)
-	const workerId = sessionId ?? `claude-standalone-${Date.now()}`;
-
 	return {
 		_serviceBrand: undefined,
-		workerId,
+		workerId: `claude-standalone-${Date.now()}`,
 		worktreePath: effectiveWorktreePath!,  // May be undefined, but typed as string
 		depth: 0,
 		spawnContext: 'agent' as SpawnContext,
@@ -102,8 +90,7 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 	// Use provided context or default for standalone sessions
 	// Pass workspaceRoot to default context to avoid using process.cwd() which returns VS Code installation dir
 	// CRITICAL: Evaluate once and reuse - don't regenerate on every call or parent ID will change!
-	// Pass sessionId (if available) to use as persistent worker identity
-	const workerContext = deps.workerContext ?? getDefaultWorkerContext(workspaceRoot, deps.sessionId);
+	const workerContext = deps.workerContext ?? getDefaultWorkerContext(workspaceRoot);
 
 	// Helper to resolve file paths
 	const resolveFilePath = (filePath: string): string => {
@@ -282,8 +269,6 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 							parentWorkerId: workerContext.workerId,
 							parentTaskId: workerContext.taskId ?? workerContext.workerId,
 							planId: workerContext.planId ?? 'claude-session',
-							sessionId: workerContext.workerId, // Pass workerId as sessionId for chat persistence
-							sessionId: workerContext.workerId, // Pass workerId as sessionId for chat persistence
 							worktreePath: workerContext.worktreePath,
 							baseBranch: parentBranch,
 							agentType: args.agentType,

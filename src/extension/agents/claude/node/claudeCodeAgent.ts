@@ -742,7 +742,6 @@ export class ClaudeCodeSession extends Disposable {
 				orchestratorService,
 				languageFeaturesService,
 				workspaceRoot: workingDirectory,
-				sessionId: this.sessionId, // Pass persistent session ID for worker identity
 				// Callback for receiving pushed updates from child subtasks
 				onChildUpdate: (message: string) => this.receiveChildUpdate(message),
 			});

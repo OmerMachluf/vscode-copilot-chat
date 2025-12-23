@@ -270,7 +270,6 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			parentWorkerId: options.parentWorkerId,
 			parentTaskId: options.parentTaskId,
 			planId: options.planId,
-			sessionId: options.sessionId,
 			worktreePath: options.worktreePath,
 			baseBranch: options.baseBranch,
 			agentType: options.agentType,
@@ -525,23 +524,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 		// Create an orchestrator task for this subtask with full context
 		const taskName = `[SubTask] ${subTask.agentType} (${subTask.id.slice(-6)})`;
 
-		// CRITICAL: Inherit sessionId from parent ONLY if parent is a chat session
-		// For chat-based workers (ClaudeCodeSession): inherit the VS Code chat sessionId
-		// For orchestrator background workers: sessionId should remain undefined
-		let parentSessionId: string | undefined;
-		const parentWorker = orchestratorService.getWorkerSession(subTask.parentWorkerId);
-		if (parentWorker) {
-			// Look up parent's task by workerId
-			const parentTask = orchestratorService.getTasks().find(t => t.workerId === subTask.parentWorkerId);
-			parentSessionId = parentTask?.sessionId;
-		}
-		// IMPORTANT: Only inherit sessionId if parent actually has one (is a chat session)
-		// Do NOT use parentWorkerId as sessionId - they're different concepts:
-		// - sessionId = VS Code chat UUID (persistent across restarts) OR undefined
-		// - parentWorkerId = stable worker ID for routing (set by orchestrator deploy)
-		const sessionId = subTask.sessionId ?? parentSessionId; // Prefer explicit sessionId from subTask, fallback to parent's
-
-		this._logService.debug(`[SubTaskManager] Creating orchestrator task: name="${taskName}", parentWorkerId=${subTask.parentWorkerId}, sessionId=${sessionId}, spawnContext=${inheritedSpawnContext}, agentType=${subTask.agentType}, parsedAgentType.backend=${subTask.parsedAgentType?.backend}, baseBranch=${subTask.baseBranch || '(undefined - will use default)'}`);
+		this._logService.debug(`[SubTaskManager] Creating orchestrator task: name="${taskName}", parentWorkerId=${subTask.parentWorkerId}, spawnContext=${inheritedSpawnContext}, agentType=${subTask.agentType}, parsedAgentType.backend=${subTask.parsedAgentType?.backend}, baseBranch=${subTask.baseBranch || '(undefined - will use default)'}`);
 		const orchestratorTask = orchestratorService.addTask(taskDescription, {
 			name: taskName,
 			planId: subTask.planId,
@@ -558,9 +541,6 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			// CRITICAL: Set parentWorkerId so messages from this subtask route to parent
 			// This enables the parent worker to receive notifications via registerOwnerHandler
 			parentWorkerId: subTask.parentWorkerId,
-			// CRITICAL: Inherit sessionId to maintain persistent session identity
-			// This allows subtasks to be part of the same session chain
-			sessionId,
 			// CRITICAL: Pass the additional instructions via context
 			// This ensures the worker sees all the guidance about committing, worktree restrictions, etc.
 			context: {

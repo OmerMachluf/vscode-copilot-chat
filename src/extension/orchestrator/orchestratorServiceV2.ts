@@ -3229,7 +3229,7 @@ Focus on your assigned task and provide a clear, actionable result.`;
 				}),
 			} as vscode.ChatParticipantToolToken;
 			worker.setToolInvocationToken(forgedToken);
-			this._logService.debug(`[OrchestratorService] Forged toolInvocationToken for task ${task.id}, worker ${worker.id}: sessionId=${workerSessionUri}`);
+			this._logService.debug(`[OrchestratorService] Forged toolInvocationToken for task ${task.id}, worker ${worker.id}: sessionId=${task.id}`);
 
 			// Register wake-up adapter for parent completion notifications
 			// This ensures workers receive completion messages from their subtasks
