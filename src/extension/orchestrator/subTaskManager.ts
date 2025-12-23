@@ -270,6 +270,7 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			parentWorkerId: options.parentWorkerId,
 			parentTaskId: options.parentTaskId,
 			planId: options.planId,
+			sessionId: options.sessionId,
 			worktreePath: options.worktreePath,
 			baseBranch: options.baseBranch,
 			agentType: options.agentType,
@@ -524,7 +525,23 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 		// Create an orchestrator task for this subtask with full context
 		const taskName = `[SubTask] ${subTask.agentType} (${subTask.id.slice(-6)})`;
 
-		this._logService.debug(`[SubTaskManager] Creating orchestrator task: name="${taskName}", parentWorkerId=${subTask.parentWorkerId}, spawnContext=${inheritedSpawnContext}, agentType=${subTask.agentType}, parsedAgentType.backend=${subTask.parsedAgentType?.backend}, baseBranch=${subTask.baseBranch || '(undefined - will use default)'}`);
+		// CRITICAL: Inherit sessionId from parent ONLY if parent is a chat session
+		// For chat-based workers (ClaudeCodeSession): inherit the VS Code chat sessionId
+		// For orchestrator background workers: sessionId should remain undefined
+		let parentSessionId: string | undefined;
+		const parentWorker = orchestratorService.getWorkerSession(subTask.parentWorkerId);
+		if (parentWorker) {
+			// Look up parent's task by workerId
+			const parentTask = orchestratorService.getTasks().find(t => t.workerId === subTask.parentWorkerId);
+			parentSessionId = parentTask?.sessionId;
+		}
+		// IMPORTANT: Only inherit sessionId if parent actually has one (is a chat session)
+		// Do NOT use parentWorkerId as sessionId - they're different concepts:
+		// - sessionId = VS Code chat UUID (persistent across restarts) OR undefined
+		// - parentWorkerId = stable worker ID for routing (set by orchestrator deploy)
+		const sessionId = subTask.sessionId ?? parentSessionId; // Prefer explicit sessionId from subTask, fallback to parent's
+
+		this._logService.debug(`[SubTaskManager] Creating orchestrator task: name="${taskName}", parentWorkerId=${subTask.parentWorkerId}, sessionId=${sessionId}, spawnContext=${inheritedSpawnContext}, agentType=${subTask.agentType}, parsedAgentType.backend=${subTask.parsedAgentType?.backend}, baseBranch=${subTask.baseBranch || '(undefined - will use default)'}`);
 		const orchestratorTask = orchestratorService.addTask(taskDescription, {
 			name: taskName,
 			planId: subTask.planId,
@@ -541,6 +558,9 @@ export class SubTaskManager extends Disposable implements ISubTaskManager {
 			// CRITICAL: Set parentWorkerId so messages from this subtask route to parent
 			// This enables the parent worker to receive notifications via registerOwnerHandler
 			parentWorkerId: subTask.parentWorkerId,
+			// CRITICAL: Inherit sessionId to maintain persistent session identity
+			// This allows subtasks to be part of the same session chain
+			sessionId,
 			// CRITICAL: Pass the additional instructions via context
 			// This ensures the worker sees all the guidance about committing, worktree restrictions, etc.
 			context: {
@@ -844,7 +864,7 @@ You are working in your own dedicated worktree at: ${escapePathForMarkdown(subTa
 This is separate from your parent's worktree. Your parent will merge your branch when you're done.
 
 ## ⚠️ CRITICAL: YOU MUST COMMIT YOUR CHANGES WHEN COMPLETING
-**When you finish your task, you MUST call \`a2a_subtask_complete\` with a \`commitMessage\` parameter.**
+**When you finish your task, you MUST call \`a2a_reportCompletion\` with a \`commitMessage\` parameter.**
 
 Example completion:
 \`\`\`json
@@ -856,8 +876,8 @@ Example completion:
 }
 \`\`\`
 
-**⚠️ WARNING: If you call a2a_subtask_complete WITHOUT a commitMessage, your changes will NOT be committed and will be LOST!**
-**⚠️ WARNING: If you simply stop without calling a2a_subtask_complete with commitMessage, your work will be LOST!**
+**⚠️ WARNING: If you call a2a_reportCompletion WITHOUT a commitMessage, your changes will NOT be committed and will be LOST!**
+**⚠️ WARNING: If you simply stop without calling a2a_reportCompletion with commitMessage, your work will be LOST!**
 
 ## WORKTREE RESTRICTION
 **You can ONLY modify files within your worktree: ${escapePathForMarkdown(subTask.worktreePath)}**
@@ -873,7 +893,7 @@ Any attempt to read, write, or modify files outside this path is forbidden and w
 ## YOUR RESPONSIBILITIES
 1. Complete the specific task assigned to you.
 2. Make file changes directly in your worktree using standard tools (create_file, replace_string_in_file, etc.).
-3. **When done, call a2a_subtask_complete with status, output, AND commitMessage.**
+3. **When done, call a2a_reportCompletion with status, output, AND commitMessage.**
 
 ## SUB-TASK SPAWNING
 ${subTaskGuidance}
@@ -919,7 +939,7 @@ Focus on your assigned task and provide a clear, actionable result.`;
 		// Add CRITICAL completion requirement
 		parts.push(`## ⚠️ CRITICAL: You MUST Commit Your Changes When Done`);
 		parts.push('');
-		parts.push(`**When you have finished your work, you MUST call the \`a2a_subtask_complete\` tool with a \`commitMessage\` parameter.**`);
+		parts.push(`**When you have finished your work, you MUST call the \`a2a_reportCompletion\` tool with a \`commitMessage\` parameter.**`);
 		parts.push('');
 		parts.push(`This is REQUIRED - your changes will NOT be merged to the parent unless you commit them.`);
 		parts.push('');
@@ -933,7 +953,7 @@ Focus on your assigned task and provide a clear, actionable result.`;
 		parts.push(`}`);
 		parts.push('```');
 		parts.push('');
-		parts.push(`**DO NOT just stop working or call a2a_subtask_complete without a commitMessage - your work will be lost!**`);
+		parts.push(`**DO NOT just stop working or call a2a_reportCompletion without a commitMessage - your work will be lost!**`);
 
 		return parts.join('\n');
 	}

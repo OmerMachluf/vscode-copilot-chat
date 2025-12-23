@@ -458,9 +458,12 @@ export class WorkerSession extends Disposable {
 		agentId?: string,
 		agentInstructions?: string[],
 		modelId?: string,
+		workerId?: string,
 	) {
 		super();
-		this._id = `worker-${generateUuid().substring(0, 8)}`;
+		// Use provided workerId (typically from sessionId) or generate a new one
+		// This allows persistent session IDs to survive worker redeployment
+		this._id = workerId ?? `worker-${generateUuid().substring(0, 8)}`;
 		this._name = name;
 		this._task = task;
 		this._worktreePath = worktreePath;
@@ -473,7 +476,7 @@ export class WorkerSession extends Disposable {
 		this._lastActivityAt = this._createdAt;
 		this._cancellationTokenSource = new CancellationTokenSource();
 
-		console.log(`[WorkerSession:${this._id}] CREATED: name="${name}", worktreePath=${worktreePath}, agentId=${agentId ?? '(none)'}, modelId=${modelId ?? '(none)'}`);
+		console.log(`[WorkerSession:${this._id}] CREATED: name="${name}", worktreePath=${worktreePath}, agentId=${agentId ?? '(none)'}, modelId=${modelId ?? '(none)'}${workerId ? `, sessionId=${workerId}` : ''}`);
 		console.log(`[WorkerSession:${this._id}] task preview: "${task.slice(0, 200).replace(/\n/g, '\\n')}..."`);
 
 		// Add initial system message

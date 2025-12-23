@@ -310,6 +310,30 @@ export class ClaudeCodeAgentExecutor implements IAgentExecutor {
 	}
 
 	/**
+	 * Completes a worker and cleans up its session.
+	 * Called when a task completes successfully and we want to dispose the session
+	 * to prepare for worktree removal.
+	 */
+	async complete(workerId: string): Promise<void> {
+		const workerState = this._activeWorkers.get(workerId);
+		if (workerState) {
+			this._logService.info(`[ClaudeCodeAgentExecutor] Completing and disposing session for worker ${workerId}`);
+
+			// Mark session as inactive
+			workerState.session.markInactive();
+
+			// Remove worktree session from manager (disposes the underlying session)
+			this._claudeAgentManager.removeWorktreeSession(workerState.worktreePath);
+
+			// Clean up
+			this._activeWorkers.delete(workerId);
+		}
+
+		// Clean up pending messages
+		this._pendingMessages.delete(workerId);
+	}
+
+	/**
 	 * Gets the current status of a worker.
 	 */
 	getStatus(workerId: string): AgentWorkerStatus | undefined {

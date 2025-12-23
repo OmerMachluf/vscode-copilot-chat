@@ -33,6 +33,12 @@ export interface IA2AMcpServerDependencies {
 	/** Optional workspace root for resolving file paths */
 	workspaceRoot?: string;
 	/**
+	 * Persistent session ID from VS Code chat conversation.
+	 * When provided, this ID is used as the worker identity, allowing
+	 * orchestration to persist across VS Code restarts.
+	 */
+	sessionId?: string;
+	/**
 	 * Callback for receiving updates from child subtasks.
 	 * Used by standalone sessions to receive pushed updates from orchestrator.
 	 */
@@ -47,16 +53,24 @@ export interface IA2AMcpServerDependencies {
  * because in VS Code's extension host, process.cwd() often returns the
  * VS Code installation directory (e.g., C:\Program Files\Microsoft VS Code),
  * not the actual workspace. This was causing tasks to fail immediately.
+ *
+ * @param workspaceRoot The workspace root directory
+ * @param sessionId The persistent session ID from VS Code chat. This ID survives
+ *                  restarts and allows orchestration to resume with the same identity.
  */
-function getDefaultWorkerContext(workspaceRoot: string | undefined): IWorkerContext {
+function getDefaultWorkerContext(workspaceRoot: string | undefined, sessionId: string | undefined): IWorkerContext {
 	// CRITICAL: If no workspaceRoot is available, we should NOT use process.cwd()
 	// as it returns VS Code's installation directory in the extension host.
 	// Instead, leave it undefined and let the caller handle the validation.
 	const effectiveWorktreePath = workspaceRoot || undefined;
 
+	// Use sessionId as workerId for persistent identity across restarts
+	// If no sessionId provided, fall back to timestamp-based ID (for backward compat)
+	const workerId = sessionId ?? `claude-standalone-${Date.now()}`;
+
 	return {
 		_serviceBrand: undefined,
-		workerId: `claude-standalone-${Date.now()}`,
+		workerId,
 		worktreePath: effectiveWorktreePath!,  // May be undefined, but typed as string
 		depth: 0,
 		spawnContext: 'agent' as SpawnContext,
@@ -87,7 +101,9 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 
 	// Use provided context or default for standalone sessions
 	// Pass workspaceRoot to default context to avoid using process.cwd() which returns VS Code installation dir
-	const getWorkerContext = () => deps.workerContext ?? getDefaultWorkerContext(workspaceRoot);
+	// CRITICAL: Evaluate once and reuse - don't regenerate on every call or parent ID will change!
+	// Pass sessionId (if available) to use as persistent worker identity
+	const workerContext = deps.workerContext ?? getDefaultWorkerContext(workspaceRoot, deps.sessionId);
 
 	// Helper to resolve file paths
 	const resolveFilePath = (filePath: string): string => {
@@ -229,7 +245,6 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 					model: z.string().optional().describe('Model override for this subtask'),
 				},
 				async (args) => {
-					const workerContext = getWorkerContext();
 
 					try {
 						// Check depth limit
@@ -267,6 +282,8 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 							parentWorkerId: workerContext.workerId,
 							parentTaskId: workerContext.taskId ?? workerContext.workerId,
 							planId: workerContext.planId ?? 'claude-session',
+							sessionId: workerContext.workerId, // Pass workerId as sessionId for chat persistence
+							sessionId: workerContext.workerId, // Pass workerId as sessionId for chat persistence
 							worktreePath: workerContext.worktreePath,
 							baseBranch: parentBranch,
 							agentType: args.agentType,
@@ -413,11 +430,11 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 			),
 
 			// ================================================================
-			// a2a_subtask_complete - Signal subtask completion
+			// a2a_reportCompletion - Report task completion to parent
 			// ================================================================
 			tool(
-				'a2a_subtask_complete',
-				'Signal that your subtask work is complete. IMPORTANT: You MUST provide a commitMessage to save your changes - without it, your work will be LOST!',
+				'a2a_reportCompletion',
+				'Report task completion to your parent agent. IMPORTANT: You MUST provide a commitMessage to save your changes - without it, your work will be LOST! Note: This does NOT automatically mark the task as complete in the plan - your parent must review and integrate your work.',
 				{
 					commitMessage: z.string().describe('REQUIRED: Git commit message describing your changes. Without this, changes are LOST!'),
 					output: z.string().describe('Summary of the work you completed'),
@@ -425,7 +442,6 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 						.describe('Completion status: "success" = fully done, "partial" = some work done, "failed" = could not complete'),
 				},
 				async (args) => {
-					const workerContext = getWorkerContext();
 
 					// Validate commit message
 					if (!args.commitMessage || args.commitMessage.trim().length === 0) {
@@ -434,7 +450,7 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 								type: 'text',
 								text: 'ERROR: commitMessage is REQUIRED and cannot be empty.\n' +
 									'Your changes will be LOST without a commit message!\n' +
-									'Please call a2a_subtask_complete again with a valid commitMessage.'
+									'Please call a2a_reportCompletion again with a valid commitMessage.'
 							}]
 						};
 					}
@@ -502,7 +518,6 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 					blocking: z.boolean().default(true).describe('If true, wait for all to complete. If false, return task IDs for later polling'),
 				},
 				async (args) => {
-					const workerContext = getWorkerContext();
 
 					try {
 						// Check depth limit
@@ -730,6 +745,10 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 							targetFiles: args.targetFiles,
 							priority: args.priority,
 							parallelGroup: args.parallelGroup,
+							// NOTE: Do NOT set sessionId for orchestrator plan tasks
+							// Plan tasks are background orchestrator workers, not chat sessions
+							// Only ClaudeCodeSession workers should use sessionId (which they get from their chat window)
+							// Routing works via task.workerId (stable) + parentWorkerId, not sessionId
 						};
 
 						const task = orchestratorService.addTask(args.description, options);
@@ -862,10 +881,10 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 				}
 			),
 
-			// orchestrator_complete_task - Mark a task as completed
+			// orchestrator_complete_task - Mark a task as completed (PARENT AGENTS ONLY)
 			tool(
 				'orchestrator_complete_task',
-				'Mark a task as completed. This updates the plan state and makes dependent tasks ready for deployment.',
+				'Mark a child task as completed after reviewing and merging their work. IMPORTANT: You can only complete tasks where YOU are the parent. Workers should use a2a_reportCompletion to notify their parent instead.',
 				{
 					taskId: z.string().describe('ID of the task to mark as completed'),
 				},
@@ -880,12 +899,33 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 					}
 
 					try {
-						await orchestratorService.completeTask(args.taskId);
+						// Look up the task to get the worker ID
+						const task = orchestratorService.getTaskById(args.taskId);
+						if (!task) {
+							return {
+								content: [{
+									type: 'text',
+									text: `ERROR: Task ${args.taskId} not found`
+								}]
+							};
+						}
+
+						if (!task.workerId) {
+							return {
+								content: [{
+									type: 'text',
+									text: `ERROR: Task ${args.taskId} has no assigned worker (status: ${task.status})`
+								}]
+							};
+						}
+
+						// Pass the worker ID and caller's worker ID for authorization check
+							await orchestratorService.completeTask(task.workerId, workerContext.workerId);
 						const readyTasks = orchestratorService.getReadyTasks();
 						return {
 							content: [{
 								type: 'text',
-								text: `Task ${args.taskId} marked as completed.\n` +
+								text: `Worker ${task.workerId} completed (task: ${args.taskId}).\n` +
 									`Ready tasks: ${readyTasks.map(t => t.id).join(', ') || 'none'}`
 							}]
 						};
@@ -921,7 +961,7 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 					try {
 						// CRITICAL: Pass the orchestrator's worker ID as parent
 						// This ensures deployed workers send progress updates back to the orchestrator
-						const orchestratorWorkerId = getWorkerContext().workerId;
+						const orchestratorWorkerId = workerContext.workerId;
 						console.log(`[MCP:orchestrator_deploy_task] Deploying task=${args.taskId ?? '(auto)'} with parentWorkerId=${orchestratorWorkerId}`);
 						const options = {
 							...(args.modelId ? { modelId: args.modelId } : {}),
@@ -996,7 +1036,7 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 					try {
 						// CRITICAL: Pass the orchestrator's worker ID as parent
 						// This ensures retried workers send progress updates back to the orchestrator
-						const orchestratorWorkerId = getWorkerContext().workerId;
+						const orchestratorWorkerId = workerContext.workerId;
 						const options = {
 							parentWorkerId: orchestratorWorkerId,
 						};
@@ -1298,7 +1338,6 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 				'Poll for updates from your spawned subtasks. Call this periodically when you have running subtasks to check their status, receive completion notifications, or see if any are idle and need guidance.',
 				{},
 				async () => {
-					const workerContext = getWorkerContext();
 
 					try {
 						// Check if we have any pending updates
@@ -1387,7 +1426,6 @@ export function createA2AMcpServer(deps: IA2AMcpServerDependencies): McpSdkServe
 					progress: z.number().min(0).max(100).optional().describe('Progress percentage (0-100) for progress updates'),
 				},
 				async (args) => {
-					const workerContext = getWorkerContext();
 
 					// Check if we have a parent to notify
 					const parentWorkerId = workerContext.taskId; // Parent's task ID is our parent

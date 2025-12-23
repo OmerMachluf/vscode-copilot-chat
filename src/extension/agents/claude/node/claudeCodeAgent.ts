@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { HookInput, HookJSONOutput, McpSdkServerConfigWithInstance, Options, PreToolUseHookInput, Query, SDKAssistantMessage, SDKResultMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { HookInput, HookJSONOutput, Options, PreToolUseHookInput, Query, SDKAssistantMessage, SDKResultMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import Anthropic from '@anthropic-ai/sdk';
 import type * as vscode from 'vscode';
 import { IAuthenticationService } from '../../../../platform/authentication/common/authentication';
@@ -19,21 +19,22 @@ import { Disposable, DisposableMap } from '../../../../util/vs/base/common/lifec
 import { isWindows } from '../../../../util/vs/base/common/platform';
 import { URI } from '../../../../util/vs/base/common/uri';
 import { IInstantiationService } from '../../../../util/vs/platform/instantiation/common/instantiation';
-import { ICopilotCLIMCPHandler, MCPServerConfig } from '../../copilotcli/node/mcpHandler';
 import { GitHubMcpDefinitionProvider } from '../../../githubMcp/common/githubMcpDefinitionProvider';
 import { IAgentDiscoveryService } from '../../../orchestrator/agentDiscoveryService';
-import { IUnifiedDefinitionService } from '../../../orchestrator/unifiedDefinitionService';
 import { IClaudeCommandService } from '../../../orchestrator/claudeCommandService';
-import { IPluginGenerationService } from '../../../orchestrator/pluginGenerationService';
 import { ISubTaskManager } from '../../../orchestrator/orchestratorInterfaces';
+import { IOrchestratorQueueService } from '../../../orchestrator/orchestratorQueue';
 import { IOrchestratorService } from '../../../orchestrator/orchestratorServiceV2';
+import { IPluginGenerationService } from '../../../orchestrator/pluginGenerationService';
 import { ISafetyLimitsService } from '../../../orchestrator/safetyLimits';
 import { ITaskMonitorService } from '../../../orchestrator/taskMonitorService';
+import { IUnifiedDefinitionService } from '../../../orchestrator/unifiedDefinitionService';
 import { IWorkerContext } from '../../../orchestrator/workerToolsService';
 import { ToolName } from '../../../tools/common/toolNames';
 import { IToolsService } from '../../../tools/common/toolsService';
 import { isFileOkForTool } from '../../../tools/node/toolUtils';
 import { ExternalEditTracker } from '../../common/externalEditTracker';
+import { ICopilotCLIMCPHandler, MCPServerConfig } from '../../copilotcli/node/mcpHandler';
 import { ILanguageModelServerConfig, LanguageModelServer } from '../../node/langModelServer';
 import { claudeEditTools, ClaudeToolNames, getAffectedUrisForEditTool, IExitPlanModeInput, ITodoWriteInput } from '../common/claudeTools';
 import { createFormattedToolInvocation } from '../common/toolInvocationFormatter';
@@ -236,7 +237,6 @@ export class ClaudeAgentManager extends Disposable implements IClaudeAgentManage
 				}
 				session = newSession;
 			}
-
 			await session.invoke(
 				await this.resolvePrompt(request),
 				request.toolInvocationToken,
@@ -416,6 +416,7 @@ export class ClaudeCodeSession extends Disposable {
 		@IAuthenticationService private readonly authenticationService: IAuthenticationService,
 		@IUnifiedDefinitionService private readonly unifiedDefinitionService: IUnifiedDefinitionService,
 		@IPluginGenerationService private readonly pluginGenerationService: IPluginGenerationService,
+		@IOrchestratorQueueService private readonly queueService: IOrchestratorQueueService,
 	) {
 		super();
 	}
@@ -427,6 +428,54 @@ export class ClaudeCodeSession extends Disposable {
 	 */
 	public setWorkerContext(context: IWorkerContext): void {
 		this._workerContext = context;
+
+		// Register as owner handler to receive messages routed to this worker
+		// This allows child workers to send status updates and other messages to this parent worker
+		if (context.owner?.ownerId) {
+			this.logService.info(
+				`[ClaudeCodeSession] Registering owner handler | workerId=${context.workerId}, ownerId=${context.owner.ownerId}, ownerType=${context.owner.ownerType}`
+			);
+
+			const disposable = this.queueService.registerOwnerHandler(
+				context.owner.ownerId,
+				async (message) => {
+					this.logService.info(
+						`[ClaudeCodeSession] Received queued message | type=${message.type}, workerId=${message.workerId}, taskId=${message.taskId}, messageId=${message.id}`
+					);
+
+					// Format message content for delivery to session
+					const formattedMessage = JSON.stringify({
+						type: message.type,
+						workerId: message.workerId,
+						taskId: message.taskId,
+						content: message.content,
+						timestamp: message.timestamp
+					}, null, 2);
+
+					this.logService.debug(
+						`[ClaudeCodeSession] Delivering message to receiveChildUpdate | messagePreview=${formattedMessage.substring(0, 200)}...`
+					);
+
+					// Deliver to session's child update handler
+					this.receiveChildUpdate(formattedMessage);
+
+					this.logService.info(
+						`[ClaudeCodeSession] Successfully delivered message to session | messageId=${message.id}`
+					);
+				}
+			);
+
+			// Register disposable so handler is cleaned up when session is disposed
+			this._register(disposable);
+
+			this.logService.info(
+				`[ClaudeCodeSession] Owner handler registered successfully | ownerId=${context.owner.ownerId}`
+			);
+		} else {
+			this.logService.info(
+				`[ClaudeCodeSession] No owner context provided - worker will not receive routed messages | workerId=${context.workerId}`
+			);
+		}
 	}
 
 	/**
@@ -443,10 +492,22 @@ export class ClaudeCodeSession extends Disposable {
 	 * @param message The formatted update message from the child
 	 */
 	public receiveChildUpdate(message: string): void {
-		this.logService.info(`[ClaudeCodeSession] Received child update: ${message.substring(0, 100)}...`);
+		this.logService.info(
+			`[ClaudeCodeSession] Received child update | length=${message.length}, pendingCount=${this._pendingChildUpdates.length}, preview=${message.substring(0, 100)}...`
+		);
+
 		this._pendingChildUpdates.push(message);
+
+		this.logService.debug(
+			`[ClaudeCodeSession] Child update queued | totalPending=${this._pendingChildUpdates.length}`
+		);
+
 		// Try to wake up the session if it's idle and waiting for input
 		this._tryWakeUpSession();
+
+		this.logService.debug(
+			`[ClaudeCodeSession] receiveChildUpdate completed`
+		);
 	}
 
 	public override dispose(): void {
@@ -484,19 +545,25 @@ export class ClaudeCodeSession extends Disposable {
 	 * Called when child updates arrive to allow the session to continue processing.
 	 */
 	private _tryWakeUpSession(): void {
+		this.logService.debug(
+			`[ClaudeCodeSession] _tryWakeUpSession called | pendingPrompt=${!!this._pendingPrompt}, hasToken=${!!this._lastToolInvocationToken}, hasGenerator=${!!this._queryGenerator}, pendingUpdates=${this._pendingChildUpdates.length}`
+		);
+
 		// Only wake up if:
 		// 1. Session is waiting for next prompt (_pendingPrompt is set)
 		// 2. We have a stored tool invocation token
 		// 3. The session generator is still running
 		if (!this._pendingPrompt || !this._lastToolInvocationToken || !this._queryGenerator) {
 			this.logService.debug(
-				`[ClaudeCodeSession] Cannot wake up: pendingPrompt=${!!this._pendingPrompt}, ` +
+				`[ClaudeCodeSession] Cannot wake up session (missing prerequisites) | pendingPrompt=${!!this._pendingPrompt}, ` +
 				`hasToken=${!!this._lastToolInvocationToken}, hasGenerator=${!!this._queryGenerator}`
 			);
 			return;
 		}
 
-		this.logService.info(`[ClaudeCodeSession] Waking up session with ${this._pendingChildUpdates.length} pending child updates`);
+		this.logService.info(
+			`[ClaudeCodeSession] Waking up session | pendingChildUpdates=${this._pendingChildUpdates.length}, queueLength=${this._promptQueue.length}`
+		);
 
 		// Create a continuation prompt - the actual updates will be injected by _createPromptIterable
 		const continuationPrompt = 'Continue your work. Review the updates from your spawned subtasks (shown in the system reminder above) and proceed accordingly.';
@@ -517,13 +584,18 @@ export class ClaudeCodeSession extends Disposable {
 		// Add to queue
 		this._promptQueue.push(request);
 
+		this.logService.info(
+			`[ClaudeCodeSession] Wake-up request created and queued | queueLength=${this._promptQueue.length}`
+		);
+
 		// Resolve the pending prompt to wake up the session
 		const pendingPrompt = this._pendingPrompt;
 		this._pendingPrompt = undefined;
 		pendingPrompt.complete(request);
 
-		// Log that we're not awaiting the deferred - the session loop handles completion
-		this.logService.debug(`[ClaudeCodeSession] Wake-up request queued, session loop will process it`);
+		this.logService.info(
+			`[ClaudeCodeSession] Session wakeup completed - pending prompt resolved | queueLength=${this._promptQueue.length}`
+		);
 	}
 
 	/**
@@ -647,19 +719,74 @@ export class ClaudeCodeSession extends Disposable {
 			const orchestratorService = accessor.getIfExists(IOrchestratorService);
 			const languageFeaturesService = accessor.getIfExists(ILanguageFeaturesService);
 
+			// CRITICAL: If no worker context is provided (standalone session), create one using the session ID
+			// This ensures child tasks report to the correct session ID, not a generated timestamp-based ID
+			const effectiveWorkerContext = this._workerContext ?? (this.sessionId ? {
+				_serviceBrand: undefined as any,
+				workerId: this.sessionId,  // Use session ID as worker ID for proper message routing
+				worktreePath: workingDirectory,
+				depth: 0,
+				spawnContext: 'agent' as const,
+			} : undefined);
+
+			this.logService.info(
+				`[ClaudeCodeSession] Creating A2A MCP server | hasWorkerContext=${!!this._workerContext}, sessionId=${this.sessionId}, effectiveWorkerId=${effectiveWorkerContext?.workerId ?? '(will generate)'}`
+			);
+
 			return createA2AMcpServer({
 				subTaskManager: this.subTaskManager,
 				agentDiscoveryService: this.agentDiscoveryService,
 				safetyLimitsService: this.safetyLimitsService,
 				taskMonitorService: this.taskMonitorService,
-				workerContext: this._workerContext,
+				workerContext: effectiveWorkerContext,
 				orchestratorService,
 				languageFeaturesService,
 				workspaceRoot: workingDirectory,
+				sessionId: this.sessionId, // Pass persistent session ID for worker identity
 				// Callback for receiving pushed updates from child subtasks
 				onChildUpdate: (message: string) => this.receiveChildUpdate(message),
 			});
 		});
+
+		// For standalone sessions (no worker context), register as owner handler for the session ID
+		// This allows child tasks spawned by this session to send updates back to it
+		if (!this._workerContext && this.sessionId) {
+			this.logService.info(
+				`[ClaudeCodeSession] Registering standalone session as owner handler | sessionId=${this.sessionId}`
+			);
+
+			const disposable = this.queueService.registerOwnerHandler(
+				this.sessionId,
+				async (message) => {
+					this.logService.info(
+						`[ClaudeCodeSession] Standalone session received queued message | type=${message.type}, workerId=${message.workerId}, taskId=${message.taskId}, messageId=${message.id}`
+					);
+
+					// Format message content for delivery to session
+					const formattedMessage = JSON.stringify({
+						type: message.type,
+						workerId: message.workerId,
+						taskId: message.taskId,
+						content: message.content,
+						timestamp: message.timestamp
+					}, null, 2);
+
+					// Deliver to session's child update handler
+					this.receiveChildUpdate(formattedMessage);
+
+					this.logService.info(
+						`[ClaudeCodeSession] Successfully delivered message to standalone session | messageId=${message.id}`
+					);
+				}
+			);
+
+			// Register disposable so handler is cleaned up when session is disposed
+			this._register(disposable);
+
+			this.logService.info(
+				`[ClaudeCodeSession] Standalone session owner handler registered successfully | sessionId=${this.sessionId}`
+			);
+		}
 
 		// Build shared MCP servers from workspace and GitHub sources
 		// These are merged with the built-in A2A orchestration MCP server

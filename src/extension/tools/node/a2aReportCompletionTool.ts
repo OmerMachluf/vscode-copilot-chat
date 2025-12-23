@@ -14,13 +14,13 @@ import { IWorkerContext } from '../../orchestrator/workerToolsService';
 import { ToolName } from '../common/toolNames';
 import { ICopilotTool, ToolRegistry } from '../common/toolsRegistry';
 
-interface A2ASubTaskCompleteParams {
+interface A2AReportCompletionParams {
 	status: 'success' | 'partial' | 'failed';
 	output: string;
 	outputFile?: string;
 	metadata?: Record<string, unknown>;
 	error?: string;
-	/** Sub-task ID to complete */
+	/** Sub-task ID to report completion for */
 	subTaskId: string;
 }
 
@@ -44,8 +44,8 @@ async function execGit(args: string[], cwd: string): Promise<string> {
 	});
 }
 
-export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompleteParams> {
-	static readonly toolName = ToolName.A2ASubTaskComplete;
+export class A2AReportCompletionTool implements ICopilotTool<A2AReportCompletionParams> {
+	static readonly toolName = ToolName.A2AReportCompletion;
 
 	constructor(
 		@ISubTaskManager private readonly _subTaskManager: ISubTaskManager,
@@ -57,19 +57,19 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 
 	private _log(message: string, data?: Record<string, unknown>): void {
 		const dataStr = data ? ` | ${JSON.stringify(data)}` : '';
-		this._logService.info(`[ORCH-DEBUG][A2ASubTaskComplete] ${message}${dataStr}`);
+		this._logService.info(`[ORCH-DEBUG][A2AReportCompletion] ${message}${dataStr}`);
 	}
 
 	get enabled(): boolean {
 		return this._workerContext !== undefined;
 	}
 
-	prepareInvocation(_options: LanguageModelToolInvocationPrepareOptions<A2ASubTaskCompleteParams>, _token: CancellationToken): ProviderResult<any> {
+	prepareInvocation(_options: LanguageModelToolInvocationPrepareOptions<A2AReportCompletionParams>, _token: CancellationToken): ProviderResult<any> {
 		return { presentation: 'hidden' };
 	}
 
 	async invoke(
-		options: LanguageModelToolInvocationOptions<A2ASubTaskCompleteParams>,
+		options: LanguageModelToolInvocationOptions<A2AReportCompletionParams>,
 		_token: CancellationToken
 	): Promise<LanguageModelToolResult> {
 		const {
@@ -118,7 +118,7 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 				changedFilesCount: changeSummary?.changedFiles?.length ?? 0,
 			});
 
-			// IMPORTANT: If there are uncommitted changes, fail the completion.
+			// IMPORTANT: If there are uncommitted changes, fail the completion report.
 			// The agent is responsible for committing their work before calling this tool.
 			// This ensures different repositories can follow their own commit conventions.
 			if (changeSummary?.hasChanges) {
@@ -135,13 +135,13 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 
 				return new LanguageModelToolResult([
 					new LanguageModelTextPart(
-						`ERROR: Cannot complete - you have uncommitted changes!\n\n` +
+						`ERROR: Cannot report completion - you have uncommitted changes!\n\n` +
 						`Uncommitted files (${changeSummary.changedFiles.length}): ${fileList}${moreFiles}\n\n` +
-						`**You must commit your changes before calling a2a_subtask_complete.**\n\n` +
+						`**You must commit your changes before calling a2a_reportCompletion.**\n\n` +
 						`Please:\n` +
 						`1. Stage your changes: git add -A\n` +
 						`2. Commit with a descriptive message: git commit -m "your message"\n` +
-						`3. Then call a2a_subtask_complete again\n\n` +
+						`3. Then call a2a_reportCompletion again\n\n` +
 						`This ensures your work is properly tracked and can be integrated by your parent.`
 					),
 				]);
@@ -198,9 +198,9 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 				content: result
 			});
 
-			this._log('Completion message enqueued successfully', { subTaskId, messageId, targetDescription });
+			this._log('Completion report message enqueued successfully', { subTaskId, messageId, targetDescription });
 
-			// CRITICAL FIX: Also notify parent via TaskMonitorService (like progress checks do)
+			// CRITICAL: Also notify parent via TaskMonitorService (like progress checks do)
 			// This ensures the parent worker gets woken up immediately with completion notification
 			const ownerContext = this._workerContext.owner;
 			const isChildWorker = ownerContext && ownerContext.ownerType === 'worker';
@@ -273,6 +273,6 @@ export class A2ASubTaskCompleteTool implements ICopilotTool<A2ASubTaskCompletePa
 
 }
 
-// Safe to cast: A2ASubTaskCompleteTool satisfies ICopilotToolCtor requirements
+// Safe to cast: A2AReportCompletionTool satisfies ICopilotToolCtor requirements
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-ToolRegistry.registerTool(A2ASubTaskCompleteTool as any);
+ToolRegistry.registerTool(A2AReportCompletionTool as any);

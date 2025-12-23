@@ -10,7 +10,7 @@ import { ICopilotTokenStore } from '../../authentication/common/copilotTokenStor
 import { IEnvService } from '../../env/common/envService';
 import { packageJson } from '../../env/common/packagejson';
 import { IExperimentationService } from '../../telemetry/common/nullExperimentationService';
-import { AbstractConfigurationService, BaseConfig, Config, ConfigValueValidators, CopilotConfigPrefix, ExperimentBasedConfig, ExperimentBasedConfigType, globalConfigRegistry, InspectConfigResult } from '../common/configurationService';
+import { AbstractConfigurationService, BaseConfig, Config, ConfigKey, ConfigValueValidators, CopilotConfigPrefix, ExperimentBasedConfig, ExperimentBasedConfigType, globalConfigRegistry, InspectConfigResult } from '../common/configurationService';
 
 // Helper to avoid JSON.stringify quoting strings
 function stringOrStringify(value: any) {
@@ -59,6 +59,10 @@ export class ConfigurationServiceImpl extends AbstractConfigurationService {
 			const now = Date.now();
 			// check that the team specific settings are not expired or defined too long in the future (> 14 days)
 			for (const config of globalConfigRegistry.configs.values()) {
+				if (config.fullyQualifiedId === ConfigKey.TeamInternal.InternalWelcomeHintEnabled.fullyQualifiedId) {
+					// add exemption for the welcomePageHint setting
+					continue;
+				}
 				if (ConfigValueValidators.isCustomTeamDefaultValue(config.defaultValue)) {
 					const expirationDate = new Date(config.defaultValue.expirationDate);
 					if (expirationDate.getTime() < now) {

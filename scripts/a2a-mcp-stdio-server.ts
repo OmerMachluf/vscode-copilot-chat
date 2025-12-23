@@ -787,9 +787,22 @@ async function main() {
 				}
 
 				case 'orchestrator_complete_task': {
-					await orchestratorService.completeTask(args?.taskId as string);
+					// Look up task to get worker ID
+					const taskId = args?.taskId as string;
+					const task = orchestratorService.getTaskById(taskId);
+					if (!task) {
+						result = { error: `Task ${taskId} not found` };
+						break;
+					}
+					if (!task.workerId) {
+						result = { error: `Task ${taskId} has no assigned worker (status: ${task.status})` };
+						break;
+					}
+
+					// Pass worker IDs for authorization check
+					await orchestratorService.completeTask(task.workerId, workerContext.workerId);
 					const readyTasks = orchestratorService.getReadyTasks();
-					result = { completed: true, readyTasks: readyTasks.map(t => t.id) };
+					result = { completed: true, workerId: task.workerId, taskId, readyTasks: readyTasks.map(t => t.id) };
 					break;
 				}
 

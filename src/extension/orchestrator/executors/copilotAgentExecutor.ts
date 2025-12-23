@@ -5,6 +5,7 @@
 
 import * as vscode from 'vscode';
 import { ILogService } from '../../../platform/log/common/logService';
+import { Disposable } from '../../../util/vs/base/common/lifecycle';
 import { IAgentRunner } from '../agentRunner';
 import {
 AgentBackendType,
@@ -14,11 +15,16 @@ AgentWorkerStatus,
 IAgentExecutor,
 ParsedAgentType,
 } from '../agentExecutor';
+import { IOrchestratorQueueService } from '../orchestratorQueue';
+import { IWorkerContext } from '../workerToolsService';
 
 interface ActiveWorkerState {
 status: AgentWorkerStatus;
 cancellation: vscode.CancellationTokenSource;
 startTime: number;
+workerContext?: IWorkerContext;
+ownerHandlerDisposable?: Disposable;
+pendingChildMessages: string[];
 }
 
 /**
@@ -37,6 +43,7 @@ private readonly _activeWorkers = new Map<string, ActiveWorkerState>();
 constructor(
 @IAgentRunner private readonly _agentRunner: IAgentRunner,
 @ILogService private readonly _logService: ILogService,
+@IOrchestratorQueueService private readonly _queueService: IOrchestratorQueueService,
 ) {}
 
 async execute(params: AgentExecuteParams, stream?: vscode.ChatResponseStream): Promise<AgentExecuteResult> {
@@ -53,20 +60,74 @@ additionalInstructions,
 workerToolSet,
 toolInvocationToken,
 onPaused,
+workerContext,
 } = params;
 
 const startTime = Date.now();
 
+this._logService.info(`[CopilotAgentExecutor] Starting execution for task ${taskId} | hasWorkerContext=${!!workerContext}`);
+
 // Track worker status
 const cancellationSource = new vscode.CancellationTokenSource();
-this._activeWorkers.set(taskId, {
+const workerState: ActiveWorkerState = {
 status: { state: 'running', startTime },
 cancellation: cancellationSource,
 startTime,
-});
+workerContext,
+pendingChildMessages: [],
+};
+
+// Register as owner handler to receive child updates if we have worker context
+if (workerContext?.owner?.ownerId) {
+this._logService.info(
+`[CopilotAgentExecutor] Registering owner handler | workerId=${workerContext.workerId}, ownerId=${workerContext.owner.ownerId}, ownerType=${workerContext.owner.ownerType}`
+);
+
+const ownerHandlerDisposable = this._queueService.registerOwnerHandler(
+workerContext.owner.ownerId,
+async (message) => {
+this._logService.info(
+`[CopilotAgentExecutor] Received queued message | type=${message.type}, workerId=${message.workerId}, taskId=${message.taskId}, messageId=${message.id}`
+);
+
+// Format and queue the message
+const formattedMessage = JSON.stringify({
+type: message.type,
+workerId: message.workerId,
+taskId: message.taskId,
+content: message.content,
+timestamp: message.timestamp
+}, null, 2);
+
+// Store in worker state
+const state = this._activeWorkers.get(taskId);
+if (state) {
+state.pendingChildMessages.push(formattedMessage);
+this._logService.info(
+`[CopilotAgentExecutor] Queued child message | taskId=${taskId}, queuedCount=${state.pendingChildMessages.length}`
+);
+} else {
+this._logService.warn(
+`[CopilotAgentExecutor] Received message for unknown worker | taskId=${taskId}, messageId=${message.id}`
+);
+}
+}
+) as Disposable;
+
+workerState.ownerHandlerDisposable = ownerHandlerDisposable;
+
+this._logService.info(
+`[CopilotAgentExecutor] Owner handler registered successfully | ownerId=${workerContext.owner.ownerId}`
+);
+} else if (workerContext) {
+this._logService.info(
+`[CopilotAgentExecutor] No owner context provided - worker will not receive routed messages | workerId=${workerContext.workerId}`
+);
+}
+
+this._activeWorkers.set(taskId, workerState);
 
 try {
-this._logService.info(`[CopilotAgentExecutor] Starting execution for task ${taskId}`);
 
 // Get the model to use
 let resolvedModel = model;
@@ -82,13 +143,39 @@ throw new Error('No model available for execution');
 // Create a collector stream if no stream provided
 const responseStream = stream ?? this._createCollectorStream();
 
+// Check if there are pending child messages from a previous interrupted execution
+// If so, inject them into the prompt/context
+let finalPrompt = prompt;
+let finalAdditionalInstructions = additionalInstructions;
+
+if (workerState.pendingChildMessages.length > 0) {
+this._logService.info(
+`[CopilotAgentExecutor] Injecting ${workerState.pendingChildMessages.length} pending child messages into execution | taskId=${taskId}`
+);
+
+// Format child messages as a system reminder
+const childUpdatesContext = workerState.pendingChildMessages
+.map((msg, idx) => `Child Update ${idx + 1}:\n${msg}`)
+.join('\n\n---\n\n');
+
+// Inject into additional instructions so the agent sees them
+const childUpdateReminder =
+`\n\n<system-reminder>\nYou have received updates from your spawned child tasks:\n\n${childUpdatesContext}\n\nReview these updates and continue your work accordingly.\n</system-reminder>`;
+
+finalAdditionalInstructions = (additionalInstructions || '') + childUpdateReminder;
+
+// Clear the pending messages now that we've injected them
+this._logService.info(`[CopilotAgentExecutor] Clearing ${workerState.pendingChildMessages.length} injected messages | taskId=${taskId}`);
+workerState.pendingChildMessages = [];
+}
+
 const result = await this._agentRunner.run({
-prompt,
+prompt: finalPrompt,
 model: resolvedModel,
 token: token,
 worktreePath,
 history,
-additionalInstructions,
+additionalInstructions: finalAdditionalInstructions,
 workerToolSet,
 toolInvocationToken,
 maxToolCallIterations: options?.maxToolCallIterations ?? 200,
@@ -123,6 +210,13 @@ error: result.error ?? 'Unknown error',
 
 this._logService.info(`[CopilotAgentExecutor] Completed execution for task ${taskId} in ${executionTime}ms`);
 
+// Dispose owner handler if registered
+if (workerState?.ownerHandlerDisposable) {
+this._logService.info(`[CopilotAgentExecutor] Disposing owner handler | taskId=${taskId}`);
+workerState.ownerHandlerDisposable.dispose();
+workerState.ownerHandlerDisposable = undefined;
+}
+
 return {
 status: result.success ? 'success' : 'failed',
 output: result.response ?? '',
@@ -140,6 +234,13 @@ workerState.status = {
 state: 'failed',
 error: error instanceof Error ? error.message : String(error),
 };
+
+// Dispose owner handler if registered
+if (workerState.ownerHandlerDisposable) {
+this._logService.info(`[CopilotAgentExecutor] Disposing owner handler (error path) | taskId=${taskId}`);
+workerState.ownerHandlerDisposable.dispose();
+workerState.ownerHandlerDisposable = undefined;
+}
 }
 
 const errorMessage = error instanceof Error ? error.message : String(error);
@@ -154,10 +255,25 @@ error: errorMessage,
 }
 
 async sendMessage(workerId: string, message: string): Promise<void> {
-// For the Copilot executor, sending a message means starting a new execution
-// with the message. The actual conversation continuity is handled by the
-// history parameter in execute().
-this._logService.info(`[CopilotAgentExecutor] Message queued for worker ${workerId}: ${message.substring(0, 100)}...`);
+const workerState = this._activeWorkers.get(workerId);
+if (!workerState) {
+this._logService.warn(`[CopilotAgentExecutor] sendMessage called for unknown worker ${workerId}`);
+return;
+}
+
+this._logService.info(`[CopilotAgentExecutor] Received message for worker ${workerId} | messagePreview=${message.substring(0, 100)}...`);
+
+// Queue the message
+workerState.pendingChildMessages.push(message);
+this._logService.info(`[CopilotAgentExecutor] Message queued | workerId=${workerId}, queuedCount=${workerState.pendingChildMessages.length}`);
+
+// Cancel the current execution to interrupt the agent
+this._logService.info(`[CopilotAgentExecutor] Interrupting agent to inject child messages | workerId=${workerId}`);
+workerState.cancellation.cancel();
+
+// Note: The orchestrator will re-invoke execute() with the messages included in history/context
+// The queued messages in pendingChildMessages will be consumed on the next execution
+this._logService.info(`[CopilotAgentExecutor] Agent interrupted - awaiting re-execution with child messages | workerId=${workerId}`);
 }
 
 async cancel(workerId: string): Promise<void> {
@@ -168,6 +284,14 @@ workerState.status = {
 state: 'failed',
 error: 'Cancelled by user',
 };
+
+// Dispose owner handler if registered
+if (workerState.ownerHandlerDisposable) {
+this._logService.info(`[CopilotAgentExecutor] Disposing owner handler (cancel) | workerId=${workerId}`);
+workerState.ownerHandlerDisposable.dispose();
+workerState.ownerHandlerDisposable = undefined;
+}
+
 this._logService.info(`[CopilotAgentExecutor] Cancelled execution for worker ${workerId}`);
 }
 }

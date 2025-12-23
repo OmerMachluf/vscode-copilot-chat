@@ -611,9 +611,25 @@ class CompleteTaskTool implements ICopilotTool<ICompleteTaskParams> {
 		const { taskId } = options.input;
 
 		try {
-			await this._orchestratorService.completeTask(taskId);
+			// Look up the task to get the worker ID
+			const task = this._orchestratorService.getTaskById(taskId);
+			if (!task) {
+				return new LanguageModelToolResult([
+					new LanguageModelTextPart(`❌ Task "${taskId}" not found`)
+				]);
+			}
+
+			if (!task.workerId) {
+				return new LanguageModelToolResult([
+					new LanguageModelTextPart(`❌ Task "${taskId}" has no assigned worker (status: ${task.status})`)
+				]);
+			}
+
+			// This UI tool is only for orchestrator system-level operations
+			// Regular agents completing child tasks should use the MCP server tool instead
+			await this._orchestratorService.completeTask(task.workerId, 'orchestrator-system');
 			return new LanguageModelToolResult([
-				new LanguageModelTextPart(`✅ Task "${taskId}" marked as completed. Worker removed and dependent tasks will be deployed.`)
+				new LanguageModelTextPart(`✅ Worker "${task.workerId}" completed (task: ${taskId}). Dependent tasks will be deployed.`)
 			]);
 		} catch (e: any) {
 			return new LanguageModelToolResult([

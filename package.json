@@ -1720,11 +1720,11 @@
 				}
 			},
 			{
-				"name": "copilot_a2aSubTaskComplete",
-				"toolReferenceName": "a2a_subtask_complete",
-				"displayName": "Complete Sub-Task",
-				"modelDescription": "Mark a sub-task as completed and report results. IMPORTANT: You must commit all your changes BEFORE calling this tool. If uncommitted changes are detected, this tool will fail and ask you to commit first. After completion, your parent will pull your changes from your worktree branch.",
-				"userDescription": "Complete sub-task",
+				"name": "copilot_a2aReportCompletion",
+				"toolReferenceName": "a2a_reportCompletion",
+				"displayName": "Report Completion",
+				"modelDescription": "Report task completion to parent agent. IMPORTANT: You must commit all your changes BEFORE calling this tool. If uncommitted changes are detected, this tool will fail and ask you to commit first. This does NOT automatically mark the task as complete in the plan - your parent must review your work, merge your changes, and call orchestrator_completeTask to finalize completion.",
+				"userDescription": "Report task completion",
 				"icon": "$(check)",
 				"tags": ["vscode_codesearch"],
 				"inputSchema": {
@@ -1886,7 +1886,7 @@
 					"a2a_spawnParallelSubTasks",
 					"a2a_awaitSubTasks",
 					"a2a_notifyOrchestrator",
-					"a2a_subtask_complete",
+					"a2a_reportCompletion",
 					"a2a_pull_subtask_changes",
 					"a2a_send_message_to_worker"
 				]
@@ -5993,6 +5993,7 @@
 		"@parcel/watcher": "^2.5.1",
 		"@stylistic/eslint-plugin": "^3.0.1",
 		"@types/eslint": "^9.0.0",
+		"@types/express": "^5.0.0",
 		"@types/google-protobuf": "^3.15.12",
 		"@types/js-yaml": "^4.0.9",
 		"@types/markdown-it": "^14.0.0",
@@ -6095,6 +6096,7 @@
 		"applicationinsights": "^2.9.7",
 		"diff": "^8.0.2",
 		"dompurify": "^3.3.0",
+		"express": "^4.21.2",
 		"ignore": "^7.0.5",
 		"isbinaryfile": "^5.0.4",
 		"jsonc-parser": "^3.3.1",

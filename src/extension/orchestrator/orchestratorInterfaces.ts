@@ -146,6 +146,8 @@ export interface ISubTask {
 	parentTaskId: string;
 	/** Plan ID this sub-task belongs to */
 	planId: string;
+	/** Session ID (if this sub-task is associated with a chat session) */
+	sessionId?: string;
 	/** Path to the worktree (inherited from parent) */
 	worktreePath: string;
 	/** Base branch (inherited from parent's current branch) */
@@ -206,6 +208,8 @@ export interface ISubTaskCreateOptions {
 	parentSubTaskId?: string;
 	/** Plan ID */
 	planId: string;
+	/** Session ID (if this sub-task is associated with a chat session) */
+	sessionId?: string;
 	/** Worktree path (inherited from parent) */
 	worktreePath: string;
 	/** Base branch (inherited from parent's current branch) */

@@ -278,7 +278,7 @@ export class ParentCompletionService extends Disposable implements IParentComple
 		lines.push('**YOUR NEXT STEP:** As the parent, decide what to do:');
 		lines.push('- If changes look good and you want to integrate them now: commit/merge using your normal workflow (git / PR).');
 		lines.push('- If the sub-agent is expected to have made file changes but did not: send follow-up instructions (ask for concrete edits + rerun).');
-		lines.push('- If this completion was a fallback (tool not used): treat results as lower confidence and consider asking the sub-agent to call `a2a_subtask_complete` explicitly.');
+		lines.push('- If this completion was a fallback (tool not used): treat results as lower confidence and consider asking the sub-agent to call `a2a_reportCompletion` explicitly.');
 
 		return lines.join('\n');
 	}

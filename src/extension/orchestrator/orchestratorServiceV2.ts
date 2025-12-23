@@ -120,6 +120,12 @@ export interface WorkerTask {
 	readonly targetFiles?: string[];
 	/** Parent worker ID for subtasks - messages route to parent instead of orchestrator */
 	readonly parentWorkerId?: string;
+	/**
+	 * Persistent session ID from VS Code chat conversation.
+	 * This ID survives VS Code restarts and allows resuming orchestration
+	 * with the same session even if workers are redeployed.
+	 */
+	readonly sessionId?: string;
 	/** Parsed agent type (set during deploy) */
 	parsedAgentType?: ParsedAgentType;
 	/** Current execution status */
@@ -182,6 +188,12 @@ export interface CreateTaskOptions {
 	targetFiles?: string[];
 	/** Parent worker ID for subtasks - messages route to parent instead of orchestrator */
 	parentWorkerId?: string;
+	/**
+	 * Persistent session ID from VS Code chat conversation.
+	 * When provided, this task will be associated with the chat session,
+	 * allowing orchestration to resume even after VS Code restarts.
+	 */
+	sessionId?: string;
 	/** Pre-parsed agent type for subtasks - preserves backend specification from spawn request */
 	parsedAgentType?: ParsedAgentType;
 }
@@ -310,8 +322,8 @@ export interface IOrchestratorService {
 	/** Cancel a task: stop if running, reset to pending or remove */
 	cancelTask(taskId: string, remove?: boolean): Promise<void>;
 
-	/** Complete a task: mark as completed, remove worker, trigger dependent tasks */
-	completeTask(taskId: string): Promise<void>;
+	/** Complete a worker's task: mark as completed, remove worker, trigger dependent tasks */
+	completeTask(workerIdToComplete: string, callerWorkerId: string): Promise<void>;
 
 	/** Retry a failed task: reset status and re-deploy */
 	retryTask(taskId: string, options?: DeployOptions): Promise<WorkerSession>;
@@ -943,7 +955,7 @@ export class OrchestratorService extends Disposable implements IOrchestratorServ
 You appear to be idle (no recent activity). Please respond with your current status.
 
 ### If you have COMPLETED your task:
-**You MUST call the \`a2a_subtask_complete\` tool** with your final results. This is required to notify your parent that you're done. Without calling this tool, your parent won't know you've finished.
+**You MUST call the \`a2a_reportCompletion\` tool** with your final results. This is required to notify your parent that you're done. Without calling this tool, your parent won't know you've finished.
 
 ### If you are BLOCKED or cannot proceed:
 Tell us what's preventing you from moving forward:
@@ -1125,7 +1137,7 @@ Your status update here...
 
 **After you finish writing <update_parent_end>, continue working on your task immediately. Do not wait for further instructions.**
 
-**Reminder:** When you have fully completed your task, you MUST call \`a2a_subtask_complete\` to notify your parent.
+**Reminder:** When you have fully completed your task, you MUST call \`a2a_reportCompletion\` to notify your parent.
 `
 			: `
 ## Progress Check (Periodic)
@@ -1414,7 +1426,10 @@ This is a scheduled progress check. Please provide a brief status update:
 					taskId: task.id,
 					workerId: workerId,
 					worktreePath: worker.worktreePath,
-					type: 'status_update',
+					owner: (() => {
+						const toolSet = this._workerToolSets.get(workerId);
+						return toolSet?.workerContext?.owner || { ownerType: 'orchestrator', ownerId: 'orchestrator' };
+					})(),
 					content: {
 						type: 'progress_response',
 						response: truncatedResponse || 'Worker provided no progress details.',
@@ -1662,22 +1677,65 @@ Process these updates and continue your work. If subtasks completed successfully
 
 		switch (message.type) {
 			case 'completion':
-				task.status = 'completed';
-				task.completedAt = Date.now();
-				this._onOrchestratorEvent.fire({
-					type: 'task.completed',
-					planId: task.planId,
+				// CRITICAL: a2a_reportCompletion sends this message when a child reports completion.
+				// This does NOT automatically mark the task as complete!
+				// The parent/orchestrator must review, merge, and call orchestrator_completeTask.
+
+				this._orchLog('Received child completion report', {
 					taskId: task.id,
-					workerId: message.workerId,
-					sessionUri: (message.content as any)?.sessionUri,
+					taskName: task.name,
+					parentWorkerId: task.parentWorkerId,
+					hasParent: !!task.parentWorkerId,
 				});
 
-				// Trigger deployment of dependent tasks
-				if (task.planId) {
-					this._deployReadyTasks(task.planId).catch((err: Error) => {
-						console.error('Failed to deploy ready tasks:', err);
-					});
+				// If there's a parent worker, notify them immediately
+				if (task.parentWorkerId) {
+					const parentWorker = this._workers.get(task.parentWorkerId);
+					if (parentWorker) {
+						const completionData = message.content as any;
+
+						// Get worktreePath from the child worker (proper separation of concerns)
+						const childWorker = task.workerId ? this._workers.get(task.workerId) : undefined;
+						const worktreePath = childWorker?.worktreePath;
+						const branchName = worktreePath?.split(/[/\\]/).pop();
+
+						const completionNotice = `
+## Child Task Completion Report
+
+**Task:** ${task.name} (${task.id})
+**Status:** ${completionData?.status || 'completed'}
+**Output:** ${completionData?.output || 'No output provided'}
+
+⚠️ **IMPORTANT:** This is a completion REPORT, not automatic completion!
+
+**Required Actions:**
+1. Review the child's work in their worktree${worktreePath ? ` at: ${worktreePath}` : ''}
+2. Pull changes: \`a2a_pull_subtask_changes\` with \`subtaskWorktree: "${worktreePath || 'unknown'}"\`
+3. Review and merge the changes if needed
+4. Delete the child's branch: \`git branch -d ${branchName || 'unknown'}\`
+5. Mark task complete: \`orchestrator_completeTask\` with \`taskId: "${task.id}"\`
+
+**The task is still "running" in the plan until you complete these steps.**
+`;
+						this._orchLog('Notifying parent of child completion', {
+							parentWorkerId: task.parentWorkerId,
+							taskId: task.id,
+							childWorkerId: task.workerId,
+							worktreePath
+						});
+						parentWorker.sendClarification(completionNotice);
+					} else {
+						this._orchLog('Parent worker not found', { parentWorkerId: task.parentWorkerId });
+					}
+				} else {
+					this._orchLog('No parent worker for task (orphaned completion report)', { taskId: task.id });
 				}
+
+				// DO NOT mark task as completed
+				// DO NOT deploy dependent tasks
+				// DO NOT fire task.completed event
+				// The orchestrator/parent will do this via orchestrator_completeTask after review
+
 				this._saveState();
 				break;
 
@@ -2348,6 +2406,11 @@ Focus on your assigned task and provide a clear, actionable result.`;
 			}
 		}
 
+		// Get owner context from worker's tool set
+		const requestWorkerId = request.context.workerId as string;
+		const toolSet = requestWorkerId ? this._workerToolSets.get(requestWorkerId) : undefined;
+		const ownerContext = toolSet?.workerContext?.owner;
+
 		// Enqueue a response message for the requester
 		this._queueService.enqueueMessage({
 			id: generateUuid(),
@@ -2355,8 +2418,9 @@ Focus on your assigned task and provide a clear, actionable result.`;
 			priority: 'high',
 			planId: request.context.planId as string || '',
 			taskId: request.context.taskId as string || '',
-			workerId: request.context.workerId as string || '',
+			workerId: requestWorkerId || '',
 			worktreePath: request.context.worktreePath as string || '',
+			owner: ownerContext || { ownerType: 'orchestrator', ownerId: 'orchestrator' },
 			subTaskId: request.requesterType === 'subtask' ? request.requesterId : undefined,
 			type: 'status_update',
 			content: {
@@ -2617,6 +2681,25 @@ Focus on your assigned task and provide a clear, actionable result.`;
 		return this._tasks.find(t => t.id === taskId);
 	}
 
+	/**
+	 * Find tasks associated with a persistent session ID.
+	 * This allows resuming orchestration for a specific chat session across restarts.
+	 */
+	public getTasksBySessionId(sessionId: string): readonly WorkerTask[] {
+		return this._tasks.filter(t => t.sessionId === sessionId);
+	}
+
+	/**
+	 * Get the active (running or pending) task for a session ID.
+	 * Useful for resuming a session after VS Code restart.
+	 */
+	public getActiveTaskForSession(sessionId: string): WorkerTask | undefined {
+		return this._tasks.find(t =>
+			t.sessionId === sessionId &&
+			(t.status === 'running' || t.status === 'pending' || t.status === 'queued')
+		);
+	}
+
 	public getPlan(): readonly WorkerTask[] {
 		return this.getTasks(this._activePlanId);
 	}
@@ -2658,6 +2741,7 @@ Focus on your assigned task and provide a clear, actionable result.`;
 			agent = '@agent',
 			targetFiles,
 			parentWorkerId,
+			sessionId,
 			parsedAgentType,
 		} = options;
 
@@ -2675,6 +2759,7 @@ Focus on your assigned task and provide a clear, actionable result.`;
 			agent,
 			targetFiles,
 			parentWorkerId,
+			sessionId,
 			parsedAgentType,
 			status: 'pending',
 		};
@@ -3021,7 +3106,53 @@ Focus on your assigned task and provide a clear, actionable result.`;
 			const effectiveModelId = selectedModel?.id ?? preferredModelId;
 
 			// Create worker session with agent instructions and model
-			this._logService.info(`[Orchestrator:deploy] Creating WorkerSession: taskId=${task.id}, worktreePath=${worktreePath}, agentId=${agentId}, modelId=${effectiveModelId}, backend=${parsedAgentType.backend}`);
+			// IMPORTANT: Use stable worker ID that persists across redeploys
+			// Priority order for worker ID:
+			// 1. Reuse existing task.workerId (if task is being redeployed)
+			// 2. Use task.sessionId for chat-based workers (ClaudeCodeSession - persistent across VS Code restarts)
+			// 3. Generate new ID for orchestrator background workers
+			const existingWorkerId = task.workerId; // Capture before modification
+			const workerId = task.workerId ?? task.sessionId ?? `worker-${generateUuid().substring(0, 8)}`;
+			const workerIdSource = existingWorkerId ? 'reused' : task.sessionId ? 'sessionId' : 'generated';
+
+			// CRITICAL: Store workerId on task for future redeploys
+			// This enables subtasks to route completion messages to a stable parent ID
+			task.workerId = workerId;
+
+			this._logService.info(`[Orchestrator:deploy] Stable worker ID determined: taskId=${task.id}, workerId=${workerId}, source=${workerIdSource}, sessionId=${task.sessionId ?? '(none)'}, worktreePath=${worktreePath}, agentId=${agentId}, modelId=${effectiveModelId}, backend=${parsedAgentType.backend}`);
+
+			// Clean up old worker resources if reusing worker ID (redeploy/resume scenario)
+			// This prevents resource leaks when the same worker ID is used for a new WorkerSession
+			if (this._workers.has(workerId)) {
+				this._logService.info(`[Orchestrator:deploy] Cleaning up old worker resources for ${workerId} before redeploy`);
+				const oldWorker = this._workers.get(workerId);
+
+				// Dispose old wake-up adapter
+				const oldWakeUpAdapter = this._wakeUpAdapters.get(workerId);
+				if (oldWakeUpAdapter) {
+					oldWakeUpAdapter.dispose();
+					this._wakeUpAdapters.delete(workerId);
+				}
+
+				// Dispose old worker (stops conversation loop)
+				if (oldWorker) {
+					oldWorker.dispose();
+				}
+				this._workers.delete(workerId);
+
+				// Clean up tool set
+				if (this._workerToolSets.has(workerId)) {
+					this._workerToolsService.disposeWorkerToolSet(workerId);
+					this._workerToolSets.delete(workerId);
+				}
+
+				// Clean up model overrides
+				this._workerModelOverrides.delete(workerId);
+
+				// Note: We don't remove the worktree or Claude session - those are reused
+				this._logService.info(`[Orchestrator:deploy] Old worker resources cleaned up for ${workerId}`);
+			}
+
 			const worker = new WorkerSession(
 				task.name,
 				task.description,
@@ -3031,8 +3162,9 @@ Focus on your assigned task and provide a clear, actionable result.`;
 				agentId,
 				composedInstructions.instructions,
 				effectiveModelId,
+				workerId, // Stable worker ID (reused/sessionId/generated)
 			);
-			this._logService.info(`[Orchestrator:deploy] WorkerSession created: workerId=${worker.id}, taskId=${task.id}`);
+			this._logService.info(`[Orchestrator:deploy] WorkerSession created: workerId=${worker.id}, taskId=${task.id}, matches expected workerId=${worker.id === workerId}`);
 
 			// Create scoped tool set for this worker
 			// This ensures tools operate within the worker's worktree
@@ -3066,29 +3198,38 @@ Focus on your assigned task and provide a clear, actionable result.`;
 
 			// Link task to worker and create session URI
 			task.status = 'running';
+			// Verify worker.id matches the stable workerId we set earlier
+			if (worker.id !== workerId) {
+				this._logService.error(`[Orchestrator:deploy] CRITICAL: Worker ID mismatch! Expected ${workerId}, got ${worker.id}`);
+				throw new Error(`Worker ID mismatch: expected ${workerId}, got ${worker.id}`);
+			}
+			// task.workerId was already set earlier to enable stable routing - no need to reassign
+			// but we keep this line for clarity that task links to worker
 			task.workerId = worker.id;
 			task.sessionUri = this._createSessionUri(task.id);
+			// CRITICAL: Set the parentWorkerId on the task from the effective parent
+			// This allows us to track parent-child relationships via task.parentWorkerId
+			if (effectiveParentWorkerId) {
+				(task as { parentWorkerId?: string }).parentWorkerId = effectiveParentWorkerId;
+			}
 			this._workers.set(worker.id, worker);
 
 			// CRITICAL: Forge a toolInvocationToken for this worker.
 			// VS Code's tool UI requires a token with sessionId and sessionResource.
 			// Without this, tool invocation bubbles won't appear in the chat UI.
 			//
-			// The token format (from debugging a working session) is:
-			// {
-			//   "sessionId": "orchestrator:/worker-{id}",
-			//   "sessionResource": { "$mid": 1, "external": "orchestrator:/worker-{id}", "path": "/worker-{id}", "scheme": "orchestrator" }
-			// }
-			const workerSessionUri = `orchestrator:/${worker.id}`;
+			// CRITICAL: Use task.id for the session URI, not worker.id
+			// The orchestrator chat session provider registers sessions with task.id,
+			// so the forged token must match to avoid "Tool called for unknown chat session" errors
 			const forgedToken = {
-				sessionId: workerSessionUri,
+				sessionId: task.id,
 				sessionResource: vscode.Uri.from({
 					scheme: 'orchestrator',
-					path: `/${worker.id}`,
+					path: `/${task.id}`,
 				}),
 			} as vscode.ChatParticipantToolToken;
 			worker.setToolInvocationToken(forgedToken);
-			this._logService.debug(`[OrchestratorService] Forged toolInvocationToken for worker ${worker.id}: sessionId=${workerSessionUri}`);
+			this._logService.debug(`[OrchestratorService] Forged toolInvocationToken for task ${task.id}, worker ${worker.id}: sessionId=${workerSessionUri}`);
 
 			// Register wake-up adapter for parent completion notifications
 			// This ensures workers receive completion messages from their subtasks
@@ -3136,6 +3277,10 @@ Focus on your assigned task and provide a clear, actionable result.`;
 						taskId: task.id,
 						workerId: worker.id,
 						worktreePath: worker.worktreePath,
+						owner: (() => {
+							const toolSet = this._workerToolSets.get(worker.id);
+							return toolSet?.workerContext?.owner || { ownerType: 'orchestrator', ownerId: 'orchestrator' };
+						})(),
 						type: 'status_update',
 						content: 'idle'
 					});
@@ -3533,22 +3678,134 @@ Focus on your assigned task and provide a clear, actionable result.`;
 	}
 
 	/**
-	 * Complete a task: mark as completed, remove worker, trigger dependent tasks
+	 * Get the repository root path
 	 */
-	public async completeTask(taskId: string): Promise<void> {
-		const task = this._tasks.find(t => t.id === taskId);
+	private _getRepoRoot(): string {
+		const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+		if (!workspaceFolder) {
+			throw new Error('No workspace folder found');
+		}
+		return workspaceFolder;
+	}
+
+	/**
+	 * Complete a worker's task: mark as completed, remove worker, trigger dependent tasks.
+	 *
+	 * IMPORTANT: This should only be called by the parent after:
+	 * 1. Worker has reported completion via a2a_reportCompletion
+	 * 2. Parent has reviewed the work
+	 * 3. Parent has merged the worker's branch
+	 * 4. Parent has deleted the worker's branch
+	 *
+	 * @param workerIdToComplete - The ID of the worker to complete (e.g., "worker-9d8a0a07")
+	 * @param callerWorkerId - The ID of the worker calling this method (e.g., "claude-standalone-123")
+	 */
+	public async completeTask(workerIdToComplete: string, callerWorkerId: string): Promise<void> {
+		// Look up the task by worker ID
+		const task = this._tasks.find(t => t.workerId === workerIdToComplete);
 		if (!task) {
-			throw new Error(`Task ${taskId} not found`);
+			throw new Error(`No task found for worker ${workerIdToComplete}`);
 		}
 
-		// If task has a worker, remove it
-		if (task.workerId) {
-			const worker = this._workers.get(task.workerId);
-			if (worker) {
-				// Conclude the worker (stop gracefully without push since we already merged)
-				this.concludeWorker(task.workerId);
+		// Look up the worker
+		const worker = this._workers.get(workerIdToComplete);
+		if (!worker) {
+			throw new Error(`Worker ${workerIdToComplete} not found`);
+		}
+
+		// CRITICAL: Verify the caller is authorized to complete this worker
+
+		// PRIMARY CHECK: You cannot complete yourself
+		if (callerWorkerId === workerIdToComplete) {
+			throw new Error(
+				`Cannot complete worker ${workerIdToComplete}: You cannot mark yourself as completed.\n\n` +
+				`Let your parent complete you after you finish your work.\n\n` +
+				`Once you complete your required changes:\n` +
+				`1. Verify you committed and merged your changes\n` +
+				`2. Call \`a2a_reportCompletion\` to notify your parent\n\n` +
+				`Your parent will then review, merge, delete your branch, and call \`orchestrator_completeTask\`.`
+			);
+		}
+
+		// SECONDARY CHECK: Verify caller is the parent
+		// Allow "orchestrator-system" sentinel for system-level operations
+		const isOrchestratorSystem = callerWorkerId === 'orchestrator-system';
+
+		if (task.parentWorkerId) {
+			// Task has a parent - only that parent (or orchestrator-system) can complete it
+			if (!isOrchestratorSystem && callerWorkerId !== task.parentWorkerId) {
+				throw new Error(
+					`Cannot complete worker ${workerIdToComplete}: Only the parent can complete this worker.\n\n` +
+					`Worker's parent: ${task.parentWorkerId}\n` +
+					`Your worker ID: ${callerWorkerId}\n\n` +
+					`You can only complete workers that YOU spawned.`
+				);
 			}
 		}
+		// If no parent, anyone can complete (typically orchestrator-system)
+
+		// TODO: Temporarily disabled - re-enable once worktree cleanup is automated
+		// // Verify the worker's branch has been cleaned up
+		// if (worker.worktreePath) {
+		// 	// Extract branch name from worktree path (e.g., "worker-task-123" from path)
+		// 	const branchName = worker.worktreePath.split(/[/\\]/).pop();
+
+		// 	if (branchName) {
+		// 		try {
+		// 			// Check if the branch still exists
+		// 			const result = cp.execSync(`git branch --list "${branchName}"`, {
+		// 				cwd: this._getRepoRoot(),
+		// 				encoding: 'utf-8',
+		// 				stdio: ['pipe', 'pipe', 'pipe']
+		// 			}).trim();
+
+		// 			if (result) {
+		// 				throw new Error(
+		// 					`Cannot complete worker ${workerIdToComplete}: Worker branch "${branchName}" still exists!\n\n` +
+		// 					`You must delete the branch after merging changes:\n` +
+		// 					`  git branch -d ${branchName}\n\n` +
+		// 					`This ensures the worktree has been properly folded back into your work.`
+		// 				);
+		// 			}
+		// 		} catch (err: any) {
+		// 			// If the error is our intentional error, re-throw it
+		// 			if (err.message.includes('Cannot complete worker')) {
+		// 				throw err;
+		// 			}
+		// 			// If git command failed for other reasons (branch doesn't exist), that's fine
+		// 			this._orchLog('Branch verification completed (branch not found, which is expected)', {
+		// 				workerId: workerIdToComplete,
+		// 				taskId: task.id,
+		// 				branchName,
+		// 			});
+		// 		}
+		// 	}
+		// }
+
+		// Dispose Claude session if this task used Claude executor
+		// This is required before worktree removal to properly clean up the session
+		if (task.agent) {
+			try {
+				const parsedAgentType = this._parseAgentType(task.agent);
+				if (parsedAgentType.backend === 'claude') {
+					const executor = this._executorRegistry.getExecutor(parsedAgentType);
+					if (executor && 'complete' in executor && typeof executor.complete === 'function') {
+						this._orchLog('Disposing Claude session for completed task', {
+							workerId: workerIdToComplete,
+							taskId: task.id,
+							agent: task.agent,
+						});
+						await (executor as any).complete(workerIdToComplete);
+					}
+				}
+			} catch (error) {
+				// Log but don't fail completion if session disposal fails
+				this._logService.warn(`[Orchestrator:completeTask] Failed to dispose Claude session: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+
+		// Conclude the worker (stop gracefully without push since we already merged)
+		this.concludeWorker(workerIdToComplete);
 
 		// Mark task as completed
 		task.status = 'completed';
