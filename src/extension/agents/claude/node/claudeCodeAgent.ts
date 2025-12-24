@@ -812,7 +812,7 @@ export class ClaudeCodeSession extends Disposable {
 				...process.env,
 				// ANTHROPIC_BASE_URL: `http://localhost:${this.serverConfig.port}`,
 				// ANTHROPIC_API_KEY: this.serverConfig.nonce,
-				CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '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',
+				CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN,
 				CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
 				USE_BUILTIN_RIPGREP: '0',
 				PATH: `${this.envService.appRoot}/node_modules/@vscode/ripgrep/bin${pathSep}${process.env.PATH}`
