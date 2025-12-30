@@ -1871,6 +1871,7 @@
 					"orchestrator_listAgents",
 					"orchestrator_listWorkers",
 					"orchestrator_cancelTask",
+					"orchestrator_deployTask",
 					"orchestrator_retryTask",
 					"orchestrator_completeTask",
 					"orchestrator_awaitWorkers",

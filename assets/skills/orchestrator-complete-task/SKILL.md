@@ -70,7 +70,32 @@ Use `a2a_pull_subtask_changes` to fetch the child's changes into your worktree:
 
 **Note:** This pulls their branch into your worktree but doesn't merge it yet. You can review the changes before merging.
 
-### 4. Merge to Main
+### 4. Review Code & Provide Feedback (CRITICAL)
+
+**Before merging, you MUST review the code:**
+- Inspect the files changed by the worker.
+- Does the code meet the requirements?
+- Is it clean and idiomatic?
+- **If you are unsure:** Spawn a `@reviewer` subtask to review the changes for you.
+
+**Decision Point:**
+
+**A. If work is SUBSTANDARD:**
+- **DO NOT** proceed to merge or complete.
+- Send feedback to the worker:
+  ```json
+  // a2a_send_message_to_worker
+  {
+    "workerId": "worker-id",
+    "message": "I reviewed your changes. The error handling in `api.ts` is missing. Please add try/catch blocks and retry."
+  }
+  ```
+- The worker will continue working. Wait for their next completion report.
+
+**B. If work is GOOD:**
+- Proceed to Step 5 (Merge to Main).
+
+### 5. Merge to Main
 
 **Decision point:** Do dependent tasks need this code?
 
@@ -103,7 +128,7 @@ git commit -m "Integrate task: implement-core"
 - If Task B depends on Task A's code, A MUST be merged before B starts
 - Otherwise B works on stale code → conflicts, duplicates, errors
 
-### 5. Delete the Child's Branch
+### 6. Delete the Child's Branch
 
 **CRITICAL STEP - Always delete after integrating:**
 
@@ -121,11 +146,11 @@ git branch -D <child-branch-name>
 - Prevents accumulation of stale branches
 - Signals that the child's work is fully integrated
 
-### 6. Mark Task Complete in Plan (Orchestrators Only)
+### 7. Mark Task Complete in Plan (Orchestrators Only)
 
 **⚠️ This step only applies if you are an orchestrator managing a plan!**
 
-If you're a regular parent agent (not managing an orchestrator plan), skip to step 7.
+If you're a regular parent agent (not managing an orchestrator plan), skip to step 8.
 
 **For orchestrators only - after reviewing, merging, and deleting branch:**
 
@@ -143,9 +168,9 @@ If you're a regular parent agent (not managing an orchestrator plan), skip to st
 - Fires completion event
 - Triggers deployment of dependent tasks
 
-**Important:** This tool verifies the branch was deleted. If you get an error about the branch still existing, go back to step 5.
+**Important:** This tool verifies the branch was deleted. If you get an error about the branch still existing, go back to step 6.
 
-### 7. Continue Your Work
+### 8. Continue Your Work
 
 **For orchestrators:**
 - The orchestrator service automatically deploys any tasks whose dependencies are now satisfied
@@ -167,10 +192,13 @@ If you're a regular parent agent (not managing an orchestrator plan), skip to st
 - Call `orchestrator_completeTask` before pulling and reviewing changes
 - Forget to delete the branch before marking complete
 - Skip merging when dependent tasks need the code
+- **Accept substandard work without review**
 
 ✅ **DO:**
-- Follow all 7 steps in order
+- Follow all 8 steps in order
 - Review completion messages carefully
+- **Review the actual code changes**
+- Provide feedback if work is not good enough
 - Merge to main when tasks have dependencies
 - Delete branches after merging
 - Verify branch deletion before calling `orchestrator_completeTask`

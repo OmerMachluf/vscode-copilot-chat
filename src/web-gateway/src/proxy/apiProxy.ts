@@ -5,9 +5,9 @@
  * Handles SSE streaming, WebSocket upgrades, and error scenarios.
  */
 
-import { Router, Request, Response, NextFunction } from 'express';
+import { NextFunction, Request, Response, Router } from 'express';
+import type { ClientRequest, IncomingMessage, ServerResponse } from 'http';
 import { createProxyMiddleware, fixRequestBody, Options } from 'http-proxy-middleware';
-import type { IncomingMessage, ServerResponse, ClientRequest } from 'http';
 import type { Socket } from 'net';
 
 // Extension API configuration
@@ -80,27 +80,19 @@ export function createApiProxy(config: ApiProxyConfig = {}): ReturnType<typeof c
 
 		/**
 		 * Handle outgoing proxy request (http-proxy-middleware v2.x API)
+		 * - Fix request body if bodyParser middleware was used
 		 *
-		 * CRITICAL: fixRequestBody() internally calls proxyReq.setHeader('Content-Length', ...)
-		 * which CRASHES for SSE requests because:
-		 * 1. SSE endpoints respond immediately with streaming headers
-		 * 2. The response can start flowing before onProxyReq completes
-		 * 3. Calling setHeader() after headers are sent throws ERR_HTTP_HEADERS_SENT
-		 *
-		 * Solution: Skip fixRequestBody for SSE requests. SSE requests are typically
-		 * GET requests without bodies, so there's nothing to fix anyway.
+		 * IMPORTANT: Do NOT call proxyReq.setHeader() here!
+		 * For SSE streams, the target may start sending the response before this
+		 * callback completes, and calling setHeader() after headers are sent will
+		 * crash the process. Use the static `headers` option instead.
 		 */
 		onProxyReq: (proxyReq: ClientRequest, req: IncomingMessage, _res: ServerResponse) => {
-			const acceptHeader = req.headers.accept || '';
-			const isSSE = acceptHeader.includes('text/event-stream');
+			// Fix request body stream after bodyParser
+			// This is safe - it only modifies the request stream, not headers
+			fixRequestBody(proxyReq, req as Request);
 
-			// Only fix request body for non-SSE requests
-			// fixRequestBody internally calls setHeader() which crashes SSE streams
-			if (!isSSE) {
-				fixRequestBody(proxyReq, req as Request);
-			}
-
-			logger(`Proxying ${req.method} ${req.url} -> ${target}${req.url}${isSSE ? ' (SSE)' : ''}`, 'info');
+			logger(`Proxying ${req.method} ${req.url} -> ${target}${req.url}`, 'info');
 		},
 
 		/**
